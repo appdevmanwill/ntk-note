@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="NTK Note">
+  <defs>
+    <linearGradient id="fullBleed" x1="24" y1="16" x2="492" y2="504" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7dd3fc"/>
+      <stop offset="0.32" stop-color="#818cf8"/>
+      <stop offset="0.68" stop-color="#a855f7"/>
+      <stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+    <radialGradient id="lightBloom" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(132 72) rotate(50) scale(420 360)">
+      <stop stop-color="#ffffff" stop-opacity="0.66"/>
+      <stop offset="0.44" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="depthBloom" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(430 450) rotate(-135) scale(340 300)">
+      <stop stop-color="#0f766e" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#312e81" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="paperFill" x1="78" y1="36" x2="418" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.58" stop-color="#eef6ff"/>
+      <stop offset="1" stop-color="#d9e8f7"/>
+    </linearGradient>
+    <linearGradient id="paperFold" x1="326" y1="42" x2="456" y2="174" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#eef2ff"/>
+      <stop offset="1" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="monogram" x1="96" y1="374" x2="418" y2="126" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f9488"/>
+      <stop offset="0.32" stop-color="#4f46e5"/>
+      <stop offset="0.72" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#db2777"/>
+    </linearGradient>
+    <filter id="paperShadow" x="36" y="8" width="440" height="508" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="24" flood-color="#312e81" flood-opacity="0.28"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <filter id="markGlow" x="52" y="96" width="408" height="336" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#ffffff" flood-opacity="0.36"/>
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#312e81" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#fullBleed)"/>
+  <rect width="512" height="512" fill="url(#lightBloom)"/>
+  <rect width="512" height="512" fill="url(#depthBloom)"/>
+  <path d="M0 344c86 74 178 108 276 102 96-6 174-54 236-132v198H0V344Z" fill="#ffffff" opacity="0.12"/>
+  <path d="M0 0h512v120c-72-38-142-54-210-48C194 82 88 144 0 248V0Z" fill="#ffffff" opacity="0.14"/>
+
+  <g filter="url(#paperShadow)">
+    <path d="M62 76c0-26.5 21.5-48 48-48h232l108 112v296c0 26.5-21.5 48-48 48H110c-26.5 0-48-21.5-48-48V76Z" fill="url(#paperFill)"/>
+    <path d="M342 28v75c0 26.5 21.5 48 48 48h60L342 28Z" fill="url(#paperFold)"/>
+    <path d="M344 32v71c0 25.4 20.6 46 46 46h56" fill="none" stroke="#ffffff" stroke-width="11" stroke-linecap="round" opacity="0.82"/>
+  </g>
+
+  <g filter="url(#markGlow)">
+    <path d="M128 368V166c0-29 36-42 55-20l198 226V158" fill="none" stroke="url(#monogram)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M128 368V166c0-29 36-42 55-20l198 226V158" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" opacity="0.30"/>
+  </g>
+
+  <path d="M138 416h168" stroke="#94a3b8" stroke-width="22" stroke-linecap="round" opacity="0.44"/>
+  <path d="M140 220h82M140 276h104" stroke="#c7d2df" stroke-width="18" stroke-linecap="round" opacity="0.66"/>
+  <circle cx="390" cy="386" r="52" fill="#0f9488"/>
+  <path d="M366 386l17 17 38-44" fill="none" stroke="#ffffff" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
