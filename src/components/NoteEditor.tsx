@@ -15,7 +15,7 @@ import {
   Download, Share2, Mail, FileText, Type, Hash,
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
-  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode
+  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, LayoutTemplate
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
@@ -141,6 +141,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     setNoteReminder, settings, toggleZenMode, notebooks, moveNote,
     setEditingNote, setNoteTheme,
     lockNote, unlockNote, relockNote, updateUnlockedNote, unlockedNotes,
+    templates,
   } = useStore();
 
   const note = notes.find(n => n.id === selectedNoteId);
@@ -173,6 +174,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [isListening, setIsListening] = useState(false);
   const [showSketchModal, setShowSketchModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
   const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
   const recognitionRef = useRef<any>(null);
 
@@ -521,6 +523,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [note, content, title, saveNote]);
+
+  const insertTemplate = (templateContent: string) => {
+    insertFormatting(templateContent);
+    setShowTemplatesDropdown(false);
+  };
 
   if (!note) {
     return (
@@ -1037,6 +1044,39 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           >
             <PenTool className="w-4 h-4" />
           </button>
+
+          <div className="relative">
+            <button
+              onClick={() => setShowTemplatesDropdown(!showTemplatesDropdown)}
+              title="Insert Template"
+              className={`p-1.5 rounded-md transition-colors shrink-0 ${showTemplatesDropdown ? 'bg-indigo-500/10 text-indigo-500' : 'theme-hover text-theme-tertiary'}`}
+            >
+              <LayoutTemplate className="w-4 h-4" />
+            </button>
+            {showTemplatesDropdown && (
+              <div 
+                className="absolute left-0 top-full mt-1 w-64 rounded-xl shadow-xl border theme-card z-50 py-2 max-h-64 overflow-y-auto"
+                style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+              >
+                <div className="px-3 pb-2 mb-2 border-b theme-divider">
+                  <span className="text-xs font-semibold text-theme-secondary uppercase tracking-wider">Insert Template</span>
+                </div>
+                {templates.filter(tpl => tpl.type === 'note' && tpl.content).map(tpl => (
+                  <button
+                    key={tpl.id}
+                    onClick={() => insertTemplate(tpl.content)}
+                    className="w-full text-left px-4 py-2 hover:bg-indigo-500/10 transition-colors flex items-center gap-3"
+                  >
+                    <span className="text-lg">{tpl.icon}</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-theme-primary">{tpl.name}</span>
+                      <span className="text-xs text-theme-tertiary truncate max-w-[160px]">{tpl.description}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

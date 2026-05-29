@@ -16,7 +16,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     clearSearch, createNote, emptyTrash, settings, updateSettings,
     selectedNotebookId, selectedTagId, notebooks, tags,
     trashNote, archiveNote, moveNote, addNoteTag,
-    updateNote, setNotePriority, addSection, deleteSection,
+    updateNote, setNotePriority, addSection, deleteSection, notes,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -29,6 +29,8 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   const [showShareModal, setShowShareModal] = useState(false);
 
   const filteredNotes = getFilteredNotes();
+  
+  const sharedByOptions = Array.from(new Set(notes.filter(n => n.sharedBy).map(n => n.sharedBy as string)));
   const gridGap = settings.density === 'compact' ? 'gap-2' : settings.density === 'spacious' ? 'gap-4' : 'gap-3';
   const listGap = settings.density === 'compact' ? 'space-y-1.5' : settings.density === 'spacious' ? 'space-y-3' : 'space-y-2';
 
@@ -575,6 +577,29 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 />
               </div>
             </div>
+
+            {/* Shared By */}
+            {sharedByOptions.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>Shared by</p>
+                <div className="flex gap-1.5 flex-wrap">
+                  {sharedByOptions.map(email => (
+                    <FilterChip
+                      key={email}
+                      label={email}
+                      active={searchFilters.sharedBy?.includes(email) || false}
+                      onClick={() => {
+                        const current = searchFilters.sharedBy || [];
+                        const next = current.includes(email)
+                          ? current.filter(e => e !== email)
+                          : [...current, email];
+                        setSearchFilters({ sharedBy: next });
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Sort */}
             <div>

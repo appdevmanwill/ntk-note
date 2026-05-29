@@ -135,6 +135,7 @@ export interface AppSettings {
   zenMode: boolean;
   noteViewMode: 'grid' | 'list' | 'kanban';
   offlineModeEnabled: boolean;
+  hasSeenTour: boolean;
 }
 
 export type SidebarView = 
@@ -153,6 +154,7 @@ export interface SearchFilters {
   hasReminder: boolean | null;
   hasChecklist: boolean | null;
   dateRange: { start: string; end: string } | null;
+  sharedBy: string[];
   sortBy: 'updatedAt' | 'createdAt' | 'title' | 'priority';
   sortDir: 'asc' | 'desc';
 }

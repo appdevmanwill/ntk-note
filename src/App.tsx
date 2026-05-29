@@ -12,6 +12,7 @@ import SmartFoldersView from '@/components/SmartFoldersView';
 import CommandPalette from '@/components/CommandPalette';
 import MobileNav from '@/components/MobileNav';
 import PublicNoteReader from '@/components/PublicNoteReader';
+import OnboardingGuide from '@/components/OnboardingGuide';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/utils/firebase';
 import { accentPalette } from '@/utils/noteThemes';
@@ -207,10 +208,22 @@ export default function App() {
           if (now >= reminderTime) {
             // Trigger notification
             if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('NTK Note Reminder', {
-                body: note.reminder.title || note.title || 'You have a reminder',
-                icon: '/ntk-icon.svg',
-              });
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.ready.then(registration => {
+                  registration.showNotification('NTK Note Reminder', {
+                    body: note.reminder.title || note.title || 'You have a reminder',
+                    icon: '/ntk-icon.svg',
+                    badge: '/ntk-icon.svg',
+                    vibrate: [200, 100, 200],
+                    tag: `reminder-${note.id}`,
+                  });
+                });
+              } else {
+                new Notification('NTK Note Reminder', {
+                  body: note.reminder.title || note.title || 'You have a reminder',
+                  icon: '/ntk-icon.svg',
+                });
+              }
             }
             state.setNoteReminder(note.id, { ...note.reminder, triggered: true });
           }
@@ -324,6 +337,9 @@ export default function App() {
 
       {/* Command palette */}
       <CommandPalette />
+
+      {/* Onboarding */}
+      <OnboardingGuide />
     </div>
   );
 }

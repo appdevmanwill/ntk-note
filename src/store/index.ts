@@ -76,6 +76,7 @@ const defaultSettings: AppSettings = {
   zenMode: false,
   noteViewMode: 'grid',
   offlineModeEnabled: false,
+  hasSeenTour: false,
 };
 
 const defaultSearchFilters: SearchFilters = {
@@ -1829,7 +1830,7 @@ export const useStore = create<AppState>((set, get) => {
         if (tag) filtered = filtered.filter(n => n.tags.includes(tag.name));
       }
 
-      const { query, tags, colors, types, priorities, hasReminder, hasChecklist, sortBy, sortDir } = searchFilters;
+      const { query, tags, colors, types, priorities, hasReminder, hasChecklist, sortBy, sortDir, sharedBy } = searchFilters;
       
       if (query) {
         const q = query.toLowerCase();
@@ -1846,6 +1847,7 @@ export const useStore = create<AppState>((set, get) => {
       if (hasReminder === true) filtered = filtered.filter(n => n.reminder);
       if (hasReminder === false) filtered = filtered.filter(n => !n.reminder);
       if (hasChecklist === true) filtered = filtered.filter(n => n.type === 'checklist' || n.checklist.length > 0);
+      if (sharedBy && sharedBy.length) filtered = filtered.filter(n => n.sharedBy && sharedBy.includes(n.sharedBy));
 
       filtered.sort((a, b) => {
         // Pinned always first

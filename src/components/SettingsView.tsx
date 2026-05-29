@@ -13,6 +13,7 @@ import {
 import ImportManager from './ImportManager';
 import QuotaDashboard from './QuotaDashboard';
 import BrandMark from './BrandMark';
+import JSZip from 'jszip';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -104,15 +105,60 @@ export default function SettingsView() {
     reader.readAsText(file);
   };
 
-  const handleExport = () => {
-    const data = exportAllNotes();
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ntk-notes-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleExport = async () => {
+    try {
+      const data = exportAllNotes();
+      const exportObj = JSON.parse(data);
+      const notesList = exportObj.notes || [];
+
+      const zip = new JSZip();
+      
+      // Add raw JSON dump
+      zip.file('backup.json', data);
+      
+      // Create folders
+      const notesFolder = zip.folder('notes');
+      const imagesFolder = zip.folder('images');
+      
+      let imageCounter = 1;
+
+      notesList.forEach((note: any) => {
+        let content = note.content || '';
+        
+        // Extract base64 images
+        const base64Regex = /!\[([^\]]*)\]\((data:image\/[^;]+;base64,[^)]+)\)/g;
+        content = content.replace(base64Regex, (match: string, alt: string, dataUrl: string) => {
+          const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+          if (matches && matches.length === 3) {
+            const ext = matches[1];
+            const base64Data = matches[2];
+            const filename = `img_${imageCounter++}.${ext}`;
+            
+            // Add image to images folder
+            imagesFolder?.file(filename, base64Data, { base64: true });
+            
+            // Replace data URL with local relative path in Markdown
+            return `![${alt}](../images/${filename})`;
+          }
+          return match;
+        });
+
+        const safeTitle = (note.title || 'Untitled').replace(/[\\/:*?"<>|]/g, '-');
+        const filename = `${safeTitle.substring(0, 50)}_${note.id.substring(0, 8)}.md`;
+        notesFolder?.file(filename, content);
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ntk-notes-workspace-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed', err);
+      alert('Failed to export workspace. Check console for details.');
+    }
   };
 
   const sections = [
