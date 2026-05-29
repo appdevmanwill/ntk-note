@@ -819,6 +819,7 @@ export const useStore = create<AppState>((set, get) => {
       set({ uid });
       const notesRef = collection(db, `users/${uid}/notes`);
       
+      let isFirstNotesSnapshot = true;
       const unsubscribe = onSnapshot(notesRef, (snapshot) => {
         const notes = snapshot.docs.map(doc => doc.data() as Note);
         set(s => {
@@ -826,6 +827,17 @@ export const useStore = create<AppState>((set, get) => {
           const remoteIds = new Set(notes.map(note => note.id));
           const conflicts = [...s.syncConflicts];
           const merged = [...s.notes];
+
+          // Upload any local notes initially to avoid accidental data loss
+          if (isFirstNotesSnapshot) {
+            s.notes.forEach(note => {
+              if (!remoteIds.has(note.id) && !pendingIds.has(note.id)) {
+                void setDoc(doc(db, `users/${uid}/notes`, note.id), stripUndefined(note)).catch(console.error);
+                remoteIds.add(note.id);
+              }
+            });
+            isFirstNotesSnapshot = false;
+          }
 
           notes.forEach(remote => {
             const idx = merged.findIndex(note => note.id === remote.id);
@@ -862,25 +874,33 @@ export const useStore = create<AppState>((set, get) => {
       // Synchronize notebooks
       const notebooksRef = collection(db, `users/${uid}/notebooks`);
       
-      // Upload any local notebooks initially
-      get().notebooks.forEach(nb => {
-        void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
-      });
-
+      let isFirstNbsSnapshot = true;
       const unsubscribeNbs = onSnapshot(notebooksRef, (snapshot) => {
         const remoteNbs = snapshot.docs.map(doc => doc.data() as Notebook);
         set(s => {
+          const merged = [...s.notebooks];
+          const remoteIds = new Set(remoteNbs.map(nb => nb.id));
+          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'notebook').map(item => item.noteId));
+
           if (remoteNbs.length === 0) {
             // Empty remote: sync local notebooks up to remote
             s.notebooks.forEach(nb => {
               void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
             });
+            isFirstNbsSnapshot = false;
             return {};
           }
 
-          const merged = [...s.notebooks];
-          const remoteIds = new Set(remoteNbs.map(nb => nb.id));
-          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'notebook').map(item => item.noteId));
+          // Upload any local notebooks initially to avoid accidental data loss
+          if (isFirstNbsSnapshot) {
+            s.notebooks.forEach(nb => {
+              if (nb.id !== 'default' && !remoteIds.has(nb.id) && !pendingIds.has(nb.id)) {
+                void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
+                remoteIds.add(nb.id);
+              }
+            });
+            isFirstNbsSnapshot = false;
+          }
 
           remoteNbs.forEach(remote => {
             const idx = merged.findIndex(nb => nb.id === remote.id);
