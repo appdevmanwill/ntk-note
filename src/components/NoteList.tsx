@@ -306,7 +306,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             )}
 
             {/* Bulk mode toggle */}
-            {filteredNotes.length > 0 && currentView !== 'trash' && (
+            {filteredNotes.length > 0 && (
               <button
                 onClick={() => { setBulkMode(!bulkMode); setSelectedIds(new Set()); }}
                 className="p-2 rounded-lg transition-colors"
