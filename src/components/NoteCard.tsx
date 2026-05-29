@@ -78,6 +78,7 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
       className={`
         note-card group relative rounded-xl border cursor-pointer
         transition-all duration-200 hover:-translate-y-0.5
+        ${showMenu ? 'z-50' : 'hover:z-10'}
         ${densityPadding}
       `}
       data-note-color={note.color || 'default'}
