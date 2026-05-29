@@ -5,9 +5,10 @@ import ShareModal from './ShareModal';
 import {
   Plus, FileText, Search, Grid3X3, List, SlidersHorizontal,
   X, CheckSquare, Code, Trash2, ArrowUpDown, Archive,
-  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban, Share2
+  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban, Share2,
+  GripVertical, Pencil, Check
 } from 'lucide-react';
-import type { NoteColor, NoteType } from '@/types';
+import type { Note, NoteColor, NoteType, Priority } from '@/types';
 import { noteColors } from '@/utils/colors';
 
 export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
@@ -16,9 +17,9 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     clearSearch, createNote, emptyTrash, settings, updateSettings,
     selectedNotebookId, selectedTagId, notebooks, tags,
     archiveNote, moveNote, addNoteTag,
-    updateNote, setNotePriority, addSection, deleteSection, notes,
+    updateNote, addSection, updateSection, deleteSection, notes,
     restoreNote, bulkTrashNotes, bulkDeleteNotes, deleteNotebook,
-    restoreNotebook, permanentlyDeleteNotebook,
+    restoreNotebook, permanentlyDeleteNotebook, reorderNotes,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -29,6 +30,9 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   const [bulkTagInput, setBulkTagInput] = useState('');
   const [showBulkMoveMenu, setShowBulkMoveMenu] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
+  const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
+  const [editingSectionName, setEditingSectionName] = useState('');
 
   const filteredNotes = getFilteredNotes();
   const trashedNotebooks = notebooks.filter(nb => nb.trashed);
@@ -109,14 +113,80 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     }
   };
 
+  const getDragNoteId = (e: React.DragEvent) =>
+    e.dataTransfer.getData('application/x-ntk-note-id') || e.dataTransfer.getData('text/plain');
+
+  const beginNoteDrag = (e: React.DragEvent, noteId: string) => {
+    if (bulkMode || currentView === 'trash') {
+      e.preventDefault();
+      return;
+    }
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-ntk-note-id', noteId);
+    e.dataTransfer.setData('text/plain', noteId);
+    setDraggedNoteId(noteId);
+  };
+
+  const dropNoteAt = async (
+    e: React.DragEvent,
+    targetNoteId: string | null,
+    updates: Partial<Pick<Note, 'sectionId' | 'priority'>> = {}
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const noteId = getDragNoteId(e);
+    if (!noteId || currentView === 'trash') return;
+    if (noteId === targetNoteId && Object.keys(updates).length === 0) {
+      setDraggedNoteId(null);
+      return;
+    }
+
+    const draggedNote = filteredNotes.find(note => note.id === noteId);
+    if (!draggedNote) return;
+
+    const orderedNotes = filteredNotes.filter(note => note.id !== noteId);
+    const targetIndex = targetNoteId
+      ? orderedNotes.findIndex(note => note.id === targetNoteId)
+      : orderedNotes.length;
+    const insertIndex = targetIndex >= 0 ? targetIndex : orderedNotes.length;
+
+    orderedNotes.splice(insertIndex, 0, { ...draggedNote, ...updates });
+
+    if (Object.keys(updates).length > 0) {
+      await updateNote(noteId, updates);
+    }
+    await reorderNotes(orderedNotes.map(note => note.id));
+    setSearchFilters({ sortBy: 'order', sortDir: 'desc' });
+    setDraggedNoteId(null);
+  };
+
+  const beginSectionEdit = (sectionId: string, name: string) => {
+    setEditingSectionId(sectionId);
+    setEditingSectionName(name);
+  };
+
+  const cancelSectionEdit = () => {
+    setEditingSectionId(null);
+    setEditingSectionName('');
+  };
+
+  const saveSectionEdit = () => {
+    if (!selectedNotebookId || !editingSectionId) return;
+    const name = editingSectionName.trim();
+    if (name) {
+      updateSection(selectedNotebookId, editingSectionId, { name });
+    }
+    cancelSectionEdit();
+  };
+
   const renderKanbanBoard = () => {
     if (currentView === 'notebooks' && selectedNotebookId) {
       const notebook = notebooks.find(nb => nb.id === selectedNotebookId);
       const sections = notebook?.sections || [];
       
       const columns = [
-        { id: 'unassigned', name: 'Unassigned' },
-        ...sections.map(sec => ({ id: sec.id, name: sec.name }))
+        { id: 'unassigned', name: 'Unassigned', sectionId: undefined as string | undefined, editable: false },
+        ...sections.map(sec => ({ id: sec.id, name: sec.name, sectionId: sec.id, editable: true }))
       ];
 
       return (
@@ -133,36 +203,85 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 key={col.id} 
                 className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
                 onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  const noteId = e.dataTransfer.getData('text/plain');
-                  if (noteId) {
-                    void updateNote(noteId, { 
-                      sectionId: col.id === 'unassigned' ? undefined : col.id 
-                    });
-                  }
-                }}
+                onDrop={e => void dropNoteAt(e, null, { sectionId: col.sectionId })}
               >
                 {/* Column Header */}
                 <div className="flex items-center justify-between mb-3 pb-1 border-b theme-divider">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-xs font-bold uppercase tracking-wider text-theme-secondary truncate">
-                      {col.name}
-                    </span>
+                    {editingSectionId === col.id ? (
+                      <input
+                        type="text"
+                        value={editingSectionName}
+                        onChange={e => setEditingSectionName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') saveSectionEdit();
+                          if (e.key === 'Escape') cancelSectionEdit();
+                        }}
+                        onBlur={saveSectionEdit}
+                        className="min-w-0 flex-1 bg-transparent text-xs font-bold uppercase tracking-wider text-theme-primary focus:outline-none"
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => col.editable && beginSectionEdit(col.id, col.name)}
+                        className={`min-w-0 text-left text-xs font-bold uppercase tracking-wider text-theme-secondary truncate ${col.editable ? 'hover:accent-text' : ''}`}
+                      >
+                        {col.name}
+                      </button>
+                    )}
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full accent-soft font-bold shrink-0">
                       {colNotes.length}
                     </span>
                   </div>
-                  {col.id !== 'unassigned' && (
-                    <button 
-                      onClick={() => {
-                        if (confirm(`Are you sure you want to delete section "${col.name}"? Notes in this section will be unassigned.`)) {
-                          void deleteSection(selectedNotebookId, col.id);
-                        }
-                      }}
-                      className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 no-transition" />
-                    </button>
+                  {col.editable && (
+                    <div className="flex items-center gap-1">
+                      {editingSectionId === col.id ? (
+                        <>
+                          <button
+                            type="button"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={saveSectionEdit}
+                            className="p-1 rounded theme-hover text-theme-tertiary hover:accent-text cursor-pointer"
+                            aria-label="Save section name"
+                          >
+                            <Check className="w-3.5 h-3.5 no-transition" />
+                          </button>
+                          <button
+                            type="button"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={cancelSectionEdit}
+                            className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer"
+                            aria-label="Cancel section edit"
+                          >
+                            <X className="w-3.5 h-3.5 no-transition" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => beginSectionEdit(col.id, col.name)}
+                            className="p-1 rounded theme-hover text-theme-tertiary hover:accent-text cursor-pointer"
+                            title="Rename section"
+                          >
+                            <Pencil className="w-3.5 h-3.5 no-transition" />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              if (confirm(`Are you sure you want to delete section "${col.name}"? Notes in this section will be unassigned.`)) {
+                                void deleteSection(selectedNotebookId, col.id);
+                              }
+                            }}
+                            className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer"
+                            title="Delete section"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 no-transition" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -177,9 +296,15 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                       <div 
                         key={note.id} 
                         draggable 
-                        onDragStart={e => e.dataTransfer.setData('text/plain', note.id)}
-                        className="cursor-grab active:cursor-grabbing"
+                        onDragStart={e => beginNoteDrag(e, note.id)}
+                        onDragEnd={() => setDraggedNoteId(null)}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => void dropNoteAt(e, note.id, { sectionId: col.sectionId })}
+                        className={`cursor-grab active:cursor-grabbing ${draggedNoteId === note.id ? 'opacity-50' : ''}`}
                       >
+                        <div className="mb-1 flex items-center text-theme-muted" title="Drag note">
+                          <GripVertical className="w-3.5 h-3.5 no-transition" />
+                        </div>
                         <NoteCard note={note} compact />
                       </div>
                     ))
@@ -208,7 +333,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
       );
     } else {
       // General Mode: Group by Priority
-      const priorityColumns = [
+      const priorityColumns: { id: string; name: string; priority: Priority | null }[] = [
         { id: 'unassigned', name: 'Unassigned', priority: null },
         { id: 'low', name: 'Low Priority', priority: 'low' as const },
         { id: 'medium', name: 'Medium Priority', priority: 'medium' as const },
@@ -226,12 +351,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 key={col.id} 
                 className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
                 onDragOver={e => e.preventDefault()}
-                onDrop={e => {
-                  const noteId = e.dataTransfer.getData('text/plain');
-                  if (noteId) {
-                    void setNotePriority(noteId, col.priority);
-                  }
-                }}
+                onDrop={e => void dropNoteAt(e, null, { priority: col.priority })}
               >
                 {/* Column Header */}
                 <div className="flex items-center justify-between mb-3 pb-1 border-b theme-divider">
@@ -256,9 +376,15 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                       <div 
                         key={note.id} 
                         draggable 
-                        onDragStart={e => e.dataTransfer.setData('text/plain', note.id)}
-                        className="cursor-grab active:cursor-grabbing"
+                        onDragStart={e => beginNoteDrag(e, note.id)}
+                        onDragEnd={() => setDraggedNoteId(null)}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={e => void dropNoteAt(e, note.id, { priority: col.priority })}
+                        className={`cursor-grab active:cursor-grabbing ${draggedNoteId === note.id ? 'opacity-50' : ''}`}
                       >
+                        <div className="mb-1 flex items-center text-theme-muted" title="Drag note">
+                          <GripVertical className="w-3.5 h-3.5 no-transition" />
+                        </div>
                         <NoteCard note={note} compact />
                       </div>
                     ))
@@ -661,10 +787,10 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             <div>
               <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>Sort by</p>
               <div className="flex gap-1.5 flex-wrap">
-                {(['updatedAt', 'createdAt', 'title', 'priority'] as const).map(s => (
+                {(['order', 'updatedAt', 'createdAt', 'title', 'priority'] as const).map(s => (
                   <FilterChip
                     key={s}
-                    label={s === 'updatedAt' ? 'Last modified' : s === 'createdAt' ? 'Created' : s === 'title' ? 'Title' : 'Priority'}
+                    label={s === 'order' ? 'Custom order' : s === 'updatedAt' ? 'Last modified' : s === 'createdAt' ? 'Created' : s === 'title' ? 'Title' : 'Priority'}
                     active={searchFilters.sortBy === s}
                     onClick={() => setSearchFilters({ sortBy: s })}
                   />
@@ -740,11 +866,27 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
               settings.noteViewMode === 'grid'
                 ? `grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 ${gridGap}`
                 : listGap
-            }>
+            }
+              onDragOver={e => {
+                if (!bulkMode && currentView !== 'trash') e.preventDefault();
+              }}
+              onDrop={e => {
+                if (!bulkMode && currentView !== 'trash') void dropNoteAt(e, null);
+              }}
+            >
               {filteredNotes.map(note => (
                 <div 
                   key={note.id} 
-                  className="relative cursor-pointer"
+                  draggable={!bulkMode && currentView !== 'trash'}
+                  onDragStart={e => beginNoteDrag(e, note.id)}
+                  onDragEnd={() => setDraggedNoteId(null)}
+                  onDragOver={e => {
+                    if (!bulkMode && currentView !== 'trash') e.preventDefault();
+                  }}
+                  onDrop={e => {
+                    if (!bulkMode && currentView !== 'trash') void dropNoteAt(e, note.id);
+                  }}
+                  className={`relative cursor-pointer ${!bulkMode && currentView !== 'trash' ? 'cursor-grab active:cursor-grabbing' : ''} ${draggedNoteId === note.id ? 'opacity-50' : ''}`}
                   onClickCapture={(e) => {
                     if (bulkMode) {
                       e.stopPropagation();

@@ -157,7 +157,7 @@ export interface SearchFilters {
   hasChecklist: boolean | null;
   dateRange: { start: string; end: string } | null;
   sharedBy: string[];
-  sortBy: 'updatedAt' | 'createdAt' | 'title' | 'priority';
+  sortBy: 'order' | 'updatedAt' | 'createdAt' | 'title' | 'priority';
   sortDir: 'asc' | 'desc';
 }
 

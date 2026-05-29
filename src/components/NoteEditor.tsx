@@ -15,7 +15,8 @@ import {
   Download, Share2, Mail, FileText, Type, Hash,
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
-  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus
+  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus,
+  Undo2, Redo2
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
@@ -132,6 +133,11 @@ const convertMarkdownToHTML = (md: string): string => {
   return html;
 };
 
+type NoteDraft = {
+  title: string;
+  content: string;
+};
+
 export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
     selectedNoteId, notes, updateNote, selectNote, trashNote,
@@ -181,9 +187,27 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const undoStackRef = useRef<NoteDraft[]>([]);
+  const redoStackRef = useRef<NoteDraft[]>([]);
+  const [historyStatus, setHistoryStatus] = useState({ canUndo: false, canRedo: false });
   const unlockedNote = note ? unlockedNotes[note.id] : undefined;
   const isLocked = !!note?.encrypted && !unlockedNote;
   const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
+
+  const refreshHistoryStatus = useCallback(() => {
+    setHistoryStatus({
+      canUndo: undoStackRef.current.length > 0,
+      canRedo: redoStackRef.current.length > 0,
+    });
+  }, []);
+
+  const pushHistory = useCallback((draft: NoteDraft) => {
+    const last = undoStackRef.current[undoStackRef.current.length - 1];
+    if (last?.title === draft.title && last.content === draft.content) return;
+    undoStackRef.current = [...undoStackRef.current.slice(-99), draft];
+    redoStackRef.current = [];
+    refreshHistoryStatus();
+  }, [refreshHistoryStatus]);
 
   // Auto-save
   const saveNote = useCallback((t: string, c: string, immediate = false) => {
@@ -207,11 +231,44 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     }, 300);
   }, [note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
 
+  const undoNoteChange = useCallback(() => {
+    const previous = undoStackRef.current[undoStackRef.current.length - 1];
+    if (!previous) return;
+
+    undoStackRef.current = undoStackRef.current.slice(0, -1);
+    redoStackRef.current = [...redoStackRef.current.slice(-99), { title, content }];
+    setTitle(previous.title);
+    setContent(previous.content);
+    saveNote(previous.title, previous.content, true);
+    refreshHistoryStatus();
+  }, [content, refreshHistoryStatus, saveNote, title]);
+
+  const redoNoteChange = useCallback(() => {
+    const next = redoStackRef.current[redoStackRef.current.length - 1];
+    if (!next) return;
+
+    redoStackRef.current = redoStackRef.current.slice(0, -1);
+    undoStackRef.current = [...undoStackRef.current.slice(-99), { title, content }];
+    setTitle(next.title);
+    setContent(next.content);
+    saveNote(next.title, next.content, true);
+    refreshHistoryStatus();
+  }, [content, refreshHistoryStatus, saveNote, title]);
+
+  const updateContentWithHistory = useCallback((nextContent: string) => {
+    pushHistory({ title, content });
+    setContent(nextContent);
+    saveNote(title, nextContent);
+  }, [content, pushHistory, saveNote, title]);
+
   // Load note data
   useEffect(() => {
     if (note) {
       setTitle(unlockedNote?.title ?? note.title);
       setContent(unlockedNote?.content ?? note.content);
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      refreshHistoryStatus();
       setIsPreview(false);
       if (note.type === 'markdown') {
         setActiveFormat('rich');
@@ -219,7 +276,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         setActiveFormat('plain');
       }
     }
-  }, [note?.id, unlockedNote?.title, unlockedNote?.content]);
+  }, [note?.id, unlockedNote?.title, unlockedNote?.content, refreshHistoryStatus]);
 
   const appendDictationText = useCallback((textToAppend: string) => {
     const el = contentRef.current;
@@ -230,8 +287,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const start = el.selectionStart;
       const end = el.selectionEnd;
       const newContent = content.slice(0, start) + formattedText + content.slice(end);
-      setContent(newContent);
-      saveNote(title, newContent);
+      updateContentWithHistory(newContent);
       const newCursorPos = start + formattedText.length;
       setTimeout(() => {
         el.focus();
@@ -239,10 +295,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       }, 0);
     } else {
       const newContent = content ? content + formattedText : textToAppend.trim();
-      setContent(newContent);
-      saveNote(title, newContent);
+      updateContentWithHistory(newContent);
     }
-  }, [content, title, saveNote]);
+  }, [content, updateContentWithHistory]);
 
   const toggleListening = () => {
     if (!isSpeechSupported) return;
@@ -290,16 +345,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const start = el.selectionStart;
       const end = el.selectionEnd;
       const newContent = content.slice(0, start) + imgMarkdown + content.slice(end);
-      setContent(newContent);
-      saveNote(title, newContent);
+      updateContentWithHistory(newContent);
       setTimeout(() => {
         el.focus();
         el.setSelectionRange(start + imgMarkdown.length, start + imgMarkdown.length);
       }, 0);
     } else {
       const newContent = content ? content + imgMarkdown : imgMarkdown;
-      setContent(newContent);
-      saveNote(title, newContent);
+      updateContentWithHistory(newContent);
     }
   };
 
@@ -316,8 +369,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const start = el.selectionStart;
       const end = el.selectionEnd;
       const newContent = content.slice(0, start) + converted + content.slice(end);
-      setContent(newContent);
-      saveNote(title, newContent);
+      updateContentWithHistory(newContent);
       
       const newCursorPos = start + converted.length;
       setTimeout(() => {
@@ -335,13 +387,13 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   }, []);
 
   const handleTitleChange = (val: string) => {
+    pushHistory({ title, content });
     setTitle(val);
     saveNote(val, content);
   };
 
   const handleContentChange = (val: string) => {
-    setContent(val);
-    saveNote(title, val);
+    updateContentWithHistory(val);
   };
 
   // Toolbar actions for rich text in textarea
@@ -365,8 +417,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     }
 
     const newContent = content.slice(0, wrapStart) + before + selected + after + content.slice(wrapEnd);
-    setContent(newContent);
-    saveNote(title, newContent);
+    updateContentWithHistory(newContent);
     setTimeout(() => {
       el.focus();
       el.setSelectionRange(wrapStart + before.length, wrapStart + before.length + selected.length);
@@ -379,8 +430,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     const start = el.selectionStart;
     const lineStart = content.lastIndexOf('\n', start - 1) + 1;
     const newContent = content.slice(0, lineStart) + prefix + content.slice(lineStart);
-    setContent(newContent);
-    saveNote(title, newContent);
+    updateContentWithHistory(newContent);
   };
 
   const handleAddTag = () => {
@@ -516,6 +566,17 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       if (!note) return;
       if (e.ctrlKey || e.metaKey) {
         const key = e.key.toLowerCase();
+        if (key === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) redoNoteChange();
+          else undoNoteChange();
+          return;
+        }
+        if (key === 'y') {
+          e.preventDefault();
+          redoNoteChange();
+          return;
+        }
         if (key === 'b') { e.preventDefault(); insertFormatting('**', '**'); }
         if (key === 'i') { e.preventDefault(); insertFormatting('*', '*'); }
         if (key === 'u') { e.preventDefault(); insertFormatting('<u>', '</u>'); }
@@ -525,7 +586,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [note, content, title, saveNote]);
+  }, [note, content, title, saveNote, undoNoteChange, redoNoteChange]);
 
   const insertTemplate = (templateContent: string) => {
     insertFormatting(templateContent);
@@ -640,6 +701,32 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             >
               {isPreview ? <Edit3 className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
+          )}
+
+          {!isLocked && (
+            <>
+              <button
+                onClick={undoNoteChange}
+                disabled={!historyStatus.canUndo}
+                className="p-1.5 rounded-lg theme-hover disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ color: 'var(--text-tertiary)' }}
+                title="Undo (Ctrl+Z)"
+                aria-label="Undo note edit"
+              >
+                <Undo2 className="w-4 h-4" />
+              </button>
+              <button
+                onClick={redoNoteChange}
+                disabled={!historyStatus.canRedo}
+                className="p-1.5 rounded-lg theme-hover disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ color: 'var(--text-tertiary)' }}
+                title="Redo (Ctrl+Y)"
+                aria-label="Redo note edit"
+              >
+                <Redo2 className="w-4 h-4" />
+              </button>
+              <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--divider)' }} />
+            </>
           )}
 
           <button

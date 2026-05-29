@@ -820,6 +820,21 @@ export const useStore = create<AppState>((set, get) => {
     void flushQueuedSync();
   };
 
+  const getNotebookTreeIds = (notebookId: string) => {
+    const ids = new Set([notebookId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      get().notebooks.forEach(nb => {
+        if (nb.parentId && ids.has(nb.parentId) && !ids.has(nb.id)) {
+          ids.add(nb.id);
+          changed = true;
+        }
+      });
+    }
+    return ids;
+  };
+
   return {
     notes: initialNotes,
     notebooks: initialNotebooks.length ? initialNotebooks : [defaultNotebook],
@@ -1241,7 +1256,14 @@ export const useStore = create<AppState>((set, get) => {
     restoreNote: async (id) => {
       set(s => {
         const notes = s.notes.map(n =>
-          n.id === id ? { ...n, trashed: false, trashedAt: undefined } : n
+          n.id === id ? {
+            ...n,
+            trashed: false,
+            trashedAt: undefined,
+            ...(s.notebooks.some(nb => nb.id === n.notebookId && nb.trashed)
+              ? { notebookId: 'default', sectionId: undefined }
+              : {}),
+          } : n
         );
         return { notes, tags: rebuildTags(notes) };
       });
@@ -1566,30 +1588,51 @@ export const useStore = create<AppState>((set, get) => {
 
     deleteNotebook: (id) => {
       if (id === 'default') return;
-      const affectedNoteIds = get().notes.filter(n => n.notebookId === id).map(n => n.id);
+      const notebookIds = getNotebookTreeIds(id);
+      const trashedAt = now();
+      const affectedNoteIds = get().notes.filter(n => notebookIds.has(n.notebookId)).map(n => n.id);
       set(s => ({
-        notebooks: s.notebooks.map(nb => nb.id === id ? { ...nb, trashed: true, trashedAt: now() } : nb),
-        notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default', sectionId: undefined, trashed: true, trashedAt: now(), pinned: false } : n),
+        notebooks: s.notebooks.map(nb => notebookIds.has(nb.id) ? { ...nb, trashed: true, trashedAt } : nb),
+        notes: s.notes.map(n => notebookIds.has(n.notebookId) ? { ...n, trashed: true, trashedAt, pinned: false } : n),
+        selectedNotebookId: notebookIds.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+        selectedNoteId: affectedNoteIds.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
+        editingNote: affectedNoteIds.includes(s.selectedNoteId || '') ? false : s.editingNote,
       }));
       persist();
-      syncNotebookToFirestore(id);
+      notebookIds.forEach(notebookId => syncNotebookToFirestore(notebookId));
       affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
     },
 
     restoreNotebook: (id) => {
-      set(s => ({
-        notebooks: s.notebooks.map(nb => nb.id === id ? { ...nb, trashed: false, trashedAt: undefined } : nb),
-      }));
+      const notebookIds = getNotebookTreeIds(id);
+      const affectedNoteIds = get().notes.filter(n => notebookIds.has(n.notebookId) && n.trashed).map(n => n.id);
+      set(s => {
+        const notebooks = s.notebooks.map(nb => notebookIds.has(nb.id) ? { ...nb, trashed: false, trashedAt: undefined } : nb);
+        const notes = s.notes.map(n => notebookIds.has(n.notebookId) ? { ...n, trashed: false, trashedAt: undefined } : n);
+        return { notebooks, notes, tags: rebuildTags(notes) };
+      });
       persist();
-      syncNotebookToFirestore(id);
+      notebookIds.forEach(notebookId => syncNotebookToFirestore(notebookId));
+      affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
     },
 
     permanentlyDeleteNotebook: (id) => {
-      set(s => ({
-        notebooks: s.notebooks.filter(nb => nb.id !== id),
-      }));
+      const notebookIds = getNotebookTreeIds(id);
+      const affectedNoteIds = get().notes.filter(n => notebookIds.has(n.notebookId)).map(n => n.id);
+      set(s => {
+        const notes = s.notes.filter(n => !notebookIds.has(n.notebookId));
+        return {
+          notebooks: s.notebooks.filter(nb => !notebookIds.has(nb.id)),
+          notes,
+          tags: rebuildTags(notes),
+          selectedNotebookId: notebookIds.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+          selectedNoteId: affectedNoteIds.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
+          editingNote: affectedNoteIds.includes(s.selectedNoteId || '') ? false : s.editingNote,
+        };
+      });
       persist();
-      deleteNotebookFromFirestore(id);
+      notebookIds.forEach(notebookId => deleteNotebookFromFirestore(notebookId));
+      affectedNoteIds.forEach(noteId => deleteNoteFromFirestore(noteId));
     },
 
     addSection: (notebookId, name) => {
@@ -1912,7 +1955,8 @@ export const useStore = create<AppState>((set, get) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         
         let cmp = 0;
-        if (sortBy === 'title') cmp = a.title.localeCompare(b.title);
+        if (sortBy === 'order') cmp = (a.order ?? 0) - (b.order ?? 0);
+        else if (sortBy === 'title') cmp = a.title.localeCompare(b.title);
         else if (sortBy === 'priority') {
           const pOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
           const aP = a.priority ? pOrder[a.priority] : 4;

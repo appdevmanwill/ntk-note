@@ -10,6 +10,7 @@ interface ManageNotebooksModalProps {
 export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebooksModalProps) {
   const { notebooks, deleteNotebook } = useStore();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const manageableNotebooks = notebooks.filter(nb => nb.id !== 'default' && !nb.trashed);
 
   if (!isOpen) return null;
 
@@ -24,10 +25,10 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
   };
 
   const selectAll = () => {
-    if (selectedIds.size === notebooks.length) {
+    if (selectedIds.size === manageableNotebooks.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(notebooks.map(nb => nb.id)));
+      setSelectedIds(new Set(manageableNotebooks.map(nb => nb.id)));
     }
   };
 
@@ -61,7 +62,7 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 max-h-[60vh]">
-          {notebooks.length === 0 ? (
+          {manageableNotebooks.length === 0 ? (
             <p className="text-center py-8 text-sm" style={{ color: 'var(--text-tertiary)' }}>No notebooks found.</p>
           ) : (
             <div className="space-y-2">
@@ -69,25 +70,25 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
                 onClick={selectAll}
                 className="w-full flex items-center gap-3 p-3 rounded-xl border transition-colors theme-hover"
                 style={{
-                  backgroundColor: selectedIds.size === notebooks.length ? 'var(--active-bg)' : 'transparent',
-                  borderColor: selectedIds.size === notebooks.length ? 'var(--accent-primary)' : 'var(--theme-divider)'
+                  backgroundColor: selectedIds.size === manageableNotebooks.length ? 'var(--active-bg)' : 'transparent',
+                  borderColor: selectedIds.size === manageableNotebooks.length ? 'var(--accent-primary)' : 'var(--theme-divider)'
                 }}
               >
                 <div 
                   className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${
-                    selectedIds.size === notebooks.length ? 'bg-[var(--accent-primary)] border-[var(--accent-primary)]' : 'border-[var(--text-muted)]'
+                    selectedIds.size === manageableNotebooks.length ? 'bg-[var(--accent-primary)] border-[var(--accent-primary)]' : 'border-[var(--text-muted)]'
                   }`}
                 >
-                  {selectedIds.size === notebooks.length && <CheckCircle2 className="w-3.5 h-3.5 text-white no-transition" />}
+                  {selectedIds.size === manageableNotebooks.length && <CheckCircle2 className="w-3.5 h-3.5 text-white no-transition" />}
                 </div>
                 <span className="font-medium text-sm" style={{ color: 'var(--text-primary)' }}>
-                  {selectedIds.size === notebooks.length ? 'Deselect All' : 'Select All'}
+                  {selectedIds.size === manageableNotebooks.length ? 'Deselect All' : 'Select All'}
                 </span>
               </button>
               
               <div className="my-2 border-t theme-divider" />
 
-              {notebooks.map(nb => (
+              {manageableNotebooks.map(nb => (
                 <button
                   key={nb.id}
                   onClick={() => toggleSelect(nb.id)}

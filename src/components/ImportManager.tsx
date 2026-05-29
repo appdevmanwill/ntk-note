@@ -17,6 +17,77 @@ interface ImportSource {
   color: string;
 }
 
+const htmlToText = (html: string): string => {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const blockTags = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DIV', 'DL', 'DT', 'DD',
+    'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5',
+    'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION',
+    'TABLE', 'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+  ]);
+  let output = '';
+
+  const append = (text: string) => {
+    output += text;
+  };
+
+  const ensureLineBreak = (count = 1) => {
+    const breaks = output.match(/\n*$/)?.[0].length || 0;
+    if (breaks < count) append('\n'.repeat(count - breaks));
+  };
+
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      append(node.textContent || '');
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const element = node as HTMLElement;
+    const tagName = element.tagName;
+
+    if (tagName === 'BR') {
+      ensureLineBreak();
+      return;
+    }
+
+    if (tagName === 'HR') {
+      ensureLineBreak(2);
+      append('---');
+      ensureLineBreak(2);
+      return;
+    }
+
+    const isBlock = blockTags.has(tagName);
+    if (tagName === 'LI') {
+      ensureLineBreak();
+      append('- ');
+    } else if (isBlock) {
+      ensureLineBreak();
+    }
+
+    element.childNodes.forEach(walk);
+
+    if (/^H[1-6]$/.test(tagName) || tagName === 'P' || tagName === 'BLOCKQUOTE' || tagName === 'PRE') {
+      ensureLineBreak(2);
+    } else if (isBlock) {
+      ensureLineBreak();
+    }
+  };
+
+  (doc.body || doc).childNodes.forEach(walk);
+
+  return output
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const importSources: ImportSource[] = [
   {
     id: 'evernote',
@@ -200,22 +271,6 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
   // ═══════════════════════════════════════════════════════════════════════════
   // PARSERS FOR DIFFERENT FORMATS
   // ═══════════════════════════════════════════════════════════════════════════
-
-  const htmlToText = (html: string): string => {
-    let processed = html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n\n')
-      .replace(/<\/div>/gi, '\n')
-      .replace(/<\/h[1-6]>/gi, '\n\n')
-      .replace(/<li>/gi, '\n• ')
-      .replace(/<\/li>/gi, '\n')
-      .replace(/<\/ul>/gi, '\n')
-      .replace(/<\/ol>/gi, '\n');
-    
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(processed, 'text/html');
-    return (doc.body?.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
-  };
 
   // Parse Evernote ENEX (XML format)
   const parseEvernoteENEX = (content: string): Partial<Note>[] => {
