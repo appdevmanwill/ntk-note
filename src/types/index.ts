@@ -124,7 +124,7 @@ export interface AppSettings {
   autoSave: boolean;
   spellCheck: boolean;
   zenMode: boolean;
-  noteViewMode: 'grid' | 'list';
+  noteViewMode: 'grid' | 'list' | 'kanban';
   offlineModeEnabled: boolean;
 }
 

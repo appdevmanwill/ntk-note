@@ -4,7 +4,7 @@ import NoteCard from './NoteCard';
 import {
   Plus, FileText, Search, Grid3X3, List, SlidersHorizontal,
   X, CheckSquare, Code, Trash2, ArrowUpDown, Archive,
-  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose
+  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban
 } from 'lucide-react';
 import type { NoteColor, NoteType } from '@/types';
 import { noteColors } from '@/utils/colors';
@@ -15,6 +15,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     clearSearch, createNote, emptyTrash, settings, updateSettings,
     selectedNotebookId, selectedTagId, notebooks, tags,
     trashNote, archiveNote, moveNote, addNoteTag,
+    updateNote, setNotePriority, addSection, deleteSection,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -83,6 +84,169 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
       selectedIds.forEach(id => addNoteTag(id, bulkTagInput.trim()));
       setBulkTagInput('');
       setShowBulkTagInput(false);
+    }
+  };
+
+  const renderKanbanBoard = () => {
+    if (currentView === 'notebooks' && selectedNotebookId) {
+      const notebook = notebooks.find(nb => nb.id === selectedNotebookId);
+      const sections = notebook?.sections || [];
+      
+      const columns = [
+        { id: 'unassigned', name: 'Unassigned' },
+        ...sections.map(sec => ({ id: sec.id, name: sec.name }))
+      ];
+
+      return (
+        <>
+          {columns.map(col => {
+            const colNotes = filteredNotes.filter(n => 
+              col.id === 'unassigned' 
+                ? !n.sectionId || !sections.some(s => s.id === n.sectionId)
+                : n.sectionId === col.id
+            );
+
+            return (
+              <div 
+                key={col.id} 
+                className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  const noteId = e.dataTransfer.getData('text/plain');
+                  if (noteId) {
+                    void updateNote(noteId, { 
+                      sectionId: col.id === 'unassigned' ? undefined : col.id 
+                    });
+                  }
+                }}
+              >
+                {/* Column Header */}
+                <div className="flex items-center justify-between mb-3 pb-1 border-b theme-divider">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-bold uppercase tracking-wider text-theme-secondary truncate">
+                      {col.name}
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full accent-soft font-bold shrink-0">
+                      {colNotes.length}
+                    </span>
+                  </div>
+                  {col.id !== 'unassigned' && (
+                    <button 
+                      onClick={() => {
+                        if (confirm(`Are you sure you want to delete section "${col.name}"? Notes in this section will be unassigned.`)) {
+                          void deleteSection(selectedNotebookId, col.id);
+                        }
+                      }}
+                      className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 no-transition" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Column Body */}
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                  {colNotes.length === 0 ? (
+                    <div className="h-20 border border-dashed theme-divider rounded-lg flex items-center justify-center text-xs text-theme-muted italic">
+                      Empty
+                    </div>
+                  ) : (
+                    colNotes.map(note => (
+                      <div 
+                        key={note.id} 
+                        draggable 
+                        onDragStart={e => e.dataTransfer.setData('text/plain', note.id)}
+                        className="cursor-grab active:cursor-grabbing"
+                      >
+                        <NoteCard note={note} compact />
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Add Section Column */}
+          <div className="w-72 shrink-0 border-2 border-dashed theme-divider rounded-xl p-4 flex flex-col items-center justify-center gap-2 bg-[var(--app-bg-subtle)]/10 hover:bg-[var(--app-bg-subtle)]/25 transition-colors h-36">
+            <Plus className="w-6 h-6 text-theme-tertiary no-transition" />
+            <button 
+              onClick={() => {
+                const name = prompt('Enter section name:');
+                if (name && name.trim()) {
+                  void addSection(selectedNotebookId, name.trim());
+                }
+              }}
+              className="text-xs font-bold uppercase tracking-wider accent-text cursor-pointer hover:underline"
+            >
+              + Add Section
+            </button>
+          </div>
+        </>
+      );
+    } else {
+      // General Mode: Group by Priority
+      const priorityColumns = [
+        { id: 'unassigned', name: 'Unassigned', priority: null },
+        { id: 'low', name: 'Low Priority', priority: 'low' as const },
+        { id: 'medium', name: 'Medium Priority', priority: 'medium' as const },
+        { id: 'high', name: 'High Priority', priority: 'high' as const },
+        { id: 'urgent', name: 'Urgent', priority: 'urgent' as const }
+      ];
+
+      return (
+        <>
+          {priorityColumns.map(col => {
+            const colNotes = filteredNotes.filter(n => n.priority === col.priority);
+
+            return (
+              <div 
+                key={col.id} 
+                className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => {
+                  const noteId = e.dataTransfer.getData('text/plain');
+                  if (noteId) {
+                    void setNotePriority(noteId, col.priority);
+                  }
+                }}
+              >
+                {/* Column Header */}
+                <div className="flex items-center justify-between mb-3 pb-1 border-b theme-divider">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-bold uppercase tracking-wider text-theme-secondary truncate">
+                      {col.name}
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full accent-soft font-bold shrink-0">
+                      {colNotes.length}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Column Body */}
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                  {colNotes.length === 0 ? (
+                    <div className="h-20 border border-dashed theme-divider rounded-lg flex items-center justify-center text-xs text-theme-muted italic">
+                      Empty
+                    </div>
+                  ) : (
+                    colNotes.map(note => (
+                      <div 
+                        key={note.id} 
+                        draggable 
+                        onDragStart={e => e.dataTransfer.setData('text/plain', note.id)}
+                        className="cursor-grab active:cursor-grabbing"
+                      >
+                        <NoteCard note={note} compact />
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      );
     }
   };
 
@@ -231,6 +395,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                       boxShadow: settings.noteViewMode === 'grid' ? 'var(--card-shadow)' : 'none',
                       color: 'var(--text-secondary)',
                     }}
+                    title="Grid View"
                   >
                     <Grid3X3 className="w-4 h-4 no-transition" />
                   </button>
@@ -242,8 +407,21 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                       boxShadow: settings.noteViewMode === 'list' ? 'var(--card-shadow)' : 'none',
                       color: 'var(--text-secondary)',
                     }}
+                    title="List View"
                   >
                     <List className="w-4 h-4 no-transition" />
+                  </button>
+                  <button
+                    onClick={() => updateSettings({ noteViewMode: 'kanban' })}
+                    className="p-1.5 rounded-md transition-colors"
+                    style={{
+                      backgroundColor: settings.noteViewMode === 'kanban' ? 'var(--card-bg)' : 'transparent',
+                      boxShadow: settings.noteViewMode === 'kanban' ? 'var(--card-shadow)' : 'none',
+                      color: 'var(--text-secondary)',
+                    }}
+                    title="Kanban Board View"
+                  >
+                    <Kanban className="w-4 h-4 no-transition" />
                   </button>
                 </div>
 
@@ -413,52 +591,58 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         )}
       </div>
 
-      {/* Notes grid/list */}
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-24 lg:pb-6">
-        {filteredNotes.length === 0 ? (
-          <div className="text-center py-16">
-            <FileText className="w-16 h-16 mx-auto mb-4 no-transition" style={{ color: 'var(--text-muted)' }} />
-            <h3 className="text-lg font-medium text-theme-secondary">
-              {searchFilters.query ? 'No matching notes' : currentView === 'trash' ? 'Trash is empty' : 'No notes yet'}
-            </h3>
-            <p className="text-sm text-theme-tertiary mt-1">
-              {searchFilters.query ? 'Try a different search term' : 'Create a note to get started'}
-            </p>
-          </div>
-        ) : (
-          <div className={
-            settings.noteViewMode === 'grid'
-              ? `grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 ${gridGap}`
-              : listGap
-          }>
-            {filteredNotes.map(note => (
-              <div key={note.id} className="relative">
-                {bulkMode && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleSelect(note.id); }}
-                    className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
-                      selectedIds.has(note.id)
-                        ? 'accent-button border-transparent'
-                        : ''
-                    }`}
-                    style={!selectedIds.has(note.id) ? {
-                      backgroundColor: 'var(--card-bg)',
-                      borderColor: 'var(--text-muted)',
-                    } : {}}
-                  >
-                    {selectedIds.has(note.id) && (
-                      <svg className="w-3 h-3 no-transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </button>
-                )}
-                <NoteCard note={note} compact={settings.noteViewMode === 'list'} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Notes grid/list/kanban */}
+      {settings.noteViewMode === 'kanban' ? (
+        <div className="flex-1 overflow-x-auto flex gap-4 px-4 md:px-6 pb-24 lg:pb-6 items-start h-full">
+          {renderKanbanBoard()}
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-24 lg:pb-6">
+          {filteredNotes.length === 0 ? (
+            <div className="text-center py-16">
+              <FileText className="w-16 h-16 mx-auto mb-4 no-transition" style={{ color: 'var(--text-muted)' }} />
+              <h3 className="text-lg font-medium text-theme-secondary">
+                {searchFilters.query ? 'No matching notes' : currentView === 'trash' ? 'Trash is empty' : 'No notes yet'}
+              </h3>
+              <p className="text-sm text-theme-tertiary mt-1">
+                {searchFilters.query ? 'Try a different search term' : 'Create a note to get started'}
+              </p>
+            </div>
+          ) : (
+            <div className={
+              settings.noteViewMode === 'grid'
+                ? `grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 ${gridGap}`
+                : listGap
+            }>
+              {filteredNotes.map(note => (
+                <div key={note.id} className="relative">
+                  {bulkMode && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleSelect(note.id); }}
+                      className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                        selectedIds.has(note.id)
+                          ? 'accent-button border-transparent'
+                          : ''
+                      }`}
+                      style={!selectedIds.has(note.id) ? {
+                        backgroundColor: 'var(--card-bg)',
+                        borderColor: 'var(--text-muted)',
+                      } : {}}
+                    >
+                      {selectedIds.has(note.id) && (
+                        <svg className="w-3 h-3 no-transition" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                  <NoteCard note={note} compact={settings.noteViewMode === 'list'} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -15,10 +15,121 @@ import {
   Download, Share2, Mail, FileText, Type, Hash,
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
-  Lock, Unlock, ShieldCheck, Link2
+  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
+import SketchModal from './SketchModal';
+
+const isMarkdown = (text: string): boolean => {
+  if (!text) return false;
+  const headingPattern = /^#+\s+.+/m;
+  const boldPattern = /\*\*([^*]+)\*\*/;
+  const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/;
+  const codeBlockPattern = /```[\s\S]*?```/;
+  return (
+    headingPattern.test(text) ||
+    boldPattern.test(text) ||
+    linkPattern.test(text) ||
+    codeBlockPattern.test(text)
+  );
+};
+
+const convertMarkdownToPlainText = (md: string): string => {
+  let text = md;
+
+  // Convert headers: e.g. # Header -> HEADER, ## Subheader -> SUBHEADER
+  text = text.replace(/^#\s+(.+)$/gm, (_, p1) => {
+    return `${p1.toUpperCase()}\n${'='.repeat(Math.max(p1.length, 10))}`;
+  });
+  text = text.replace(/^##\s+(.+)$/gm, (_, p1) => {
+    return `${p1.toUpperCase()}\n${'-'.repeat(Math.max(p1.length, 10))}`;
+  });
+  text = text.replace(/^###\s+(.+)$/gm, (_, p1) => {
+    return `${p1.toUpperCase()}`;
+  });
+  text = text.replace(/^####+\s+(.+)$/gm, (_, p1) => {
+    return `${p1}`;
+  });
+
+  // Convert Bold / Italic / Bold+Italic
+  text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');
+  text = text.replace(/___([^_]+)___/g, '$1');
+  text = text.replace(/\*\*([^*]+)\*\*/g, '$1');
+  text = text.replace(/__([^_]+)__/g, '$1');
+  text = text.replace(/\*([^*]+)\*/g, '$1');
+  text = text.replace(/_([^_]+)_/g, '$1');
+
+  // Convert Strikethrough
+  text = text.replace(/~~([^~]+)~~/g, '$1');
+
+  // Convert Inline Code
+  text = text.replace(/`([^`]+)`/g, '$1');
+
+  // Convert Links: [text](url) -> text (url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)');
+
+  // Convert Images: ![alt](url) -> [Image: alt]
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '[Image: $1]');
+
+  // Convert Lists: bullets - / * -> •
+  text = text.replace(/^[-*]\s+(.+)$/gm, '• $1');
+
+  // Convert Blockquotes: remove > prefix
+  text = text.replace(/^>\s+(.+)$/gm, '  $1');
+
+  // Strip table delimiters
+  text = text.replace(/^[|]/gm, '');
+  text = text.replace(/[|]$/gm, '');
+  text = text.replace(/[|]/g, '  ');
+  text = text.replace(/^\s*[:-|-]+\s*$/gm, '');
+
+  return text;
+};
+
+const convertMarkdownToHTML = (md: string): string => {
+  if (!md) return '';
+  let html = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Headings
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^####+\s+(.+)$/gm, '<h4>$1</h4>');
+
+  // Bold / Italic
+  html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/___([^_]+)___/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  // Strikethrough
+  html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+  // Code Blocks
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  // Inline Code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+  // Images
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />');
+
+  // Lists
+  html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+
+  // Paragraphs
+  html = html.replace(/^(?!<(h\d|li|pre|code|del|a|img|ul|ol))(.+)$/gm, '<p>$2</p>');
+
+  return html;
+};
 
 export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
@@ -55,7 +166,128 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [lockError, setLockError] = useState('');
   const [lockBusy, setLockBusy] = useState(false);
 
+  const SpeechRecognition = typeof window !== 'undefined' ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const isSpeechSupported = !!SpeechRecognition;
+
+  const [isListening, setIsListening] = useState(false);
+  const [showSketchModal, setShowSketchModal] = useState(false);
+  const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
+  const recognitionRef = useRef<any>(null);
+
   const contentRef = useRef<HTMLTextAreaElement>(null);
+
+  const appendDictationText = useCallback((textToAppend: string) => {
+    const el = contentRef.current;
+    const spacing = textToAppend.startsWith(' ') ? '' : ' ';
+    const formattedText = spacing + textToAppend.trim();
+    
+    if (el) {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const newContent = content.slice(0, start) + formattedText + content.slice(end);
+      setContent(newContent);
+      saveNote(title, newContent);
+      const newCursorPos = start + formattedText.length;
+      setTimeout(() => {
+        el.focus();
+        el.setSelectionRange(newCursorPos, newCursorPos);
+      }, 0);
+    } else {
+      const newContent = content ? content + formattedText : textToAppend.trim();
+      setContent(newContent);
+      saveNote(title, newContent);
+    }
+  }, [content, title, saveNote]);
+
+  const toggleListening = () => {
+    if (!isSpeechSupported) return;
+    
+    if (isListening) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsListening(false);
+    } else {
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
+      
+      rec.onstart = () => {
+        setIsListening(true);
+      };
+      
+      rec.onresult = (event: any) => {
+        const transcript = event.results[event.resultIndex][0].transcript;
+        if (transcript) {
+          appendDictationText(transcript);
+        }
+      };
+      
+      rec.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+      
+      rec.onend = () => {
+        setIsListening(false);
+      };
+      
+      recognitionRef.current = rec;
+      rec.start();
+    }
+  };
+
+  const handleInsertDrawing = (dataUrl: string) => {
+    const el = contentRef.current;
+    const imgMarkdown = `\n![Sketch](${dataUrl})\n`;
+    if (el) {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const newContent = content.slice(0, start) + imgMarkdown + content.slice(end);
+      setContent(newContent);
+      saveNote(title, newContent);
+      setTimeout(() => {
+        el.focus();
+        el.setSelectionRange(start + imgMarkdown.length, start + imgMarkdown.length);
+      }, 0);
+    } else {
+      const newContent = content ? content + imgMarkdown : imgMarkdown;
+      setContent(newContent);
+      saveNote(title, newContent);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!note || note.type !== 'note') return; // only for regular notes
+
+    const pastedData = e.clipboardData.getData('text/plain');
+    if (isMarkdown(pastedData)) {
+      e.preventDefault();
+      const converted = convertMarkdownToPlainText(pastedData);
+      
+      // Insert at selection
+      const el = e.currentTarget;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const newContent = content.slice(0, start) + converted + content.slice(end);
+      setContent(newContent);
+      saveNote(title, newContent);
+      
+      const newCursorPos = start + converted.length;
+      setTimeout(() => {
+        el.setSelectionRange(newCursorPos, newCursorPos);
+      }, 0);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
   const menuRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const unlockedNote = note ? unlockedNotes[note.id] : undefined;
@@ -68,6 +300,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       setTitle(unlockedNote?.title ?? note.title);
       setContent(unlockedNote?.content ?? note.content);
       setIsPreview(false);
+      if (note.type === 'markdown') {
+        setActiveFormat('rich');
+      } else {
+        setActiveFormat('plain');
+      }
     }
   }, [note?.id, unlockedNote?.title, unlockedNote?.content]);
 
@@ -555,6 +792,61 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         </div>
       </div>
 
+      {/* Format Switcher */}
+      {!isLocked && (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-[var(--app-bg-subtle)]/30 border-b theme-divider shrink-0">
+          <div className="flex items-center gap-1 bg-[var(--card-bg)] border theme-border rounded-lg p-0.5 shadow-sm">
+            <button
+              onClick={() => setActiveFormat('plain')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeFormat === 'plain'
+                  ? 'accent-soft text-[var(--accent-primary)]'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              Standard Text
+            </button>
+            <button
+              onClick={() => setActiveFormat('rich')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeFormat === 'rich'
+                  ? 'accent-soft text-[var(--accent-primary)]'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              Reader (Rich)
+            </button>
+            <button
+              onClick={() => setActiveFormat('code')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeFormat === 'code'
+                  ? 'accent-soft text-[var(--accent-primary)]'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              <Code className="w-3.5 h-3.5" />
+              Raw Source
+            </button>
+            <button
+              onClick={() => setActiveFormat('html')}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeFormat === 'html'
+                  ? 'accent-soft text-[var(--accent-primary)]'
+                  : 'text-theme-secondary hover:text-theme-primary'
+              }`}
+            >
+              <FileCode className="w-3.5 h-3.5" />
+              HTML Code
+            </button>
+          </div>
+          <span className="text-[10px] uppercase font-bold tracking-wider text-theme-tertiary">
+            View Format
+          </span>
+        </div>
+      )}
+
       {/* Tag input */}
       {showTagInput && (
         <div className="flex items-center gap-2 px-4 py-2 border-b theme-divider theme-bg-subtle animate-fade-in">
@@ -705,6 +997,43 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               </button>
             );
           })}
+
+          <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--divider)' }} />
+
+          {/* Voice Dictation */}
+          {isSpeechSupported ? (
+            <button
+              onClick={toggleListening}
+              title={isListening ? 'Stop Voice Dictation' : 'Start Voice Dictation'}
+              className={`p-1.5 rounded-md transition-colors shrink-0 relative ${
+                isListening 
+                  ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' 
+                  : 'theme-hover text-theme-tertiary'
+              }`}
+            >
+              <Mic className={`w-4 h-4 ${isListening ? 'animate-pulse' : ''}`} />
+              {isListening && (
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-red-500 rounded-full animate-ping" />
+              )}
+            </button>
+          ) : (
+            <button
+              disabled
+              title="Voice dictation unsupported in this browser"
+              className="p-1.5 rounded-md opacity-40 text-theme-tertiary shrink-0 cursor-not-allowed"
+            >
+              <Mic className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Sketchpad Whiteboard */}
+          <button
+            onClick={() => setShowSketchModal(true)}
+            title="Open Sketchpad Whiteboard"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <PenTool className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -739,7 +1068,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               />
 
               {/* Content area based on type */}
-              {note.type === 'checklist' ? (
+              {note.type === 'checklist' && activeFormat === 'plain' ? (
                 <div className="space-y-1">
                   {[...activeChecklist].sort((a, b) => a.order - b.order).map((item) => (
                     <div
@@ -806,12 +1135,12 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                       style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}
                     />
                   </div>
-                  {/* Additional notes for checklist */}
                   <div className="mt-6 pt-4 border-t theme-divider">
                     <textarea
                       value={content}
                       onChange={e => handleContentChange(e.target.value)}
                       onBlur={() => saveNote(title, content, true)}
+                      onPaste={handlePaste}
                       placeholder="Add notes..."
                       className="w-full min-h-[100px] bg-transparent text-theme-primary placeholder:text-theme-muted resize-none focus:outline-none"
                       spellCheck={settings.spellCheck}
@@ -819,9 +1148,29 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                     />
                   </div>
                 </div>
-              ) : note.type === 'markdown' && isPreview ? (
+              ) : activeFormat === 'rich' ? (
                 <div className="note-content prose dark:prose-invert max-w-none" style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '*No content yet*'}</ReactMarkdown>
+                </div>
+              ) : activeFormat === 'code' ? (
+                <textarea
+                  ref={contentRef}
+                  value={content}
+                  onChange={e => handleContentChange(e.target.value)}
+                  onBlur={() => saveNote(title, content, true)}
+                  onPaste={handlePaste}
+                  placeholder="Raw note source code..."
+                  className="w-full min-h-[calc(100vh-300px)] bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
+                  style={{
+                    color: 'var(--text-primary)',
+                    fontSize: `${settings.editorFontSize}px`,
+                    lineHeight: '1.8',
+                  }}
+                  spellCheck={false}
+                />
+              ) : activeFormat === 'html' ? (
+                <div className="font-mono text-xs overflow-x-auto bg-[var(--app-bg-subtle)] p-4 rounded-xl border theme-border select-all max-h-[60vh] overflow-y-auto">
+                  <pre className="text-theme-secondary whitespace-pre-wrap">{convertMarkdownToHTML(content)}</pre>
                 </div>
               ) : (
                 <textarea
@@ -829,13 +1178,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   value={content}
                   onChange={e => handleContentChange(e.target.value)}
                   onBlur={() => saveNote(title, content, true)}
+                  onPaste={handlePaste}
                   placeholder={note.type === 'markdown' ? 'Write in Markdown...' : 'Start writing...'}
                   className="w-full min-h-[calc(100vh-300px)] bg-transparent resize-none focus:outline-none editor-area"
                   style={{
                     color: 'var(--text-primary)',
                     fontSize: `${settings.editorFontSize}px`,
                     lineHeight: '1.8',
-                    fontFamily: note.type === 'markdown' ? 'var(--font-mono)' : settings.editorFontFamily,
+                    fontFamily: settings.editorFontFamily,
                   }}
                   spellCheck={settings.spellCheck}
                 />
@@ -886,6 +1236,13 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           </div>
         </div>
       )}
+
+      {/* Sketch Modal */}
+      <SketchModal
+        isOpen={showSketchModal}
+        onClose={() => setShowSketchModal(false)}
+        onSave={handleInsertDrawing}
+      />
     </div>
   );
 }

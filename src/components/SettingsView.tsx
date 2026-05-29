@@ -8,7 +8,7 @@ import {
   User, Palette, Type, Download, Upload,
   Trash2, Moon, Sun, Keyboard, Info,
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
-  AlertTriangle, RefreshCw
+  AlertTriangle, RefreshCw, Tag, TrendingUp
 } from 'lucide-react';
 import ImportManager from './ImportManager';
 import QuotaDashboard from './QuotaDashboard';
@@ -24,6 +24,7 @@ export default function SettingsView() {
     profile, setProfile, settings, updateSettings, setTheme, setAccent,
     exportAllNotes, importNotes, resetApp, getStats,
     syncConflicts, resolveSyncConflict, online,
+    notes, updateNote,
   } = useStore();
 
   const [activeSection, setActiveSection] = useState('profile');
@@ -118,6 +119,8 @@ export default function SettingsView() {
     { id: 'profile', icon: User, label: 'Profile' },
     { id: 'appearance', icon: Palette, label: 'Appearance' },
     { id: 'editor', icon: Type, label: 'Editor' },
+    { id: 'tags', icon: Tag, label: 'Tag Manager' },
+    { id: 'analytics', icon: TrendingUp, label: 'Analytics' },
     { id: 'shortcuts', icon: Keyboard, label: 'Shortcuts' },
     { id: 'sync', icon: ShieldCheck, label: 'Sync & Safety' },
     { id: 'data', icon: Download, label: 'Data & Backup' },
@@ -439,6 +442,281 @@ export default function SettingsView() {
             </SettingCard>
           </div>
         )}
+
+        {/* Tag Manager Section */}
+        {activeSection === 'tags' && (() => {
+          const tagCounts: { [tag: string]: number } = {};
+          notes.forEach(note => {
+            if (!note.trashed) {
+              note.tags.forEach(tag => {
+                tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+              });
+            }
+          });
+          const uniqueTags = Object.keys(tagCounts).sort();
+
+          return (
+            <div className="space-y-6 animate-fade-in">
+              <SettingCard title="Bulk Tag Manager">
+                <p className="text-sm text-theme-tertiary mb-4">
+                  Manage all unique tags in your second brain. Renaming or deleting tags here will bulk-update all notes containing them.
+                </p>
+                {uniqueTags.length === 0 ? (
+                  <div className="text-center py-8 text-sm text-theme-muted italic">
+                    No tags created yet. Add tags to your notes to manage them here.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {uniqueTags.map(tag => (
+                      <div
+                        key={tag}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl border theme-border bg-[var(--input-bg)]/20"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold" style={{ backgroundColor: 'var(--badge-bg)', color: 'var(--badge-text)' }}>
+                            <Tag className="w-3.5 h-3.5" />
+                            {tag}
+                          </span>
+                          <span className="text-xs text-theme-tertiary">
+                            Used in {tagCounts[tag]} {tagCounts[tag] === 1 ? 'note' : 'notes'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => {
+                              const newTag = prompt(`Rename tag "${tag}" to:`, tag);
+                              if (!newTag || !newTag.trim() || newTag.trim() === tag) return;
+                              const trimmedNew = newTag.trim();
+                              notes.forEach(n => {
+                                if (n.tags.includes(tag)) {
+                                  const updated = n.tags.map(t => t === tag ? trimmedNew : t);
+                                  void updateNote(n.id, { tags: Array.from(new Set(updated)) });
+                                }
+                              });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border theme-border theme-hover text-xs font-semibold text-theme-secondary transition-colors cursor-pointer"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              const targetTag = prompt(`Merge all notes tagged "${tag}" into which tag?`);
+                              if (!targetTag || !targetTag.trim() || targetTag.trim() === tag) return;
+                              const trimmedTarget = targetTag.trim();
+                              notes.forEach(n => {
+                                if (n.tags.includes(tag)) {
+                                  const updated = n.tags.map(t => t === tag ? trimmedTarget : t);
+                                  void updateNote(n.id, { tags: Array.from(new Set(updated)) });
+                                }
+                              });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border theme-border theme-hover text-xs font-semibold text-theme-secondary transition-colors cursor-pointer"
+                          >
+                            Merge
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Remove tag "${tag}" from all notes?`)) {
+                                notes.forEach(n => {
+                                  if (n.tags.includes(tag)) {
+                                    void updateNote(n.id, { tags: n.tags.filter(t => t !== tag) });
+                                  }
+                                });
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border border-red-200 dark:border-red-950/40 text-red-600 hover:bg-red-500/10 text-xs font-semibold transition-colors cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </SettingCard>
+            </div>
+          );
+        })()}
+
+        {/* Analytics Section */}
+        {activeSection === 'analytics' && (() => {
+          let totalWords = 0;
+          let activeNotesCount = 0;
+          let totalTasks = 0;
+          let completedTasks = 0;
+          const priorityCounts = { low: 0, medium: 0, high: 0, urgent: 0, none: 0 };
+          const themeCounts: { [theme: string]: number } = {};
+
+          notes.forEach(n => {
+            if (!n.trashed) {
+              activeNotesCount++;
+              totalWords += n.wordCount || 0;
+              
+              if (n.priority) {
+                priorityCounts[n.priority]++;
+              } else {
+                priorityCounts.none++;
+              }
+
+              const theme = n.theme || 'canvas';
+              themeCounts[theme] = (themeCounts[theme] || 0) + 1;
+
+              if (n.checklist) {
+                n.checklist.forEach(item => {
+                  totalTasks++;
+                  if (item.checked) completedTasks++;
+                });
+              }
+            }
+          });
+
+          const avgWords = activeNotesCount > 0 ? Math.round(totalWords / activeNotesCount) : 0;
+          const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+          const days = [];
+          for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            days.push(d);
+          }
+          const dailyCreations = days.map(day => {
+            const dayStr = day.toDateString();
+            return notes.filter(n => {
+              if (n.trashed) return false;
+              const createdDate = new Date(n.createdAt);
+              return createdDate.toDateString() === dayStr;
+            }).length;
+          });
+
+          const maxCount = Math.max(...dailyCreations, 1);
+          const chartHeight = 120;
+          const chartWidth = 350;
+          const barWidth = 35;
+          const gap = 12;
+
+          return (
+            <div className="space-y-6 animate-fade-in">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="rounded-xl theme-card border p-4 text-center">
+                  <p className="text-2xl font-black text-theme-primary">{totalWords.toLocaleString()}</p>
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-theme-tertiary mt-1">Total Words Typed</p>
+                </div>
+                <div className="rounded-xl theme-card border p-4 text-center">
+                  <p className="text-2xl font-black text-theme-primary">{avgWords}</p>
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-theme-tertiary mt-1">Avg Words / Note</p>
+                </div>
+                <div className="rounded-xl theme-card border p-4 text-center">
+                  <p className="text-2xl font-black text-theme-primary">{taskCompletionRate}%</p>
+                  <p className="text-[10px] uppercase font-bold tracking-wider text-theme-tertiary mt-1">Task Completion Rate</p>
+                </div>
+              </div>
+
+              <SettingCard title="Weekly Productivity Trend">
+                <p className="text-xs text-theme-tertiary mb-6">Note creation volume over the last 7 days</p>
+                <div className="flex items-center justify-center p-4 bg-[var(--input-bg)]/10 border theme-border rounded-xl">
+                  <svg viewBox={`0 0 ${chartWidth} ${chartHeight + 35}`} className="w-full h-48 overflow-visible max-w-lg">
+                    {dailyCreations.map((count, i) => {
+                      const barHeight = (count / maxCount) * chartHeight;
+                      const x = i * (barWidth + gap) + 15;
+                      const y = chartHeight - barHeight + 10;
+                      const dayName = days[i].toLocaleDateString(undefined, { weekday: 'short' });
+                      
+                      return (
+                        <g key={i} className="group">
+                          <rect
+                            x={x - 2}
+                            y={10}
+                            width={barWidth + 4}
+                            height={chartHeight}
+                            fill="transparent"
+                            className="hover:fill-[var(--accent-primary)]/5 transition-colors cursor-pointer rounded-lg"
+                          />
+                          <rect
+                            x={x}
+                            y={y}
+                            width={barWidth}
+                            height={barHeight}
+                            rx={5}
+                            fill="var(--accent-primary, #6366f1)"
+                            className="transition-all duration-500 ease-out"
+                          />
+                          <text
+                            x={x + barWidth / 2}
+                            y={y - 6}
+                            textAnchor="middle"
+                            className="text-[10px] font-bold fill-theme-primary opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            {count}
+                          </text>
+                          <text
+                            x={x + barWidth / 2}
+                            y={chartHeight + 25}
+                            textAnchor="middle"
+                            className="text-[10px] fill-theme-tertiary font-bold"
+                          >
+                            {dayName}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    <line
+                      x1={5}
+                      y1={chartHeight + 10}
+                      x2={chartWidth - 5}
+                      y2={chartHeight + 10}
+                      stroke="var(--card-border)"
+                      strokeWidth={1.5}
+                    />
+                  </svg>
+                </div>
+              </SettingCard>
+
+              <SettingCard title="Priority Distribution">
+                <div className="space-y-4">
+                  {(Object.keys(priorityCounts) as (keyof typeof priorityCounts)[]).map(priority => {
+                    const count = priorityCounts[priority];
+                    const pct = activeNotesCount > 0 ? Math.round((count / activeNotesCount) * 100) : 0;
+                    
+                    let color = 'bg-gray-400';
+                    if (priority === 'low') color = 'bg-blue-400';
+                    if (priority === 'medium') color = 'bg-yellow-400';
+                    if (priority === 'high') color = 'bg-orange-400';
+                    if (priority === 'urgent') color = 'bg-red-500';
+
+                    return (
+                      <div key={priority} className="space-y-1">
+                        <div className="flex justify-between text-xs font-semibold">
+                          <span className="capitalize text-theme-secondary">{priority === 'none' ? 'General (No Priority)' : priority}</span>
+                          <span className="text-theme-tertiary">{count} notes ({pct}%)</span>
+                        </div>
+                        <div className="w-full h-2 rounded-full bg-[var(--app-bg-subtle)]/40 overflow-hidden">
+                          <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </SettingCard>
+
+              <SettingCard title="Theme Usage Popularity">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {Object.entries(noteThemes).map(([key, theme]) => {
+                    const count = themeCounts[key] || 0;
+                    return (
+                      <div key={key} className="flex items-center gap-2.5 p-2.5 rounded-xl border theme-border bg-[var(--input-bg)]/25">
+                        <span className="w-5 h-5 rounded-md border shrink-0" style={{ background: theme.preview }} />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-theme-primary truncate">{theme.label}</p>
+                          <p className="text-[10px] text-theme-tertiary">{count} notes</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </SettingCard>
+            </div>
+          );
+        })()}
 
         {/* Shortcuts Section */}
         {activeSection === 'shortcuts' && (
