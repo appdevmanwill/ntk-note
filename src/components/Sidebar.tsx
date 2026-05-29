@@ -7,6 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch
 } from 'lucide-react';
 import type { SidebarView } from '@/types';
+import ManageNotebooksModal from './ManageNotebooksModal';
 import { signOut } from 'firebase/auth';
 import { auth } from '@/utils/firebase';
 import BrandMark from './BrandMark';
@@ -23,6 +24,7 @@ export default function Sidebar() {
   const [tagsExpanded, setTagsExpanded] = useState(true);
   const [newNotebookName, setNewNotebookName] = useState('');
   const [showNewNotebook, setShowNewNotebook] = useState(false);
+  const [showManageNotebooks, setShowManageNotebooks] = useState(false);
 
   const stats = getStats();
   const trashedCount = notes.filter(n => n.trashed).length;
@@ -161,15 +163,26 @@ export default function Sidebar() {
                 <span>Notebooks</span>
                 {notebooksExpanded ? <ChevronDown className="w-3.5 h-3.5 no-transition" /> : <ChevronRight className="w-3.5 h-3.5 no-transition" />}
               </button>
-              <button
-                type="button"
-                onClick={() => setShowNewNotebook(!showNewNotebook)}
-                className="p-0.5 rounded theme-hover"
-                title="New notebook"
-                aria-label="New notebook"
-              >
-                <Plus className="w-3.5 h-3.5 no-transition" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setShowManageNotebooks(true)}
+                  className="p-0.5 rounded theme-hover"
+                  title="Manage notebooks"
+                  aria-label="Manage notebooks"
+                >
+                  <Settings className="w-3.5 h-3.5 no-transition" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowNewNotebook(!showNewNotebook)}
+                  className="p-0.5 rounded theme-hover"
+                  title="New notebook"
+                  aria-label="New notebook"
+                >
+                  <Plus className="w-3.5 h-3.5 no-transition" />
+                </button>
+              </div>
             </div>
 
             {showNewNotebook && (
@@ -349,6 +362,7 @@ export default function Sidebar() {
           </div>
         </div>
       </aside>
+      <ManageNotebooksModal isOpen={showManageNotebooks} onClose={() => setShowManageNotebooks(false)} />
     </>
   );
 }

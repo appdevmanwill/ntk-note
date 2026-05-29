@@ -76,7 +76,7 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
   return (
     <div
       className={`
-        note-card group relative rounded-xl border cursor-pointer overflow-hidden
+        note-card group relative rounded-xl border cursor-pointer
         transition-all duration-200 hover:-translate-y-0.5
         ${densityPadding}
       `}
@@ -93,7 +93,7 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
     >
       {/* Color indicator strip */}
       {noteColor && noteColor.dot !== 'bg-surface-400' && (
-        <div className={`absolute top-0 left-0 right-0 h-0.5 ${noteColor.dot}`} />
+        <div className={`absolute top-0 left-0 right-0 h-1.5 rounded-t-xl ${noteColor.dot}`} />
       )}
 
       {/* Header */}
@@ -162,7 +162,9 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
       </div>
 
       {/* Content Preview */}
-      <div className="space-y-1.5 mb-3">{getPreview()}</div>
+      <div className="space-y-1.5 mb-3">
+        {getPreview()}
+      </div>
 
       {/* Checklist Progress */}
       {note.type === 'checklist' && note.checklist.length > 0 && (

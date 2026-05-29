@@ -17,6 +17,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     selectedNotebookId, selectedTagId, notebooks, tags,
     trashNote, archiveNote, moveNote, addNoteTag,
     updateNote, setNotePriority, addSection, deleteSection, notes,
+    deleteNote, restoreNote,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -69,7 +70,22 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
 
   const handleBulkTrash = () => {
     selectedIds.forEach(id => trashNote(id));
-    clearSelection();
+    setBulkMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkRestore = () => {
+    selectedIds.forEach(id => restoreNote(id));
+    setBulkMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkDelete = () => {
+    if (confirm('Are you sure you want to permanently delete these notes? This cannot be undone.')) {
+      selectedIds.forEach(id => deleteNote(id));
+      setBulkMode(false);
+      setSelectedIds(new Set());
+    }
   };
 
   const handleBulkArchive = () => {
@@ -350,6 +366,24 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                     >
                       <Trash2 className="w-4 h-4 no-transition" /> Move to trash
                     </button>
+                    {currentView === 'trash' && (
+                      <>
+                        <div className="my-1 border-t theme-divider" />
+                        <button
+                          onClick={handleBulkRestore}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm theme-hover"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          <CheckCircle2 className="w-4 h-4 no-transition" /> Restore
+                        </button>
+                        <button
+                          onClick={handleBulkDelete}
+                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-500/10"
+                        >
+                          <Trash2 className="w-4 h-4 no-transition" /> Delete Permanently
+                        </button>
+                      </>
+                    )}
 
                     {/* Bulk tag input */}
                     {showBulkTagInput && (
