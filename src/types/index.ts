@@ -54,6 +54,11 @@ export interface Note {
   charCount: number;
   linkedNoteIds: string[];
   order: number;
+  ownerId?: string;
+  sharedWith?: string[];
+  isPublished?: boolean;
+  isShared?: boolean;
+  sharedBy?: string;
 }
 
 export interface Section {
@@ -73,6 +78,10 @@ export interface Notebook {
   createdAt: string;
   order: number;
   sections: Section[];
+  ownerId?: string;
+  sharedWith?: string[];
+  isShared?: boolean;
+  sharedBy?: string;
 }
 
 export interface Tag {

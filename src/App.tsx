@@ -11,6 +11,7 @@ import GraphView from '@/components/GraphView';
 import SmartFoldersView from '@/components/SmartFoldersView';
 import CommandPalette from '@/components/CommandPalette';
 import MobileNav from '@/components/MobileNav';
+import PublicNoteReader from '@/components/PublicNoteReader';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/utils/firebase';
 import { accentPalette } from '@/utils/noteThemes';
@@ -226,6 +227,13 @@ export default function App() {
     checkReminders();
     return () => clearInterval(interval);
   }, []);
+
+  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const publicNoteId = params?.get('p') || params?.get('sharedNoteId');
+
+  if (publicNoteId) {
+    return <PublicNoteReader noteId={publicNoteId} />;
+  }
 
   if (!isOnboarded) {
     return <Onboarding />;

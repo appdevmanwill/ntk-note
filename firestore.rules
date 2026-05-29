@@ -1,8 +1,31 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Private user documents (notes, notebooks, settings)
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Public registered user directory for lookups
+    match /users_directory/{email} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && (request.auth.token.email == email || request.auth.token.email.matches(email));
+    }
+
+    // Collaborative shared and publicly published notes
+    match /shared_notes/{noteId} {
+      allow read: if resource == null || resource.data.isPublished == true || (request.auth != null && (resource.data.ownerId == request.auth.uid || request.auth.token.email in resource.data.sharedWith));
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      allow update: if request.auth != null && (resource.data.ownerId == request.auth.uid || request.auth.token.email in resource.data.sharedWith);
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Collaborative shared notebooks
+    match /shared_notebooks/{notebookId} {
+      allow read: if request.auth != null && (resource.data.ownerId == request.auth.uid || request.auth.token.email in resource.data.sharedWith);
+      allow create: if request.auth != null && request.resource.data.ownerId == request.auth.uid;
+      allow update: if request.auth != null && (resource.data.ownerId == request.auth.uid || request.auth.token.email in resource.data.sharedWith);
+      allow delete: if request.auth != null && resource.data.ownerId == request.auth.uid;
     }
 
     match /{document=**} {

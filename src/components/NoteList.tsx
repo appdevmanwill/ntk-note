@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useStore } from '@/store';
 import NoteCard from './NoteCard';
+import ShareModal from './ShareModal';
 import {
   Plus, FileText, Search, Grid3X3, List, SlidersHorizontal,
   X, CheckSquare, Code, Trash2, ArrowUpDown, Archive,
-  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban
+  FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban, Share2
 } from 'lucide-react';
 import type { NoteColor, NoteType } from '@/types';
 import { noteColors } from '@/utils/colors';
@@ -25,6 +26,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   const [showBulkTagInput, setShowBulkTagInput] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState('');
   const [showBulkMoveMenu, setShowBulkMoveMenu] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
 
   const filteredNotes = getFilteredNotes();
   const gridGap = settings.density === 'compact' ? 'gap-2' : settings.density === 'spacious' ? 'gap-4' : 'gap-3';
@@ -257,6 +259,15 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
+            {currentView === 'notebooks' && selectedNotebookId && (
+              <button
+                onClick={() => setShowShareModal(true)}
+                className="p-1.5 rounded-lg theme-hover text-theme-tertiary cursor-pointer hover:text-[var(--accent-primary)] transition-colors"
+                title="Share this Notebook"
+              >
+                <Share2 className="w-4 h-4" />
+              </button>
+            )}
             {bulkMode && (
               <span className="text-sm font-medium accent-text">
                 {selectedIds.size} selected
@@ -642,6 +653,14 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             </div>
           )}
         </div>
+      )}
+      {selectedNotebookId && (
+        <ShareModal
+          isOpen={showShareModal}
+          onClose={() => setShowShareModal(false)}
+          entityType="notebook"
+          entityId={selectedNotebookId}
+        />
       )}
     </div>
   );

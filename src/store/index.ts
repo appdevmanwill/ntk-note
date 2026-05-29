@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { db } from '@/utils/firebase';
 import { auth } from '@/utils/firebase';
-import { collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { premiumFontFamilies } from '@/utils/fonts';
 import { encryptNoteData, decryptNoteData } from '@/utils/crypto';
@@ -572,6 +572,8 @@ interface AppState {
   uid: string | null;
   unsubscribeNotes: (() => void) | null;
   unsubscribeNotebooks: (() => void) | null;
+  unsubscribeSharedNotes: (() => void) | null;
+  unsubscribeSharedNotebooks: (() => void) | null;
   initFirestore: (uid: string) => void;
   clearAuth: () => void;
 
@@ -651,6 +653,9 @@ interface AppState {
   
   // Actions — Templates
   createFromTemplate: (templateId: string) => Promise<Note | null>;
+  
+  shareNote: (noteId: string, sharedWith: string[], isPublished: boolean) => Promise<void>;
+  shareNotebook: (notebookId: string, sharedWith: string[]) => Promise<void>;
   
   // Actions — Export/Import
   exportAllNotes: () => string;
@@ -739,19 +744,38 @@ export const useStore = create<AppState>((set, get) => {
       }
 
       try {
-        const path = isNotebook ? 'notebooks' : 'notes';
-        if (item.operation === 'delete') {
-          await deleteDoc(doc(db, `users/${state.uid}/${path}`, item.noteId));
-        } else {
-          if (isNotebook) {
-            const nb = get().notebooks.find(n => n.id === item.noteId);
-            if (nb) {
-              await setDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId), stripUndefined(nb));
+        if (isNotebook) {
+          const nb = get().notebooks.find(n => n.id === item.noteId);
+          if (item.operation === 'delete') {
+            if (nb?.isShared) {
+              await deleteDoc(doc(db, 'shared_notebooks', item.noteId));
+            } else {
+              await deleteDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId));
             }
           } else {
-            const note = get().notes.find(n => n.id === item.noteId);
+            if (nb) {
+              if (nb.isShared) {
+                await setDoc(doc(db, 'shared_notebooks', item.noteId), stripUndefined(nb));
+              } else {
+                await setDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId), stripUndefined(nb));
+              }
+            }
+          }
+        } else {
+          const note = get().notes.find(n => n.id === item.noteId);
+          if (item.operation === 'delete') {
+            if (note?.isShared) {
+              await deleteDoc(doc(db, 'shared_notes', item.noteId));
+            } else {
+              await deleteDoc(doc(db, `users/${state.uid}/notes`, item.noteId));
+            }
+          } else {
             if (note) {
-              await setDoc(doc(db, `users/${state.uid}/notes`, item.noteId), stripUndefined(note));
+              if (note.isShared) {
+                await setDoc(doc(db, 'shared_notes', item.noteId), stripUndefined(note));
+              } else {
+                await setDoc(doc(db, `users/${state.uid}/notes`, item.noteId), stripUndefined(note));
+              }
             }
           }
         }
@@ -814,6 +838,8 @@ export const useStore = create<AppState>((set, get) => {
     uid: null,
     unsubscribeNotes: null,
     unsubscribeNotebooks: null,
+    unsubscribeSharedNotes: null,
+    unsubscribeSharedNotebooks: null,
     
     initFirestore: (uid) => {
       set({ uid });
@@ -922,14 +948,78 @@ export const useStore = create<AppState>((set, get) => {
         console.error("Firestore notebooks sync error:", error);
       });
 
-      set({ unsubscribeNotes: unsubscribe, unsubscribeNotebooks: unsubscribeNbs });
+      // Synchronize shared notes & notebooks real-time
+      const email = auth.currentUser?.email;
+      let unsubscribeSharedNotes = () => {};
+      let unsubscribeSharedNotebooks = () => {};
+
+      if (email) {
+        const sharedNotesQuery = query(collection(db, 'shared_notes'), where('sharedWith', 'array-contains', email));
+        unsubscribeSharedNotes = onSnapshot(sharedNotesQuery, (snapshot) => {
+          const sharedNotes = snapshot.docs.map(doc => ({
+            ...doc.data(),
+            isShared: true
+          } as Note));
+          
+          set(s => {
+            const privateNotes = s.notes.filter(n => !n.isShared);
+            const merged = [...privateNotes];
+            
+            sharedNotes.forEach(shared => {
+              const idx = merged.findIndex(n => n.id === shared.id);
+              if (idx >= 0) {
+                merged[idx] = shared;
+              } else {
+                merged.push(shared);
+              }
+            });
+            return { notes: merged, tags: rebuildTags(merged) };
+          });
+        }, (error) => {
+          console.error("Firestore shared notes sync error:", error);
+        });
+
+        const sharedNotebooksQuery = query(collection(db, 'shared_notebooks'), where('sharedWith', 'array-contains', email));
+        unsubscribeSharedNotebooks = onSnapshot(sharedNotebooksQuery, (snapshot) => {
+          const sharedNotebooks = snapshot.docs.map(doc => ({
+            ...doc.data(),
+            isShared: true
+          } as Notebook));
+          
+          set(s => {
+            const privateNbs = s.notebooks.filter(nb => !nb.isShared);
+            const merged = [...privateNbs];
+            
+            sharedNotebooks.forEach(shared => {
+              const idx = merged.findIndex(nb => nb.id === shared.id);
+              if (idx >= 0) {
+                merged[idx] = shared;
+              } else {
+                merged.push(shared);
+              }
+            });
+            return { notebooks: merged };
+          });
+        }, (error) => {
+          console.error("Firestore shared notebooks sync error:", error);
+        });
+      }
+
+      set({
+        unsubscribeNotes: unsubscribe,
+        unsubscribeNotebooks: unsubscribeNbs,
+        unsubscribeSharedNotes,
+        unsubscribeSharedNotebooks
+      });
       void flushQueuedSync();
     },
 
     clearAuth: () => {
-      const { unsubscribeNotes, unsubscribeNotebooks } = get();
+      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
       if (unsubscribeNotes) unsubscribeNotes();
       if (unsubscribeNotebooks) unsubscribeNotebooks();
+      if (unsubscribeSharedNotes) unsubscribeSharedNotes();
+      if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       // Clear persisted auth / onboarding state
       localStorage.removeItem('ntk-onboarded');
       localStorage.removeItem('ntk-profile');
@@ -967,11 +1057,20 @@ export const useStore = create<AppState>((set, get) => {
       const initials = parts.length >= 2
         ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
         : parts[0].slice(0, 2).toUpperCase();
+      const profile = { name, email: email || '', initials, createdAt: now() };
       set({
         isOnboarded: true,
-        profile: { name, email: email || '', initials, createdAt: now() }
+        profile
       });
       persist();
+      if (email) {
+        void setDoc(doc(db, 'users_directory', email), {
+          name,
+          email,
+          initials,
+          updatedAt: now()
+        }).catch(console.error);
+      }
     },
 
     // ── Settings ──
@@ -1575,6 +1674,65 @@ export const useStore = create<AppState>((set, get) => {
       });
     },
 
+    shareNote: async (noteId, sharedWith, isPublished) => {
+      const { notes, uid, profile } = get();
+      const note = notes.find(n => n.id === noteId);
+      if (!note || !uid) return;
+
+      const isSharedOrPublished = sharedWith.length > 0 || isPublished;
+      const updatedNote: Note = {
+        ...note,
+        ownerId: note.ownerId || uid,
+        sharedWith,
+        isPublished,
+        isShared: isSharedOrPublished,
+        sharedBy: note.sharedBy || profile.email || 'Anonymous'
+      };
+
+      set(s => ({
+        notes: s.notes.map(n => n.id === noteId ? updatedNote : n)
+      }));
+      persist();
+
+      if (isSharedOrPublished) {
+        await setDoc(doc(db, 'shared_notes', noteId), stripUndefined(updatedNote));
+      } else {
+        if (note.isShared) {
+          await deleteDoc(doc(db, 'shared_notes', noteId));
+        }
+      }
+      await setDoc(doc(db, `users/${uid}/notes`, noteId), stripUndefined(updatedNote));
+    },
+
+    shareNotebook: async (notebookId, sharedWith) => {
+      const { notebooks, uid, profile } = get();
+      const notebook = notebooks.find(nb => nb.id === notebookId);
+      if (!notebook || !uid) return;
+
+      const isShared = sharedWith.length > 0;
+      const updatedNotebook: Notebook = {
+        ...notebook,
+        ownerId: notebook.ownerId || uid,
+        sharedWith,
+        isShared,
+        sharedBy: notebook.sharedBy || profile.email || 'Anonymous'
+      };
+
+      set(s => ({
+        notebooks: s.notebooks.map(nb => nb.id === notebookId ? updatedNotebook : nb)
+      }));
+      persist();
+
+      if (isShared) {
+        await setDoc(doc(db, 'shared_notebooks', notebookId), stripUndefined(updatedNotebook));
+      } else {
+        if (notebook.isShared) {
+          await deleteDoc(doc(db, 'shared_notebooks', notebookId));
+        }
+      }
+      await setDoc(doc(db, `users/${uid}/notebooks`, notebookId), stripUndefined(updatedNotebook));
+    },
+
     // ── Export/Import ──
     exportAllNotes: () => {
       const { notes, notebooks, profile } = get();
@@ -1653,6 +1811,11 @@ export const useStore = create<AppState>((set, get) => {
     getFilteredNotes: () => {
       const { notes, searchFilters, currentView, selectedNotebookId, selectedTagId } = get();
       let filtered = notes.filter(n => !n.trashed && !n.archived);
+      if (currentView === 'shared') {
+        filtered = filtered.filter(n => n.isShared);
+      } else {
+        filtered = filtered.filter(n => !n.isShared);
+      }
 
       if (currentView === 'trash') filtered = notes.filter(n => n.trashed);
       else if (currentView === 'archived') filtered = notes.filter(n => n.archived && !n.trashed);

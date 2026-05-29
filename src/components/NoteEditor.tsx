@@ -20,6 +20,7 @@ import {
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
 import SketchModal from './SketchModal';
+import ShareModal from './ShareModal';
 
 const isMarkdown = (text: string): boolean => {
   if (!text) return false;
@@ -171,6 +172,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const [isListening, setIsListening] = useState(false);
   const [showSketchModal, setShowSketchModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
   const recognitionRef = useRef<any>(null);
 
@@ -681,6 +683,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               )}
               <div className="my-1 border-t theme-divider" />
               <MenuBtn icon={Copy} label="Duplicate" onClick={() => { duplicateNote(note.id); setShowMenu(false); }} />
+              <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />
               <MenuBtn icon={Share2} label="Export / Share" onClick={() => setShowExportMenu(!showExportMenu)} />
               <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={() => { archiveNote(note.id); setShowMenu(false); }} />
               <div className="my-1 border-t theme-divider" />
@@ -1242,6 +1245,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         isOpen={showSketchModal}
         onClose={() => setShowSketchModal(false)}
         onSave={handleInsertDrawing}
+      />
+
+      {/* Share Modal */}
+      <ShareModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        entityType="note"
+        entityId={note.id}
       />
     </div>
   );
