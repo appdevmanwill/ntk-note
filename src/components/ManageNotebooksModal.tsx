@@ -33,7 +33,7 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
 
   const handleDelete = () => {
     if (selectedIds.size === 0) return;
-    if (confirm(`Are you sure you want to delete ${selectedIds.size} notebook(s)? The notes inside will not be deleted, but they will be removed from these notebooks.`)) {
+    if (confirm(`Are you sure you want to delete ${selectedIds.size} notebook(s)? All notes inside these notebooks will be moved to the Trash.`)) {
       selectedIds.forEach(id => deleteNotebook(id));
       setSelectedIds(new Set());
       onClose();

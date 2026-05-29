@@ -15,9 +15,9 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     currentView, getFilteredNotes, searchFilters, setSearchFilters,
     clearSearch, createNote, emptyTrash, settings, updateSettings,
     selectedNotebookId, selectedTagId, notebooks, tags,
-    trashNote, archiveNote, moveNote, addNoteTag,
+    archiveNote, moveNote, addNoteTag,
     updateNote, setNotePriority, addSection, deleteSection, notes,
-    deleteNote, restoreNote,
+    restoreNote, bulkTrashNotes, bulkDeleteNotes, deleteNotebook,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -69,7 +69,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   };
 
   const handleBulkTrash = () => {
-    selectedIds.forEach(id => trashNote(id));
+    bulkTrashNotes(Array.from(selectedIds));
     setBulkMode(false);
     setSelectedIds(new Set());
   };
@@ -82,7 +82,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
 
   const handleBulkDelete = () => {
     if (confirm('Are you sure you want to permanently delete these notes? This cannot be undone.')) {
-      selectedIds.forEach(id => deleteNote(id));
+      bulkDeleteNotes(Array.from(selectedIds));
       setBulkMode(false);
       setSelectedIds(new Set());
     }
@@ -278,13 +278,26 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
             {currentView === 'notebooks' && selectedNotebookId && (
-              <button
-                onClick={() => setShowShareModal(true)}
-                className="p-1.5 rounded-lg theme-hover text-theme-tertiary cursor-pointer hover:text-[var(--accent-primary)] transition-colors"
-                title="Share this Notebook"
-              >
-                <Share2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowShareModal(true)}
+                  className="p-1.5 rounded-lg theme-hover text-theme-tertiary cursor-pointer hover:text-[var(--accent-primary)] transition-colors"
+                  title="Share this Notebook"
+                >
+                  <Share2 className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm('Are you sure you want to delete this notebook? All notes inside will be moved to the Trash.')) {
+                      deleteNotebook(selectedNotebookId);
+                    }
+                  }}
+                  className="p-1.5 rounded-lg theme-hover text-theme-tertiary cursor-pointer hover:text-red-500 transition-colors"
+                  title="Delete this Notebook"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             )}
             {bulkMode && (
               <span className="text-sm font-medium accent-text">

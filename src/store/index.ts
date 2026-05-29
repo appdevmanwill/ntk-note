@@ -596,9 +596,11 @@ interface AppState {
   // Actions — Notes
   createNote: (partial: Partial<Note>) => Promise<Note>;
   updateNote: (id: string, updates: Partial<Note>) => Promise<void>;
-  deleteNote: (id: string) => Promise<void>;
   trashNote: (id: string) => Promise<void>;
+  bulkTrashNotes: (ids: string[]) => Promise<void>;
   restoreNote: (id: string) => Promise<void>;
+  deleteNote: (id: string) => Promise<void>;
+  bulkDeleteNotes: (ids: string[]) => Promise<void>;
   emptyTrash: () => Promise<void>;
   archiveNote: (id: string) => Promise<void>;
   unarchiveNote: (id: string) => Promise<void>;
@@ -1188,6 +1190,20 @@ export const useStore = create<AppState>((set, get) => {
       deleteNoteFromFirestore(id);
     },
 
+    bulkDeleteNotes: async (ids) => {
+      set(s => {
+        const notes = s.notes.filter(n => !ids.includes(n.id));
+        return {
+          notes,
+          tags: rebuildTags(notes),
+          selectedNoteId: ids.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
+          editingNote: ids.includes(s.selectedNoteId || '') ? false : s.editingNote,
+        };
+      });
+      persist();
+      ids.forEach(id => deleteNoteFromFirestore(id));
+    },
+
     trashNote: async (id) => {
       set(s => {
         const notes = s.notes.map(n =>
@@ -1202,6 +1218,22 @@ export const useStore = create<AppState>((set, get) => {
       });
       persist();
       syncNoteToFirestore(id);
+    },
+
+    bulkTrashNotes: async (ids) => {
+      set(s => {
+        const notes = s.notes.map(n =>
+          ids.includes(n.id) ? { ...n, trashed: true, trashedAt: now(), pinned: false } : n
+        );
+        return {
+          notes,
+          tags: rebuildTags(notes),
+          selectedNoteId: ids.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
+          editingNote: ids.includes(s.selectedNoteId || '') ? false : s.editingNote,
+        };
+      });
+      persist();
+      ids.forEach(id => syncNoteToFirestore(id));
     },
 
     restoreNote: async (id) => {
@@ -1528,7 +1560,7 @@ export const useStore = create<AppState>((set, get) => {
       const affectedNoteIds = get().notes.filter(n => n.notebookId === id).map(n => n.id);
       set(s => ({
         notebooks: s.notebooks.filter(nb => nb.id !== id),
-        notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default', sectionId: undefined } : n),
+        notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default', sectionId: undefined, trashed: true, trashedAt: now(), pinned: false } : n),
       }));
       persist();
       deleteNotebookFromFirestore(id);
