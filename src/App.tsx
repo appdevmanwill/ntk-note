@@ -60,6 +60,30 @@ export default function App() {
     });
   };
 
+  const notifyReminder = async (noteTitle: string, reminderTitle: string, tag: string) => {
+    const body = reminderTitle || noteTitle || 'You have a reminder';
+    const icon = '/ntk-icon-192.png';
+
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        await registration.showNotification('NTK Note Reminder', {
+          body,
+          icon,
+          tag,
+        });
+        return;
+      }
+    }
+
+    new Notification('NTK Note Reminder', {
+      body,
+      icon,
+    });
+  };
+
   // Auth listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -68,7 +92,10 @@ export default function App() {
         // Also we can call an initFirestore function here to bind onSnapshot
         useStore.getState().initFirestore(user.uid);
       } else {
-        useStore.getState().clearAuth();
+        const state = useStore.getState();
+        if (state.uid) {
+          state.clearAuth();
+        }
       }
     });
     return () => unsubscribe();
@@ -206,34 +233,14 @@ export default function App() {
         if (note.reminder && !note.reminder.triggered && !note.trashed) {
           const reminderTime = new Date(note.reminder.time).getTime();
           if (now >= reminderTime) {
-            // Trigger notification
-            if ('Notification' in window && Notification.permission === 'granted') {
-              if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.ready.then(registration => {
-                  registration.showNotification('NTK Note Reminder', {
-                    body: note.reminder?.title || note.title || 'You have a reminder',
-                    icon: '/icon-192x192.png',
-                    tag: `reminder-${note.id}`,
-                  });
-                });
-              } else {
-                new Notification('NTK Note Reminder', {
-                  body: note.reminder?.title || note.title || 'You have a reminder',
-                  icon: '/ntk-icon.svg',
-                });
-              }
-            }
+            void notifyReminder(note.title, note.reminder?.title || '', `reminder-${note.id}`)
+              .catch(error => console.warn('Reminder notification failed:', error));
             state.setNoteReminder(note.id, { ...note.reminder, triggered: true });
           }
         }
       });
     };
-    
-    // Request notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-    
+
     const interval = setInterval(checkReminders, 30000);
     checkReminders();
     return () => clearInterval(interval);

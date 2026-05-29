@@ -16,7 +16,7 @@ export default function Sidebar() {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, getStats, updateSettings,
+    notes, getStats, updateSettings, clearAuth,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
@@ -56,6 +56,11 @@ export default function Sidebar() {
   const handleNavClick = (view: SidebarView) => {
     setCurrentView(view);
     if (window.innerWidth < 1024) setSidebarOpen(false);
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth).catch(console.error);
+    clearAuth();
   };
 
   return (
@@ -147,21 +152,25 @@ export default function Sidebar() {
 
           {/* Notebooks */}
           <div className={`mt-4 pt-4 border-t theme-divider ${collapsed ? 'lg:hidden' : ''}`}>
-            <button
-              onClick={() => setNotebooksExpanded(!notebooksExpanded)}
-              className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-theme-tertiary uppercase tracking-wider"
-            >
-              <span>Notebooks</span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={e => { e.stopPropagation(); setShowNewNotebook(!showNewNotebook); }}
-                  className="p-0.5 rounded theme-hover"
-                >
-                  <Plus className="w-3.5 h-3.5 no-transition" />
-                </button>
+            <div className="flex items-center px-3 py-2 text-xs font-semibold text-theme-tertiary uppercase tracking-wider">
+              <button
+                type="button"
+                onClick={() => setNotebooksExpanded(!notebooksExpanded)}
+                className="flex flex-1 items-center justify-between"
+              >
+                <span>Notebooks</span>
                 {notebooksExpanded ? <ChevronDown className="w-3.5 h-3.5 no-transition" /> : <ChevronRight className="w-3.5 h-3.5 no-transition" />}
-              </div>
-            </button>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNewNotebook(!showNewNotebook)}
+                className="p-0.5 rounded theme-hover"
+                title="New notebook"
+                aria-label="New notebook"
+              >
+                <Plus className="w-3.5 h-3.5 no-transition" />
+              </button>
+            </div>
 
             {showNewNotebook && (
               <div className="px-3 pb-2">
@@ -331,7 +340,7 @@ export default function Sidebar() {
               <p className="text-xs text-theme-tertiary truncate">{profile.email || 'Free Plan'}</p>
             </div>
             <button
-              onClick={async () => { await signOut(auth).catch(console.error); }}
+              onClick={handleLogout}
               className={`p-1.5 rounded-lg theme-hover text-theme-tertiary ${collapsed ? 'lg:hidden' : ''}`}
               title="Log out"
             >

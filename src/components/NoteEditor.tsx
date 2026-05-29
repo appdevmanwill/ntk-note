@@ -390,8 +390,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     }
   };
 
-  const handleSetReminder = () => {
+  const handleSetReminder = async () => {
     if (note && reminderDate && reminderTime) {
+      if ('Notification' in window && Notification.permission === 'default') {
+        await Notification.requestPermission().catch(() => undefined);
+      }
       const time = new Date(`${reminderDate}T${reminderTime}`).toISOString();
       setNoteReminder(note.id, {
         id: uuid(),
