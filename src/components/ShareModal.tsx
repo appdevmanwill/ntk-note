@@ -3,7 +3,7 @@ import { useStore } from '@/store';
 import { db } from '@/utils/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import { X, UserPlus, Globe, Copy, Check, Users, Trash2, Send, Share2 } from 'lucide-react';
-import type { Note, Notebook } from '@/types';
+
 
 interface ShareModalProps {
   isOpen: boolean;

@@ -179,6 +179,47 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const recognitionRef = useRef<any>(null);
 
   const contentRef = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const unlockedNote = note ? unlockedNotes[note.id] : undefined;
+  const isLocked = !!note?.encrypted && !unlockedNote;
+  const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
+
+  // Auto-save
+  const saveNote = useCallback((t: string, c: string, immediate = false) => {
+    if (!note) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (!settings.autoSave && !immediate) return;
+    if (immediate) {
+      if (note.encrypted && unlockedNote) {
+        updateUnlockedNote(note.id, { title: t, content: c });
+      } else {
+        updateNote(note.id, { title: t, content: c });
+      }
+      return;
+    }
+    saveTimerRef.current = setTimeout(() => {
+      if (note.encrypted && unlockedNote) {
+        updateUnlockedNote(note.id, { title: t, content: c });
+      } else {
+        updateNote(note.id, { title: t, content: c });
+      }
+    }, 300);
+  }, [note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
+
+  // Load note data
+  useEffect(() => {
+    if (note) {
+      setTitle(unlockedNote?.title ?? note.title);
+      setContent(unlockedNote?.content ?? note.content);
+      setIsPreview(false);
+      if (note.type === 'markdown') {
+        setActiveFormat('rich');
+      } else {
+        setActiveFormat('plain');
+      }
+    }
+  }, [note?.id, unlockedNote?.title, unlockedNote?.content]);
 
   const appendDictationText = useCallback((textToAppend: string) => {
     const el = contentRef.current;
@@ -292,47 +333,6 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       }
     };
   }, []);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const unlockedNote = note ? unlockedNotes[note.id] : undefined;
-  const isLocked = !!note?.encrypted && !unlockedNote;
-  const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
-
-  // Load note data
-  useEffect(() => {
-    if (note) {
-      setTitle(unlockedNote?.title ?? note.title);
-      setContent(unlockedNote?.content ?? note.content);
-      setIsPreview(false);
-      if (note.type === 'markdown') {
-        setActiveFormat('rich');
-      } else {
-        setActiveFormat('plain');
-      }
-    }
-  }, [note?.id, unlockedNote?.title, unlockedNote?.content]);
-
-  // Auto-save
-  const saveNote = useCallback((t: string, c: string, immediate = false) => {
-    if (!note) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    if (!settings.autoSave && !immediate) return;
-    if (immediate) {
-      if (note.encrypted && unlockedNote) {
-        updateUnlockedNote(note.id, { title: t, content: c });
-      } else {
-        updateNote(note.id, { title: t, content: c });
-      }
-      return;
-    }
-    saveTimerRef.current = setTimeout(() => {
-      if (note.encrypted && unlockedNote) {
-        updateUnlockedNote(note.id, { title: t, content: c });
-      } else {
-        updateNote(note.id, { title: t, content: c });
-      }
-    }, 300);
-  }, [note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
 
   const handleTitleChange = (val: string) => {
     setTitle(val);

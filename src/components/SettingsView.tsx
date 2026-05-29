@@ -619,7 +619,7 @@ export default function SettingsView() {
           const avgWords = activeNotesCount > 0 ? Math.round(totalWords / activeNotesCount) : 0;
           const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-          const days = [];
+          const days: Date[] = [];
           for (let i = 6; i >= 0; i--) {
             const d = new Date();
             d.setDate(d.getDate() - i);

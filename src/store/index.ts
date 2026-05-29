@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { db } from '@/utils/firebase';
 import { auth } from '@/utils/firebase';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where, getDocs } from 'firebase/firestore';
+import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { premiumFontFamilies } from '@/utils/fonts';
 import { encryptNoteData, decryptNoteData } from '@/utils/crypto';
@@ -89,6 +89,7 @@ const defaultSearchFilters: SearchFilters = {
   hasReminder: null,
   hasChecklist: null,
   dateRange: null,
+  sharedBy: [],
   sortBy: 'updatedAt',
   sortDir: 'desc',
 };

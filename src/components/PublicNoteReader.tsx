@@ -3,9 +3,8 @@ import { db } from '@/utils/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Lock, Globe, Clock, Sparkles } from 'lucide-react';
+import { Lock, Globe, Clock, Sparkles } from 'lucide-react';
 import type { Note } from '@/types';
-import { noteThemes } from '@/utils/noteThemes';
 
 interface PublicNoteReaderProps {
   noteId: string;
@@ -72,7 +71,6 @@ export default function PublicNoteReader({ noteId }: PublicNoteReaderProps) {
   }
 
   const activeTheme = note.theme || 'canvas';
-  const themeConfig = noteThemes[activeTheme as keyof typeof noteThemes] || noteThemes.canvas;
 
   return (
     <div
@@ -105,7 +103,7 @@ export default function PublicNoteReader({ noteId }: PublicNoteReaderProps) {
           {/* Title */}
           <h2
             className="text-3xl md:text-4xl font-extrabold tracking-tight"
-            style={{ color: 'var(--text-primary)', fontFamily: themeConfig.titleFont }}
+            style={{ color: 'var(--text-primary)' }}
           >
             {note.title || 'Untitled Note'}
           </h2>
@@ -149,7 +147,7 @@ export default function PublicNoteReader({ noteId }: PublicNoteReaderProps) {
                 </div>
               ))}
               {note.content && (
-                <div className="mt-6 pt-4 border-t theme-divider text-sm leading-relaxed" style={{ fontFamily: themeConfig.bodyFont }}>
+                <div className="mt-6 pt-4 border-t theme-divider text-sm leading-relaxed">
                   {note.content}
                 </div>
               )}
@@ -157,7 +155,7 @@ export default function PublicNoteReader({ noteId }: PublicNoteReaderProps) {
           ) : (
             <div
               className="note-content prose dark:prose-invert max-w-none text-base leading-relaxed"
-              style={{ fontFamily: themeConfig.bodyFont, color: 'var(--text-primary)' }}
+              style={{ color: 'var(--text-primary)' }}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown>
             </div>

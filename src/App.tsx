@@ -211,16 +211,14 @@ export default function App() {
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.ready.then(registration => {
                   registration.showNotification('NTK Note Reminder', {
-                    body: note.reminder.title || note.title || 'You have a reminder',
-                    icon: '/ntk-icon.svg',
-                    badge: '/ntk-icon.svg',
-                    vibrate: [200, 100, 200],
+                    body: note.reminder?.title || note.title || 'You have a reminder',
+                    icon: '/icon-192x192.png',
                     tag: `reminder-${note.id}`,
                   });
                 });
               } else {
                 new Notification('NTK Note Reminder', {
-                  body: note.reminder.title || note.title || 'You have a reminder',
+                  body: note.reminder?.title || note.title || 'You have a reminder',
                   icon: '/ntk-icon.svg',
                 });
               }
