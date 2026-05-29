@@ -18,8 +18,9 @@ export default function CalendarWidget() {
   const startDayOfWeek = getDay(monthStart);
   
   const reminders = notes
-    .filter(n => n.reminder && !n.trashed)
-    .map(n => ({ date: new Date(n.reminder!.time), title: n.title }));
+    .filter(n => n.reminder && n.reminder.time && !n.trashed)
+    .map(n => ({ date: new Date(n.reminder!.time), title: n.title }))
+    .filter(r => !isNaN(r.date.getTime()));
 
   const monthReminders = reminders.filter(r => 
     r.date.getMonth() === currentMonth.getMonth() && 

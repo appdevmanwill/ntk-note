@@ -1192,7 +1192,7 @@ export const useStore = create<AppState>((set, get) => {
 
     moveNote: async (noteId, notebookId) => {
       set(s => ({
-        notes: s.notes.map(n => n.id === noteId ? { ...n, notebookId, updatedAt: now() } : n)
+        notes: s.notes.map(n => n.id === noteId ? { ...n, notebookId, sectionId: undefined, updatedAt: now() } : n)
       }));
       persist();
       syncNoteToFirestore(noteId);
@@ -1427,7 +1427,7 @@ export const useStore = create<AppState>((set, get) => {
       const affectedNoteIds = get().notes.filter(n => n.notebookId === id).map(n => n.id);
       set(s => ({
         notebooks: s.notebooks.filter(nb => nb.id !== id),
-        notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default' } : n),
+        notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default', sectionId: undefined } : n),
       }));
       persist();
       deleteNotebookFromFirestore(id);
