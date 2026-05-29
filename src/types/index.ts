@@ -170,6 +170,7 @@ export interface SyncQueueItem {
   operation: 'upsert' | 'delete';
   createdAt: string;
   attempts: number;
+  entityType?: 'note' | 'notebook';
 }
 
 export interface SyncConflict {

@@ -571,6 +571,7 @@ interface AppState {
   // Actions — Auth & Sync
   uid: string | null;
   unsubscribeNotes: (() => void) | null;
+  unsubscribeNotebooks: (() => void) | null;
   initFirestore: (uid: string) => void;
   clearAuth: () => void;
 
@@ -714,13 +715,13 @@ export const useStore = create<AppState>((set, get) => {
     }));
   };
 
-  const enqueueSync = (noteId: string, operation: SyncQueueItem['operation']) => {
+  const enqueueSync = (noteId: string, operation: SyncQueueItem['operation'], entityType: SyncQueueItem['entityType'] = 'note') => {
     set(s => {
-      const queue = s.syncQueue.filter(item => item.noteId !== noteId);
+      const queue = s.syncQueue.filter(item => !(item.noteId === noteId && (item.entityType || 'note') === entityType));
       return {
         syncQueue: [
           ...queue,
-          { id: uuid(), noteId, operation, createdAt: now(), attempts: 0 },
+          { id: uuid(), noteId, operation, createdAt: now(), attempts: 0, entityType },
         ],
       };
     });
@@ -732,17 +733,26 @@ export const useStore = create<AppState>((set, get) => {
     if (!state.uid || !state.online || state.syncQueue.length === 0) return;
 
     for (const item of [...state.syncQueue]) {
-      if (get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
+      const isNotebook = item.entityType === 'notebook';
+      if (!isNotebook && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
         continue;
       }
 
       try {
+        const path = isNotebook ? 'notebooks' : 'notes';
         if (item.operation === 'delete') {
-          await deleteDoc(doc(db, `users/${state.uid}/notes`, item.noteId));
+          await deleteDoc(doc(db, `users/${state.uid}/${path}`, item.noteId));
         } else {
-          const note = get().notes.find(n => n.id === item.noteId);
-          if (note) {
-            await setDoc(doc(db, `users/${state.uid}/notes`, item.noteId), stripUndefined(note));
+          if (isNotebook) {
+            const nb = get().notebooks.find(n => n.id === item.noteId);
+            if (nb) {
+              await setDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId), stripUndefined(nb));
+            }
+          } else {
+            const note = get().notes.find(n => n.id === item.noteId);
+            if (note) {
+              await setDoc(doc(db, `users/${state.uid}/notes`, item.noteId), stripUndefined(note));
+            }
           }
         }
         set(s => ({ syncQueue: s.syncQueue.filter(queued => queued.id !== item.id) }));
@@ -770,6 +780,16 @@ export const useStore = create<AppState>((set, get) => {
     void flushQueuedSync();
   };
 
+  const syncNotebookToFirestore = (notebookId: string) => {
+    enqueueSync(notebookId, 'upsert', 'notebook');
+    void flushQueuedSync();
+  };
+
+  const deleteNotebookFromFirestore = (notebookId: string) => {
+    enqueueSync(notebookId, 'delete', 'notebook');
+    void flushQueuedSync();
+  };
+
   return {
     notes: initialNotes,
     notebooks: initialNotebooks.length ? initialNotebooks : [defaultNotebook],
@@ -793,6 +813,7 @@ export const useStore = create<AppState>((set, get) => {
     unlockedNotes: {},
     uid: null,
     unsubscribeNotes: null,
+    unsubscribeNotebooks: null,
     
     initFirestore: (uid) => {
       set({ uid });
@@ -801,7 +822,7 @@ export const useStore = create<AppState>((set, get) => {
       const unsubscribe = onSnapshot(notesRef, (snapshot) => {
         const notes = snapshot.docs.map(doc => doc.data() as Note);
         set(s => {
-          const pendingIds = new Set(s.syncQueue.map(item => item.noteId));
+          const pendingIds = new Set(s.syncQueue.filter(item => (item.entityType || 'note') === 'note').map(item => item.noteId));
           const remoteIds = new Set(notes.map(note => note.id));
           const conflicts = [...s.syncConflicts];
           const merged = [...s.notes];
@@ -838,19 +859,64 @@ export const useStore = create<AppState>((set, get) => {
         console.error("Firestore sync error:", error);
       });
 
-      set({ unsubscribeNotes: unsubscribe });
+      // Synchronize notebooks
+      const notebooksRef = collection(db, `users/${uid}/notebooks`);
+      
+      // Upload any local notebooks initially
+      get().notebooks.forEach(nb => {
+        void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
+      });
+
+      const unsubscribeNbs = onSnapshot(notebooksRef, (snapshot) => {
+        const remoteNbs = snapshot.docs.map(doc => doc.data() as Notebook);
+        set(s => {
+          if (remoteNbs.length === 0) {
+            // Empty remote: sync local notebooks up to remote
+            s.notebooks.forEach(nb => {
+              void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
+            });
+            return {};
+          }
+
+          const merged = [...s.notebooks];
+          const remoteIds = new Set(remoteNbs.map(nb => nb.id));
+          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'notebook').map(item => item.noteId));
+
+          remoteNbs.forEach(remote => {
+            const idx = merged.findIndex(nb => nb.id === remote.id);
+            if (idx >= 0) {
+              if (!pendingIds.has(remote.id)) {
+                merged[idx] = remote;
+              }
+            } else {
+              merged.push(remote);
+            }
+          });
+
+          const finalNbs = merged.filter(nb => remoteIds.has(nb.id) || pendingIds.has(nb.id) || nb.id === 'default');
+          return { notebooks: finalNbs };
+        });
+        saveJSON('ntk-notebooks', get().notebooks);
+        void flushQueuedSync();
+      }, (error) => {
+        console.error("Firestore notebooks sync error:", error);
+      });
+
+      set({ unsubscribeNotes: unsubscribe, unsubscribeNotebooks: unsubscribeNbs });
       void flushQueuedSync();
     },
 
     clearAuth: () => {
-      const { unsubscribeNotes } = get();
+      const { unsubscribeNotes, unsubscribeNotebooks } = get();
       if (unsubscribeNotes) unsubscribeNotes();
+      if (unsubscribeNotebooks) unsubscribeNotebooks();
       // Clear persisted auth / onboarding state
       localStorage.removeItem('ntk-onboarded');
       localStorage.removeItem('ntk-profile');
       set({
         uid: null,
         unsubscribeNotes: null,
+        unsubscribeNotebooks: null,
         isOnboarded: false,
         profile: defaultProfile,
         currentView: 'home',
@@ -1324,6 +1390,7 @@ export const useStore = create<AppState>((set, get) => {
       };
       set(s => ({ notebooks: [...s.notebooks, nb] }));
       persist();
+      syncNotebookToFirestore(nb.id);
       return nb;
     },
 
@@ -1332,15 +1399,19 @@ export const useStore = create<AppState>((set, get) => {
         notebooks: s.notebooks.map(nb => nb.id === id ? { ...nb, ...updates } : nb)
       }));
       persist();
+      syncNotebookToFirestore(id);
     },
 
     deleteNotebook: (id) => {
       if (id === 'default') return;
+      const affectedNoteIds = get().notes.filter(n => n.notebookId === id).map(n => n.id);
       set(s => ({
         notebooks: s.notebooks.filter(nb => nb.id !== id),
         notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default' } : n),
       }));
       persist();
+      deleteNotebookFromFirestore(id);
+      affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
     },
 
     addSection: (notebookId, name) => {
@@ -1359,6 +1430,7 @@ export const useStore = create<AppState>((set, get) => {
         })
       }));
       persist();
+      syncNotebookToFirestore(notebookId);
       return section;
     },
 
@@ -1375,9 +1447,11 @@ export const useStore = create<AppState>((set, get) => {
         })
       }));
       persist();
+      syncNotebookToFirestore(notebookId);
     },
 
     deleteSection: (notebookId, sectionId) => {
+      const affectedNoteIds = get().notes.filter(n => n.sectionId === sectionId).map(n => n.id);
       set(s => ({
         notebooks: s.notebooks.map(nb => {
           if (nb.id !== notebookId) return nb;
@@ -1388,6 +1462,8 @@ export const useStore = create<AppState>((set, get) => {
         ),
       }));
       persist();
+      syncNotebookToFirestore(notebookId);
+      affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
     },
 
     // ── Tags ──
