@@ -321,7 +321,19 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             )}
 
             {/* Bulk actions */}
-            {bulkMode && selectedIds.size > 0 && (
+            {bulkMode && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => selectedIds.size === filteredNotes.length ? setSelectedIds(new Set()) : selectAll()}
+                  className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+                  style={{
+                    backgroundColor: selectedIds.size === filteredNotes.length ? 'var(--active-bg)' : 'transparent',
+                    color: selectedIds.size === filteredNotes.length ? 'var(--accent-primary)' : 'var(--text-secondary)'
+                  }}
+                >
+                  {selectedIds.size === filteredNotes.length ? 'Deselect All' : 'Select All'}
+                </button>
+                {selectedIds.size > 0 && (
               <div className="relative">
                 <button
                   onClick={() => setShowBulkMenu(!showBulkMenu)}
@@ -331,13 +343,6 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 </button>
                 {showBulkMenu && (
                   <div className="absolute right-0 top-10 z-30 w-48 rounded-xl py-1.5 animate-scale-in theme-menu border">
-                    <button
-                      onClick={() => { selectAll(); setShowBulkMenu(false); }}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm theme-hover"
-                      style={{ color: 'var(--text-secondary)' }}
-                    >
-                      <CheckCircle2 className="w-4 h-4 no-transition" /> Select all
-                    </button>
                     <button
                       onClick={() => setShowBulkTagInput(true)}
                       className="w-full flex items-center gap-2 px-3 py-2 text-sm theme-hover"
@@ -419,6 +424,8 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 )}
               </div>
             )}
+            </div>
+          )}
 
             {bulkMode && (
               <button
@@ -685,7 +692,17 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 : listGap
             }>
               {filteredNotes.map(note => (
-                <div key={note.id} className="relative">
+                <div 
+                  key={note.id} 
+                  className="relative cursor-pointer"
+                  onClickCapture={(e) => {
+                    if (bulkMode) {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      toggleSelect(note.id);
+                    }
+                  }}
+                >
                   {bulkMode && (
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleSelect(note.id); }}
