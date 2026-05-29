@@ -845,7 +845,18 @@ export const useStore = create<AppState>((set, get) => {
     clearAuth: () => {
       const { unsubscribeNotes } = get();
       if (unsubscribeNotes) unsubscribeNotes();
-      set({ uid: null, unsubscribeNotes: null });
+      // Clear persisted auth / onboarding state
+      localStorage.removeItem('ntk-onboarded');
+      localStorage.removeItem('ntk-profile');
+      set({
+        uid: null,
+        unsubscribeNotes: null,
+        isOnboarded: false,
+        profile: defaultProfile,
+        currentView: 'home',
+        selectedNoteId: null,
+        editingNote: false,
+      });
     },
 
     scratchPad: initialScratchPad,

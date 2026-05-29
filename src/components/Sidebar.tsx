@@ -16,7 +16,7 @@ export default function Sidebar() {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, getStats, clearAuth, updateSettings,
+    notes, getStats, updateSettings,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
@@ -331,7 +331,7 @@ export default function Sidebar() {
               <p className="text-xs text-theme-tertiary truncate">{profile.email || 'Free Plan'}</p>
             </div>
             <button
-              onClick={() => { signOut(auth); clearAuth(); }}
+              onClick={async () => { await signOut(auth).catch(console.error); }}
               className={`p-1.5 rounded-lg theme-hover text-theme-tertiary ${collapsed ? 'lg:hidden' : ''}`}
               title="Log out"
             >
