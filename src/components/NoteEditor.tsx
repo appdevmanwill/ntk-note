@@ -15,7 +15,7 @@ import {
   Download, Share2, Mail, FileText, Type, Hash,
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
-  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, LayoutTemplate
+  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
@@ -1051,7 +1051,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               title="Insert Template"
               className={`p-1.5 rounded-md transition-colors shrink-0 ${showTemplatesDropdown ? 'bg-indigo-500/10 text-indigo-500' : 'theme-hover text-theme-tertiary'}`}
             >
-              <LayoutTemplate className="w-4 h-4" />
+              <FilePlus className="w-4 h-4" />
             </button>
             {showTemplatesDropdown && (
               <div 
