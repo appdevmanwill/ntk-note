@@ -201,6 +201,22 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
   // PARSERS FOR DIFFERENT FORMATS
   // ═══════════════════════════════════════════════════════════════════════════
 
+  const htmlToText = (html: string): string => {
+    let processed = html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<\/h[1-6]>/gi, '\n\n')
+      .replace(/<li>/gi, '\n• ')
+      .replace(/<\/li>/gi, '\n')
+      .replace(/<\/ul>/gi, '\n')
+      .replace(/<\/ol>/gi, '\n');
+    
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(processed, 'text/html');
+    return (doc.body?.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  };
+
   // Parse Evernote ENEX (XML format)
   const parseEvernoteENEX = (content: string): Partial<Note>[] => {
     const notes: Partial<Note>[] = [];
@@ -215,8 +231,7 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
 
       if (contentEl?.textContent) {
         // ENEX content is XHTML wrapped in CDATA
-        const innerDoc = parser.parseFromString(contentEl.textContent, 'text/html');
-        noteContent = innerDoc.body?.textContent || '';
+        noteContent = htmlToText(contentEl.textContent);
       }
 
       const created = noteEl.querySelector('created')?.textContent;
@@ -418,11 +433,11 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
       const h1 = doc.querySelector('h1');
       if (h1?.textContent) title = h1.textContent;
 
-      const body = doc.body?.textContent || '';
+      const bodyHtml = doc.body?.innerHTML || '';
 
       notes.push({
         title,
-        content: body.trim(),
+        content: htmlToText(bodyHtml),
         type: 'note',
       });
     }
