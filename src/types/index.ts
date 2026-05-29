@@ -82,6 +82,8 @@ export interface Notebook {
   sharedWith?: string[];
   isShared?: boolean;
   sharedBy?: string;
+  trashed?: boolean;
+  trashedAt?: string;
 }
 
 export interface Tag {

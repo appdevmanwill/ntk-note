@@ -18,6 +18,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     archiveNote, moveNote, addNoteTag,
     updateNote, setNotePriority, addSection, deleteSection, notes,
     restoreNote, bulkTrashNotes, bulkDeleteNotes, deleteNotebook,
+    restoreNotebook, permanentlyDeleteNotebook,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -30,6 +31,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   const [showShareModal, setShowShareModal] = useState(false);
 
   const filteredNotes = getFilteredNotes();
+  const trashedNotebooks = notebooks.filter(nb => nb.trashed);
   
   const sharedByOptions = Array.from(new Set(notes.filter(n => n.sharedBy).map(n => n.sharedBy as string)));
   const gridGap = settings.density === 'compact' ? 'gap-2' : settings.density === 'spacious' ? 'gap-4' : 'gap-3';
@@ -688,7 +690,42 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-24 lg:pb-6">
-          {filteredNotes.length === 0 ? (
+          {currentView === 'trash' && trashedNotebooks.length > 0 && (
+            <div className="mb-8">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mb-4">Trashed Notebooks</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {trashedNotebooks.map(nb => (
+                  <div key={nb.id} className="p-4 rounded-xl border theme-divider bg-[var(--card-bg)] flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-xl">{nb.icon}</span>
+                      <span className="font-medium text-theme-primary">{nb.name}</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => restoreNotebook(nb.id)}
+                        className="px-3 py-1.5 rounded-lg text-sm font-medium accent-soft accent-text hover:bg-[var(--accent-primary)] hover:text-white transition-colors"
+                      >
+                        Restore
+                      </button>
+                      <button
+                        onClick={() => permanentlyDeleteNotebook(nb.id)}
+                        className="p-1.5 rounded-lg theme-hover text-theme-tertiary hover:text-red-500 transition-colors"
+                        title="Delete Permanently"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              {filteredNotes.length > 0 && (
+                <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mt-8 mb-4">Trashed Notes</h3>
+              )}
+            </div>
+          )}
+
+          {filteredNotes.length === 0 && trashedNotebooks.length === 0 ? (
             <div className="text-center py-16">
               <FileText className="w-16 h-16 mx-auto mb-4 no-transition" style={{ color: 'var(--text-muted)' }} />
               <h3 className="text-lg font-medium text-theme-secondary">

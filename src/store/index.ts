@@ -629,6 +629,8 @@ interface AppState {
   createNotebook: (name: string, parentId?: string | null, icon?: string) => Notebook;
   updateNotebook: (id: string, updates: Partial<Notebook>) => void;
   deleteNotebook: (id: string) => void;
+  restoreNotebook: (id: string) => void;
+  permanentlyDeleteNotebook: (id: string) => void;
   addSection: (notebookId: string, name: string) => Section;
   updateSection: (notebookId: string, sectionId: string, updates: Partial<Section>) => void;
   deleteSection: (notebookId: string, sectionId: string) => void;
@@ -1248,17 +1250,24 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     emptyTrash: async () => {
-      const { notes, uid } = get();
+      const { notes, notebooks, uid } = get();
       const trashedNotes = notes.filter(n => n.trashed);
+      const trashedNotebooks = notebooks.filter(nb => nb.trashed);
       
       set(s => {
         const remainingNotes = s.notes.filter(n => !n.trashed);
-        return { notes: remainingNotes, tags: rebuildTags(remainingNotes) };
+        const remainingNotebooks = s.notebooks.filter(nb => !nb.trashed);
+        return { 
+          notes: remainingNotes, 
+          tags: rebuildTags(remainingNotes),
+          notebooks: remainingNotebooks
+        };
       });
       persist();
       
       if (uid) {
         trashedNotes.forEach(n => deleteNoteFromFirestore(n.id));
+        trashedNotebooks.forEach(nb => deleteNotebookFromFirestore(nb.id));
       }
     },
 
@@ -1559,12 +1568,28 @@ export const useStore = create<AppState>((set, get) => {
       if (id === 'default') return;
       const affectedNoteIds = get().notes.filter(n => n.notebookId === id).map(n => n.id);
       set(s => ({
-        notebooks: s.notebooks.filter(nb => nb.id !== id),
+        notebooks: s.notebooks.map(nb => nb.id === id ? { ...nb, trashed: true, trashedAt: now() } : nb),
         notes: s.notes.map(n => n.notebookId === id ? { ...n, notebookId: 'default', sectionId: undefined, trashed: true, trashedAt: now(), pinned: false } : n),
       }));
       persist();
-      deleteNotebookFromFirestore(id);
+      syncNotebookToFirestore(id);
       affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
+    },
+
+    restoreNotebook: (id) => {
+      set(s => ({
+        notebooks: s.notebooks.map(nb => nb.id === id ? { ...nb, trashed: false, trashedAt: undefined } : nb),
+      }));
+      persist();
+      syncNotebookToFirestore(id);
+    },
+
+    permanentlyDeleteNotebook: (id) => {
+      set(s => ({
+        notebooks: s.notebooks.filter(nb => nb.id !== id),
+      }));
+      persist();
+      deleteNotebookFromFirestore(id);
     },
 
     addSection: (notebookId, name) => {

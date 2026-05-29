@@ -202,8 +202,8 @@ export default function Sidebar() {
 
             {notebooksExpanded && (
               <div className="space-y-0.5">
-                {notebooks.filter(nb => !nb.parentId).map(nb => {
-                  const childNotebooks = notebooks.filter(sub => sub.parentId === nb.id);
+                {notebooks.filter(nb => !nb.parentId && !nb.trashed).map(nb => {
+                  const childNotebooks = notebooks.filter(sub => sub.parentId === nb.id && !sub.trashed);
                   const noteCount = notes.filter(n => n.notebookId === nb.id && !n.trashed).length;
                   const isSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === nb.id;
                   
