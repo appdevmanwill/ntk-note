@@ -216,9 +216,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     if (!settings.autoSave && !immediate) return;
     if (immediate) {
       if (note.encrypted && unlockedNote) {
-        updateUnlockedNote(note.id, { title: t, content: c });
+        updateUnlockedNote(note.id, { title: t, content: c }, true);
       } else {
-        updateNote(note.id, { title: t, content: c });
+        updateNote(note.id, { title: t, content: c }, true);
       }
       return;
     }
@@ -261,8 +261,39 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     saveNote(title, nextContent);
   }, [content, pushHistory, saveNote, title]);
 
-  // Load note data
+  const noteIdRef = useRef<string | null>(null);
+  const stateRef = useRef({ title, content, notes, unlockedNotes });
+
+  // Update ref with latest values to keep useEffect clean
   useEffect(() => {
+    stateRef.current = { title, content, notes, unlockedNotes };
+  }, [title, content, notes, unlockedNotes]);
+
+  // Load note data and flush previous note changes
+  useEffect(() => {
+    const { title: currentTitle, content: currentContent, notes: currentNotes, unlockedNotes: currentUnlockedNotes } = stateRef.current;
+
+    // Flush any unsaved changes for the previous note immediately
+    if (noteIdRef.current && noteIdRef.current !== note?.id) {
+      const prevNote = currentNotes.find(n => n.id === noteIdRef.current);
+      if (prevNote) {
+        const isEncrypted = !!prevNote.encrypted;
+        const prevUnlocked = currentUnlockedNotes[prevNote.id];
+        const currentStoredTitle = isEncrypted && prevUnlocked ? prevUnlocked.title : prevNote.title;
+        const currentStoredContent = isEncrypted && prevUnlocked ? prevUnlocked.content : prevNote.content;
+
+        if (currentTitle !== currentStoredTitle || currentContent !== currentStoredContent) {
+          if (isEncrypted && prevUnlocked) {
+            updateUnlockedNote(prevNote.id, { title: currentTitle, content: currentContent }, true);
+          } else {
+            updateNote(prevNote.id, { title: currentTitle, content: currentContent }, true);
+          }
+        }
+      }
+    }
+
+    noteIdRef.current = note?.id || null;
+
     if (note) {
       setTitle(unlockedNote?.title ?? note.title);
       setContent(unlockedNote?.content ?? note.content);
@@ -276,7 +307,31 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         setActiveFormat('plain');
       }
     }
-  }, [note?.id, unlockedNote?.title, unlockedNote?.content, refreshHistoryStatus]);
+  }, [note?.id, unlockedNote?.title, unlockedNote?.content, refreshHistoryStatus, updateNote, updateUnlockedNote]);
+
+  // Flush any pending changes when component unmounts
+  useEffect(() => {
+    return () => {
+      if (noteIdRef.current) {
+        const { title: currentTitle, content: currentContent, notes: currentNotes, unlockedNotes: currentUnlockedNotes } = stateRef.current;
+        const prevNote = currentNotes.find(n => n.id === noteIdRef.current);
+        if (prevNote) {
+          const isEncrypted = !!prevNote.encrypted;
+          const prevUnlocked = currentUnlockedNotes[prevNote.id];
+          const currentStoredTitle = isEncrypted && prevUnlocked ? prevUnlocked.title : prevNote.title;
+          const currentStoredContent = isEncrypted && prevUnlocked ? prevUnlocked.content : prevNote.content;
+
+          if (currentTitle !== currentStoredTitle || currentContent !== currentStoredContent) {
+            if (isEncrypted && prevUnlocked) {
+              updateUnlockedNote(prevNote.id, { title: currentTitle, content: currentContent }, true);
+            } else {
+              updateNote(prevNote.id, { title: currentTitle, content: currentContent }, true);
+            }
+          }
+        }
+      }
+    };
+  }, [updateNote, updateUnlockedNote]);
 
   const appendDictationText = useCallback((textToAppend: string) => {
     const el = contentRef.current;

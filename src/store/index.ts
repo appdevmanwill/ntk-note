@@ -39,6 +39,8 @@ const fontValue = (label: string): string => {
 const countWords = (text: string) => text.trim() ? text.trim().split(/\s+/).length : 0;
 const countChars = (text: string) => text.length;
 
+const syncTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
 // ── Default Data ──
 const defaultNotebook: Notebook = {
   id: 'default',
@@ -595,7 +597,7 @@ interface AppState {
   
   // Actions — Notes
   createNote: (partial: Partial<Note>) => Promise<Note>;
-  updateNote: (id: string, updates: Partial<Note>) => Promise<void>;
+  updateNote: (id: string, updates: Partial<Note>, immediateSync?: boolean) => Promise<void>;
   trashNote: (id: string) => Promise<void>;
   bulkTrashNotes: (ids: string[]) => Promise<void>;
   restoreNote: (id: string) => Promise<void>;
@@ -617,7 +619,7 @@ interface AppState {
   lockNote: (noteId: string, password: string, hint?: string) => Promise<boolean>;
   unlockNote: (noteId: string, password: string) => Promise<boolean>;
   relockNote: (noteId: string) => void;
-  updateUnlockedNote: (noteId: string, updates: { title?: string; content?: string; checklist?: ChecklistItem[] }) => Promise<void>;
+  updateUnlockedNote: (noteId: string, updates: { title?: string; content?: string; checklist?: ChecklistItem[] }, immediateSync?: boolean) => Promise<void>;
   
   // Actions — Checklist
   addChecklistItem: (noteId: string, text: string) => Promise<void>;
@@ -800,9 +802,21 @@ export const useStore = create<AppState>((set, get) => {
     }
   };
 
-  const syncNoteToFirestore = (noteId: string) => {
-    enqueueSync(noteId, 'upsert');
-    void flushQueuedSync();
+  const syncNoteToFirestore = (noteId: string, debounceMs = 0) => {
+    if (syncTimers[noteId]) {
+      clearTimeout(syncTimers[noteId]);
+      delete syncTimers[noteId];
+    }
+    if (debounceMs > 0) {
+      syncTimers[noteId] = setTimeout(() => {
+        delete syncTimers[noteId];
+        enqueueSync(noteId, 'upsert');
+        void flushQueuedSync();
+      }, debounceMs);
+    } else {
+      enqueueSync(noteId, 'upsert');
+      void flushQueuedSync();
+    }
   };
 
   const deleteNoteFromFirestore = (noteId: string) => {
@@ -1175,7 +1189,7 @@ export const useStore = create<AppState>((set, get) => {
       return Promise.resolve(note);
     },
 
-    updateNote: async (id, updates) => {
+    updateNote: async (id, updates, immediateSync = false) => {
       set(s => {
         const notes = s.notes.map(n => {
           if (n.id !== id) return n;
@@ -1190,7 +1204,8 @@ export const useStore = create<AppState>((set, get) => {
         return { notes, tags: rebuildTags(notes) };
       });
       persist();
-      syncNoteToFirestore(id);
+      const isTextEdit = updates.title !== undefined || updates.content !== undefined;
+      syncNoteToFirestore(id, (isTextEdit && !immediateSync) ? 5000 : 0);
     },
 
     deleteNote: async (id) => {
@@ -1476,7 +1491,7 @@ export const useStore = create<AppState>((set, get) => {
         unlockedNotes: Object.fromEntries(Object.entries(s.unlockedNotes).filter(([id]) => id !== noteId)),
       }));
     },
-    updateUnlockedNote: async (noteId, updates) => {
+    updateUnlockedNote: async (noteId, updates, immediateSync = false) => {
       const unlocked = get().unlockedNotes[noteId];
       if (!unlocked) return;
       const next = { ...unlocked, ...updates };
@@ -1496,7 +1511,8 @@ export const useStore = create<AppState>((set, get) => {
         } : n),
       }));
       persist();
-      syncNoteToFirestore(noteId);
+      const isTextEdit = updates.title !== undefined || updates.content !== undefined;
+      syncNoteToFirestore(noteId, (isTextEdit && !immediateSync) ? 5000 : 0);
     },
 
     addChecklistItem: async (noteId, text) => {
