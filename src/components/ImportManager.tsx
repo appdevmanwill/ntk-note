@@ -876,6 +876,17 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
           }
         }
 
+        let notebookId = item.notebookId || defaultNotebookId;
+        const wantNotebookName = window.confirm(`Do you want "${title}" to be the name of your notebook?`);
+        if (wantNotebookName) {
+          try {
+            const newNb = useStore.getState().createNotebook(title);
+            notebookId = newNb.id;
+          } catch (err: any) {
+            results.errors.push(`Failed to create notebook "${title}": ${err.message}`);
+          }
+        }
+
         await createNote({
           title,
           content: item.note.content || '',
@@ -883,7 +894,7 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
           tags: item.note.tags || [],
           color: item.note.color || 'default',
           checklist: item.note.checklist || [],
-          notebookId: item.notebookId || defaultNotebookId,
+          notebookId,
           pinned: item.note.pinned || false,
           archived: item.note.archived || false,
           createdAt: item.note.createdAt,
