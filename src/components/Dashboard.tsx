@@ -65,7 +65,7 @@ export default function Dashboard() {
           <div className="relative">
             <div className="flex items-center gap-2 text-white/75 text-sm font-medium mb-2">
               <Zap className="w-4 h-4 no-transition" />
-              {format(new Date(), 'EEEE, MMMM d, yyyy')}
+              {format(new Date(), 'EEEE, MMMM d, yyyy').replace('Sunday', "Lord'sDay")}
             </div>
             <h1 className="text-3xl md:text-4xl font-bold mb-2">
               {getGreeting()}, {profile.name.split(' ')[0]} 👋
