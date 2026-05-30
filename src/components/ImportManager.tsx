@@ -863,8 +863,21 @@ export default function ImportManager({ onClose }: { onClose: () => void }) {
     const results: ImportResult = { success: 0, failed: 0, errors: [...previewErrors] };
     for (const item of selected) {
       try {
+        const title = item.note.title || 'Imported Note';
+        const exists = useStore.getState().notes.some(
+          n => !n.trashed && n.title.trim().toLowerCase() === title.trim().toLowerCase()
+        );
+        if (exists) {
+          const proceed = window.confirm(`A note with the title "${title}" already exists. Do you still want to import it as a duplicate?`);
+          if (!proceed) {
+            results.failed++;
+            results.errors.push(`Skipped importing duplicate note: ${title}`);
+            continue;
+          }
+        }
+
         await createNote({
-          title: item.note.title || 'Imported Note',
+          title,
           content: item.note.content || '',
           type: item.note.type || 'note',
           tags: item.note.tags || [],

@@ -4,7 +4,8 @@ import {
   Home, FileText, Tag, Star, Archive, Trash2,
   Bell, Search, Settings, Plus, ChevronDown, ChevronRight,
   Moon, Sun, LayoutTemplate, LogOut, X, Share2,
-  PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch
+  PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
+  Edit3
 } from 'lucide-react';
 import type { SidebarView } from '@/types';
 import ManageNotebooksModal from './ManageNotebooksModal';
@@ -25,6 +26,8 @@ export default function Sidebar() {
   const [newNotebookName, setNewNotebookName] = useState('');
   const [showNewNotebook, setShowNewNotebook] = useState(false);
   const [showManageNotebooks, setShowManageNotebooks] = useState(false);
+  const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
+  const [editNotebookName, setEditNotebookName] = useState('');
 
   const stats = getStats();
   const trashedCount = notes.filter(n => n.trashed).length;
@@ -53,6 +56,13 @@ export default function Sidebar() {
       setNewNotebookName('');
       setShowNewNotebook(false);
     }
+  };
+
+  const handleSaveRenameNotebook = (id: string) => {
+    if (editNotebookName.trim() && editNotebookName.trim() !== notebooks.find(nb => nb.id === id)?.name) {
+      useStore.getState().updateNotebook(id, { name: editNotebookName.trim() });
+    }
+    setEditingNotebookId(null);
   };
 
   const handleNavClick = (view: SidebarView) => {
@@ -210,57 +220,135 @@ export default function Sidebar() {
                   return (
                     <div key={nb.id} className="group">
                       <div className="flex items-center">
-                        <button
-                          onClick={() => { selectNotebook(nb.id); handleNavClick('notebooks'); }}
-                          className={`
-                            flex-1 flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all
-                            ${isSelected
-                              ? 'font-medium'
-                              : 'text-theme-secondary theme-hover'
-                            }
-                          `}
-                          style={isSelected ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
-                        >
-                          <span className="text-base">{nb.icon}</span>
-                          <span className="flex-1 text-left truncate">{nb.name}</span>
-                          <span className="text-xs text-theme-tertiary">{noteCount}</span>
-                        </button>
-                        {/* Add sub-notebook button */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const name = prompt('Sub-notebook name:');
-                            if (name?.trim()) {
-                              createNotebook(name.trim(), nb.id, '📁');
-                            }
-                          }}
-                          className="opacity-0 group-hover:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
-                          title="Add sub-notebook"
-                        >
-                          <Plus className="w-3 h-3 no-transition" />
-                        </button>
+                        {editingNotebookId === nb.id ? (
+                          <div className="flex-1 px-3 py-1">
+                            <input
+                              type="text"
+                              value={editNotebookName}
+                              onChange={e => setEditNotebookName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleSaveRenameNotebook(nb.id);
+                                if (e.key === 'Escape') setEditingNotebookId(null);
+                              }}
+                              onBlur={() => handleSaveRenameNotebook(nb.id)}
+                              className="w-full px-2 py-0.5 text-xs rounded border theme-input focus:outline-none accent-focus"
+                              autoFocus
+                              onFocus={e => e.target.select()}
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => { selectNotebook(nb.id); handleNavClick('notebooks'); }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                if (nb.id === 'default') return;
+                                setEditingNotebookId(nb.id);
+                                setEditNotebookName(nb.name);
+                              }}
+                              className={`
+                                flex-1 flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all
+                                ${isSelected
+                                  ? 'font-medium'
+                                  : 'text-theme-secondary theme-hover'
+                                }
+                              `}
+                              style={isSelected ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
+                            >
+                              <span className="text-base">{nb.icon}</span>
+                              <span className="flex-1 text-left truncate">{nb.name}</span>
+                              <span className="text-xs text-theme-tertiary">{noteCount}</span>
+                            </button>
+                            {/* Explicit rename button */}
+                            {nb.id !== 'default' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingNotebookId(nb.id);
+                                  setEditNotebookName(nb.name);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 p-1 rounded theme-hover text-theme-tertiary transition-all"
+                                title="Rename notebook"
+                              >
+                                <Edit3 className="w-3 h-3 no-transition" />
+                              </button>
+                            )}
+                            {/* Add sub-notebook button */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const name = prompt('Sub-notebook name:');
+                                if (name?.trim()) {
+                                  createNotebook(name.trim(), nb.id, '📁');
+                                }
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
+                              title="Add sub-notebook"
+                            >
+                              <Plus className="w-3 h-3 no-transition" />
+                            </button>
+                          </>
+                        )}
                       </div>
                       {/* Sub-notebooks */}
                       {childNotebooks.map(sub => {
                         const subSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === sub.id;
                         const subCount = notes.filter(n => n.notebookId === sub.id && !n.trashed).length;
                         return (
-                          <button
-                            key={sub.id}
-                            onClick={() => { selectNotebook(sub.id); handleNavClick('notebooks'); }}
-                            className={`
-                              w-full flex items-center gap-2 pl-9 pr-3 py-1.5 rounded-xl text-sm transition-all
-                              ${subSelected
-                                ? 'font-medium'
-                                : 'text-theme-tertiary theme-hover'
-                              }
-                            `}
-                            style={subSelected ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
-                          >
-                            <span className="text-sm">{sub.icon}</span>
-                            <span className="flex-1 text-left truncate">{sub.name}</span>
-                            <span className="text-xs text-theme-tertiary">{subCount}</span>
-                          </button>
+                          <div key={sub.id} className="group/sub flex items-center">
+                            {editingNotebookId === sub.id ? (
+                              <div className="flex-1 pl-9 pr-3 py-1">
+                                <input
+                                  type="text"
+                                  value={editNotebookName}
+                                  onChange={e => setEditNotebookName(e.target.value)}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') handleSaveRenameNotebook(sub.id);
+                                    if (e.key === 'Escape') setEditingNotebookId(null);
+                                  }}
+                                  onBlur={() => handleSaveRenameNotebook(sub.id)}
+                                  className="w-full px-2 py-0.5 text-xs rounded border theme-input focus:outline-none accent-focus"
+                                  autoFocus
+                                  onFocus={e => e.target.select()}
+                                />
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => { selectNotebook(sub.id); handleNavClick('notebooks'); }}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingNotebookId(sub.id);
+                                    setEditNotebookName(sub.name);
+                                  }}
+                                  className={`
+                                    flex-1 flex items-center gap-2 pl-9 pr-3 py-1.5 rounded-xl text-sm transition-all
+                                    ${subSelected
+                                      ? 'font-medium'
+                                      : 'text-theme-tertiary theme-hover'
+                                    }
+                                  `}
+                                  style={subSelected ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
+                                >
+                                  <span className="text-sm">{sub.icon}</span>
+                                  <span className="flex-1 text-left truncate">{sub.name}</span>
+                                  <span className="text-xs text-theme-tertiary">{subCount}</span>
+                                </button>
+                                {/* Explicit rename button */}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingNotebookId(sub.id);
+                                    setEditNotebookName(sub.name);
+                                  }}
+                                  className="opacity-0 group-hover/sub:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
+                                  title="Rename notebook"
+                                >
+                                  <Edit3 className="w-3 h-3 no-transition" />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
