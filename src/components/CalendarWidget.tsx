@@ -6,6 +6,7 @@ import {
   isSameDay, isToday, getDay, addMonths, subMonths 
 } from 'date-fns';
 import { getHolidaysForDate } from '@/utils/holidays';
+import { formatSelectedDate } from '@/utils/date';
 
 export default function CalendarWidget() {
   const { notes } = useStore();
@@ -127,7 +128,7 @@ export default function CalendarWidget() {
       <div className="flex-1 overflow-y-auto px-4 py-3 bg-[var(--app-bg-subtle)]/20 min-h-[140px] max-h-[220px]">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-[10px] font-bold uppercase tracking-wider select-none" style={{ color: 'var(--text-muted)' }}>
-            {format(selectedDate, 'EEEE, MMM d, yyyy').replace('Sunday', "Lord'sDay")}
+            {formatSelectedDate(selectedDate)}
           </h4>
           {(selectedDayHolidays.length > 0 || selectedDayReminders.length > 0) && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wide accent-soft select-none">
