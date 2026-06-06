@@ -2,8 +2,14 @@
 
 export interface Holiday {
   name: string;
-  type: 'universal' | 'NG' | 'UK' | 'US';
+  type: 'universal' | 'NG' | 'UK' | 'US' | 'BCG';
   flag: string;
+}
+
+interface FixedHoliday {
+  month: number;
+  date: number;
+  name: string;
 }
 
 // Meeus/Jones/Butcher algorithm to calculate Easter Sunday for any year
@@ -50,6 +56,59 @@ function getNthDayOfWeek(year: number, month: number, dayOfWeek: number, n: numb
     }
   }
   throw new Error('Invalid Nth day of week');
+}
+
+const berachahChurchFixedEvents: FixedHoliday[] = [
+  { month: 0, date: 1, name: 'Power Day - First Manifested Anointing of Daddy Aronah Ashammah' },
+  { month: 0, date: 5, name: 'Key of Physical Miracles Given to Mummy Seria and the Seven Women' },
+  { month: 0, date: 15, name: 'End of the Nigerian Civil War' },
+  { month: 1, date: 26, name: 'Rod of Authority Given to Mummy Aaroh Seria' },
+  { month: 2, date: 3, name: 'Anniversary of the Glorious Church' },
+  { month: 2, date: 17, name: 'Spiritual Leadership Handed Over to the Woman' },
+  { month: 3, date: 6, name: 'Sellusia Unity Day' },
+  { month: 4, date: 5, name: 'Seria and Ashammah Day' },
+  { month: 4, date: 30, name: 'Declaration of Secession by Former Eastern Nigeria' },
+  { month: 5, date: 1, name: 'Eve of Atonement Day' },
+  { month: 5, date: 2, name: 'Atonement Day' },
+  { month: 5, date: 6, name: 'Liberty Day' },
+  { month: 5, date: 7, name: 'Visitation Day' },
+  { month: 5, date: 8, name: 'Thanksgiving Day' },
+  { month: 5, date: 14, name: 'Women Liberation Day' },
+  { month: 5, date: 19, name: "Mummy Seria's Birthday" },
+  { month: 5, date: 29, name: 'New Covenant with the Senior Sellina' },
+  { month: 6, date: 9, name: 'Rally Day for Glorification Day' },
+  { month: 6, date: 11, name: 'Glorification Day Rejoicing, Singing and Dancing - Day 1' },
+  { month: 6, date: 12, name: 'Glorification Day Rejoicing, Singing and Dancing - Day 2' },
+  { month: 6, date: 13, name: 'Glorification Day Rejoicing, Singing and Dancing - Day 3' },
+  { month: 6, date: 15, name: 'Full Hand-Over of Pacesetter Women Ministry to Women' },
+  { month: 6, date: 16, name: 'Glorification Day' },
+  { month: 6, date: 18, name: 'God Chose Mummy Seria as Head Pastor of Berachah Church of God' },
+  { month: 6, date: 24, name: 'Birthday of the First Minento of the Glorious Church' },
+  { month: 6, date: 27, name: 'Mama Abiye (Ruth Alfred) Birthday' },
+  { month: 6, date: 31, name: 'Sellina Tribe Receive Power in Full' },
+  { month: 7, date: 7, name: 'Eli Gave Full Authority to Sellusiaites' },
+  { month: 7, date: 20, name: 'Sellusia Covenant Day - Day 1' },
+  { month: 7, date: 21, name: 'Sellusia Covenant Day - Day 2' },
+  { month: 7, date: 22, name: 'Sellusia Covenant Day - Day 3' },
+  { month: 7, date: 28, name: 'Women Reconciliation Day' },
+  { month: 8, date: 2, name: 'Welcome Songs to the Willing One' },
+  { month: 8, date: 9, name: 'Welcome Day' },
+  { month: 8, date: 10, name: 'Welcome Day Continuation' },
+  { month: 9, date: 19, name: "Jesus' Dedication" },
+  { month: 10, date: 10, name: 'Ashammah, the Unamba Day' },
+  { month: 10, date: 16, name: "The Day God Accepted Aaroh's Price" },
+  { month: 10, date: 28, name: 'Mummy Aaroh Call to Glory' },
+  { month: 11, date: 8, name: 'The Day of Great Joy' },
+  { month: 11, date: 14, name: 'Igbo Day (Emancipation Day)' },
+  { month: 11, date: 29, name: 'God Took Over the Leadership of Sellina Land' },
+];
+
+function addBerachahChurchEvents(holidays: Holiday[], month: number, date: number) {
+  berachahChurchFixedEvents.forEach(event => {
+    if (event.month === month && event.date === date) {
+      holidays.push({ name: event.name, type: 'BCG', flag: 'BCG' });
+    }
+  });
 }
 
 export function getHolidaysForDate(date: Date): Holiday[] {
@@ -250,6 +309,17 @@ export function getHolidaysForDate(date: Date): Holiday[] {
   if (m === easterMonday.getMonth() && d === easterMonday.getDate()) {
     holidays.push({ name: "Easter Monday", type: 'universal', flag: '🌐' });
   }
+
+  // 6. BERACHAH CHURCH OF GOD / GLORIOUS CHURCH CALENDAR
+  const firstSellusiaLordsday = getNthDayOfWeek(y, 0, 0, 1);
+  if (m === 0 && d === firstSellusiaLordsday.getDate()) {
+    holidays.push({
+      name: "Sellusiaites' Covenant of Spotless Unity",
+      type: 'BCG',
+      flag: 'BCG',
+    });
+  }
+  addBerachahChurchEvents(holidays, m, d);
 
   return holidays;
 }

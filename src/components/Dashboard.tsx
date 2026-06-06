@@ -6,7 +6,7 @@ import {
   ChevronRight, Star, Zap, Upload
 } from 'lucide-react';
 import ImportManager from './ImportManager';
-import { format, isThisWeek } from 'date-fns';
+import { isThisWeek } from 'date-fns';
 import NoteCard from './NoteCard';
 import CalendarWidget from './CalendarWidget';
 import { formatDashboardDate } from '@/utils/date';

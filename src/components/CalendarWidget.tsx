@@ -5,8 +5,16 @@ import {
   startOfMonth, endOfMonth, eachDayOfInterval, format, 
   isSameDay, isToday, getDay, addMonths, subMonths 
 } from 'date-fns';
-import { getHolidaysForDate } from '@/utils/holidays';
+import { getHolidaysForDate, type Holiday } from '@/utils/holidays';
 import { formatSelectedDate } from '@/utils/date';
+
+const holidayTypeLabels: Record<Holiday['type'], string> = {
+  universal: 'Universal Celebration',
+  NG: 'Nigeria Public Holiday',
+  UK: 'UK Holiday',
+  US: 'US Federal Holiday',
+  BCG: 'Berachah Church Calendar',
+};
 
 export default function CalendarWidget() {
   const { notes } = useStore();
@@ -148,7 +156,7 @@ export default function CalendarWidget() {
               <div className="flex flex-col min-w-0">
                 <span className="text-xs font-semibold text-theme-primary leading-tight truncate">{holiday.name}</span>
                 <span className="text-[9px] text-theme-tertiary font-bold tracking-wide uppercase mt-0.5">
-                  {holiday.type === 'universal' ? 'Universal Celebration' : holiday.type === 'NG' ? 'Nigeria Public Holiday' : holiday.type === 'UK' ? 'UK Holiday' : 'US Federal Holiday'}
+                  {holidayTypeLabels[holiday.type]}
                 </span>
               </div>
             </div>
@@ -180,4 +188,3 @@ export default function CalendarWidget() {
     </div>
   );
 }
-
