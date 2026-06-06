@@ -9,11 +9,9 @@ export default function MobileNav() {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30 lg:hidden safe-bottom">
       <div
-        className="theme-glass border-t theme-divider"
+        className="mobile-nav-shell border-t theme-divider"
         style={{
-          backgroundColor: 'var(--glass-bg)',
           borderColor: 'var(--divider)',
-          backdropFilter: 'blur(16px) saturate(180%)',
         }}
       >
         <div className="flex items-center justify-around px-2 py-1">
