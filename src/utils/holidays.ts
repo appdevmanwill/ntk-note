@@ -170,8 +170,8 @@ const berachahChurchFixedEvents: FixedHoliday[] = [
   {
     month: 5,
     date: 1,
-    name: 'Eve of Atonement Day',
-    summary: 'A preparatory celebration before Atonement Day, when Immanuel Women decorate the arena, rejoice over Christ victory, and prepare with music and dancing.',
+    name: 'On The Way To Calvary',
+    summary: 'A preparatory celebration before Atonement Day, remembering the journey toward Calvary as Immanuel Women decorate the arena, rejoice over Christ victory, and prepare with music and dancing.',
   },
   {
     month: 5,
