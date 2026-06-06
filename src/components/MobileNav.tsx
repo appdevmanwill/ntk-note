@@ -2,7 +2,15 @@ import { useStore } from '@/store';
 import { Home, FileText, Plus, Search, Menu } from 'lucide-react';
 
 export default function MobileNav() {
-  const { setCurrentView, currentView, createNote, setSidebarOpen, editingNote } = useStore();
+  const { setCurrentView, currentView, createNote, setSidebarOpen, editingNote, selectedNotebookId } = useStore();
+  const activeNotebookId = currentView === 'notebooks' ? selectedNotebookId : null;
+  const isNotebookView = Boolean(activeNotebookId);
+
+  const handleCreateNote = () => {
+    void createNote({
+      notebookId: activeNotebookId || undefined,
+    });
+  };
 
   if (editingNote) return null;
 
@@ -20,8 +28,10 @@ export default function MobileNav() {
           
           {/* FAB */}
           <button
-            onClick={() => createNote({})}
+            onClick={handleCreateNote}
             className="w-14 h-14 -mt-6 rounded-2xl accent-gradient text-white shadow-xl flex items-center justify-center active:scale-95 transition-all no-transition"
+            aria-label={isNotebookView ? 'Create note in this notebook' : 'Create note'}
+            title={isNotebookView ? 'Create note in this notebook' : 'Create note'}
           >
             <Plus className="w-7 h-7 no-transition" />
           </button>

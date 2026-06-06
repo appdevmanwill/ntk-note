@@ -75,6 +75,16 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
 
   const title = viewTitles[currentView] || 'Notes';
   const activeSortValue = `${searchFilters.sortBy}:${searchFilters.sortDir}`;
+  const activeNotebook = currentView === 'notebooks' && selectedNotebookId
+    ? notebooks.find(nb => nb.id === selectedNotebookId)
+    : null;
+  const canCreateNoteHere = currentView !== 'trash' && currentView !== 'archived';
+
+  const handleCreateNoteHere = () => {
+    void createNote({
+      notebookId: activeNotebook ? activeNotebook.id : undefined,
+    });
+  };
 
   const handleSortChange = (value: string) => {
     const option = noteSortOptions.find(item => `${item.sortBy}:${item.sortDir}` === value);
@@ -432,7 +442,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
-            {currentView === 'notebooks' && selectedNotebookId && (
+            {activeNotebook && (
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setShowShareModal(true)}
@@ -444,7 +454,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 <button
                   onClick={() => {
                     if (confirm('Are you sure you want to delete this notebook? All notes inside will be moved to the Trash.')) {
-                      deleteNotebook(selectedNotebookId);
+                      deleteNotebook(activeNotebook.id);
                     }
                   }}
                   className="p-1.5 rounded-lg theme-hover text-theme-tertiary cursor-pointer hover:text-red-500 transition-colors"
@@ -680,15 +690,13 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 </button>
 
                 {/* New note */}
-                {currentView !== 'trash' && currentView !== 'archived' && (
+                {canCreateNoteHere && (
                   <button
-                    onClick={() => createNote({
-                      notebookId: currentView === 'notebooks' && selectedNotebookId ? selectedNotebookId : undefined,
-                    })}
+                    onClick={handleCreateNoteHere}
                     className="flex items-center gap-1.5 px-3 py-2 rounded-lg accent-button text-sm font-medium transition-colors"
                   >
                     <Plus className="w-4 h-4 no-transition" />
-                    <span className="hidden sm:inline">New Note</span>
+                    <span className="hidden sm:inline">{activeNotebook ? 'New in Notebook' : 'New Note'}</span>
                   </button>
                 )}
 
@@ -705,6 +713,26 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             )}
           </div>
         </div>
+
+        {activeNotebook && canCreateNoteHere && (
+          <div className="mb-3 flex flex-col gap-2 rounded-xl border theme-border theme-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wider text-theme-tertiary">Current notebook</p>
+              <p className="truncate text-sm font-semibold text-theme-primary">
+                {activeNotebook.icon} {activeNotebook.name}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleCreateNoteHere}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg accent-button px-4 py-2.5 text-sm font-semibold sm:w-auto"
+              aria-label={`Create a new note in ${activeNotebook.name}`}
+            >
+              <Plus className="w-4 h-4 no-transition" />
+              New note in this notebook
+            </button>
+          </div>
+        )}
 
         {/* Search bar */}
         <div className="relative mb-3">

@@ -22,9 +22,9 @@ import {
 } from 'lucide-react';
 
 const darkAccentPalette: typeof accentPalette = {
-  indigo: { primary: '#818cf8', hover: '#a5b4fc', rgb: '129, 140, 248' },
-  blue: { primary: '#60a5fa', hover: '#93c5fd', rgb: '96, 165, 250' },
-  purple: { primary: '#c084fc', hover: '#d8b4fe', rgb: '192, 132, 252' },
+  indigo: { primary: '#2563eb', hover: '#1e40af', rgb: '37, 99, 235' },
+  blue: { primary: '#0ea5e9', hover: '#0369a1', rgb: '14, 165, 233' },
+  purple: { primary: '#7c3aed', hover: '#5b21b6', rgb: '124, 58, 237' },
   pink: { primary: '#f472b6', hover: '#f9a8d4', rgb: '244, 114, 182' },
   red: { primary: '#f87171', hover: '#fca5a5', rgb: '248, 113, 113' },
   orange: { primary: '#fb923c', hover: '#fdba74', rgb: '251, 146, 60' },
@@ -155,9 +155,9 @@ export default function App() {
     if (settings.theme === 'dark') {
       root.classList.add('dark');
       body.classList.add('dark');
-      body.style.backgroundColor = '#111315';
-      body.style.color = '#f1f4f7';
-      themeMeta?.setAttribute('content', '#111315');
+      body.style.backgroundColor = '#071528';
+      body.style.color = '#eef6ff';
+      themeMeta?.setAttribute('content', '#071528');
     } else {
       root.classList.remove('dark');
       body.classList.remove('dark');

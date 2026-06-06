@@ -21,11 +21,11 @@ const celebrationTypeLabels: Record<Holiday['type'], string> = {
 };
 
 const celebrationToneClasses: Record<Holiday['type'], string> = {
-  universal: 'bg-sky-100 text-sky-900 ring-sky-200',
-  NG: 'bg-emerald-100 text-emerald-900 ring-emerald-200',
-  UK: 'bg-blue-100 text-blue-900 ring-blue-200',
-  US: 'bg-rose-100 text-rose-900 ring-rose-200',
-  BCG: 'bg-amber-100 text-amber-950 ring-amber-200',
+  universal: 'bg-sky-100 text-sky-900 ring-sky-200 dark:bg-sky-400/15 dark:text-sky-100 dark:ring-sky-300/25',
+  NG: 'bg-emerald-100 text-emerald-900 ring-emerald-200 dark:bg-sky-400/15 dark:text-sky-100 dark:ring-sky-300/25',
+  UK: 'bg-blue-100 text-blue-900 ring-blue-200 dark:bg-blue-400/15 dark:text-blue-100 dark:ring-blue-300/25',
+  US: 'bg-rose-100 text-rose-900 ring-rose-200 dark:bg-blue-400/15 dark:text-blue-100 dark:ring-blue-300/25',
+  BCG: 'bg-amber-100 text-amber-950 ring-amber-200 dark:bg-cyan-400/15 dark:text-cyan-100 dark:ring-cyan-300/25',
 };
 
 const celebrationNoteColors: Record<Holiday['type'], 'indigo' | 'green' | 'blue' | 'red' | 'purple'> = {
@@ -138,22 +138,22 @@ export default function Dashboard() {
               <section
                 aria-live="polite"
                 aria-label="Today's celebration reminder"
-                className="mt-6 rounded-2xl border border-white/50 bg-white/95 p-4 text-surface-900 shadow-[0_22px_60px_rgba(30,41,59,0.18)] md:p-5"
+                className="mt-6 rounded-2xl border border-white/50 bg-white/95 p-4 text-surface-900 shadow-[0_22px_60px_rgba(30,41,59,0.18)] md:p-5 dark:border-blue-200/15 dark:bg-[#081d35]/95 dark:text-blue-50 dark:shadow-[0_22px_60px_rgba(1,8,20,0.38)]"
               >
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100">
+                    <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100 dark:bg-blue-500/15 dark:text-blue-100 dark:ring-blue-200/20">
                       <BellRing className="h-5 w-5 no-transition" />
-                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.22)]" />
+                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-sky-300 shadow-[0_0_0_4px_rgba(125,211,252,0.22)]" />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-xs font-bold uppercase tracking-wide text-surface-500">Today&apos;s celebration reminder</p>
-                      <p className="text-base font-bold text-surface-950 md:text-lg">
+                      <p className="text-xs font-bold uppercase tracking-wide text-surface-500 dark:text-blue-200/70">Today&apos;s celebration reminder</p>
+                      <p className="text-base font-bold text-surface-950 md:text-lg dark:text-blue-50">
                         {todayCelebrations.length} celebration{todayCelebrations.length === 1 ? '' : 's'} on your calendar today
                       </p>
                     </div>
                   </div>
-                  <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-100">
+                  <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:ring-cyan-300/20">
                     <CalendarDays className="h-3.5 w-3.5 no-transition" />
                     Reminder active
                   </div>
@@ -163,7 +163,7 @@ export default function Dashboard() {
                   {todayCelebrations.map((holiday, i) => (
                     <article
                       key={`${holiday.type}-${holiday.name}-${i}`}
-                      className={`rounded-xl border border-surface-200 bg-surface-50 p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.05)] ${todayCelebrations.length === 1 ? 'md:col-span-2' : ''}`}
+                      className={`rounded-xl border border-surface-200 bg-surface-50 p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.05)] dark:border-blue-200/15 dark:bg-[#0b2745] ${todayCelebrations.length === 1 ? 'md:col-span-2' : ''}`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -171,16 +171,16 @@ export default function Dashboard() {
                             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ring-1 ${celebrationToneClasses[holiday.type]}`}>
                               {celebrationTypeLabels[holiday.type]}
                             </span>
-                            <span className="text-xs font-bold text-surface-500">{holiday.flag}</span>
+                            <span className="text-xs font-bold text-surface-500 dark:text-blue-200/60">{holiday.flag}</span>
                           </div>
-                          <h2 className="mt-3 text-base font-bold leading-snug text-surface-950">{holiday.name}</h2>
+                          <h2 className="mt-3 text-base font-bold leading-snug text-surface-950 dark:text-blue-50">{holiday.name}</h2>
                         </div>
                       </div>
-                      <p className="mt-2 max-w-2xl text-sm font-medium leading-6 text-surface-700">{holiday.summary}</p>
+                      <p className="mt-2 max-w-2xl text-sm font-medium leading-6 text-surface-700 dark:text-blue-100/80">{holiday.summary}</p>
                       <button
                         type="button"
                         onClick={() => captureCelebrationReflection(holiday)}
-                        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-surface-900 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-surface-800"
+                        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-surface-900 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-surface-800 dark:bg-blue-500 dark:hover:bg-blue-400"
                         aria-label={`Capture a reflection for ${holiday.name}`}
                       >
                         <PenLine className="h-3.5 w-3.5 no-transition" />
