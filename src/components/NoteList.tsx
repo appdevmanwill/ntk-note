@@ -439,7 +439,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     <div className="flex-1 flex flex-col h-full overflow-hidden" style={{ backgroundColor: 'var(--app-bg)' }}>
       {/* Header */}
       <div className="px-4 md:px-6 pt-4 pb-3 shrink-0">
-        <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="mb-4 flex flex-col gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
             {activeNotebook && (
@@ -470,14 +470,14 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
               </span>
             )}
           </div>
-          <div className="flex max-w-full flex-wrap items-center gap-2 xl:flex-nowrap xl:justify-end">
-            {!bulkMode && canCreateNoteHere && (
+          <div className="flex max-w-full flex-wrap items-center gap-2">
+            {!activeNotebook && !bulkMode && canCreateNoteHere && (
               <button
                 onClick={handleCreateNoteHere}
                 className="inline-flex shrink-0 items-center gap-1.5 rounded-lg accent-button px-3 py-2 text-sm font-semibold transition-colors"
               >
                 <Plus className="w-4 h-4 no-transition" />
-                <span>{activeNotebook ? 'New note here' : 'New Note'}</span>
+                <span>New Note</span>
               </button>
             )}
 
