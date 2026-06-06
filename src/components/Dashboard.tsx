@@ -3,13 +3,46 @@ import { useStore } from '@/store';
 import {
   Plus, FileText, CheckSquare, Type, Sparkles, Pin,
   Clock, TrendingUp, BarChart3, ListChecks, BookOpen,
-  ChevronRight, Star, Zap, Upload
+  ChevronRight, Star, Zap, Upload, BellRing, CalendarDays, PenLine
 } from 'lucide-react';
 import ImportManager from './ImportManager';
 import { isThisWeek } from 'date-fns';
 import NoteCard from './NoteCard';
 import CalendarWidget from './CalendarWidget';
 import { formatDashboardDate } from '@/utils/date';
+import { getHolidaysForDate, type Holiday } from '@/utils/holidays';
+
+const celebrationTypeLabels: Record<Holiday['type'], string> = {
+  universal: 'Global observance',
+  NG: 'Nigeria calendar',
+  UK: 'UK calendar',
+  US: 'US calendar',
+  BCG: 'Berachah Church calendar',
+};
+
+const celebrationToneClasses: Record<Holiday['type'], string> = {
+  universal: 'bg-sky-300/20 text-sky-50 ring-sky-200/30',
+  NG: 'bg-emerald-300/20 text-emerald-50 ring-emerald-200/30',
+  UK: 'bg-blue-300/20 text-blue-50 ring-blue-200/30',
+  US: 'bg-rose-300/20 text-rose-50 ring-rose-200/30',
+  BCG: 'bg-amber-300/20 text-amber-50 ring-amber-200/30',
+};
+
+const celebrationNoteColors: Record<Holiday['type'], 'indigo' | 'green' | 'blue' | 'red' | 'purple'> = {
+  universal: 'indigo',
+  NG: 'green',
+  UK: 'blue',
+  US: 'red',
+  BCG: 'purple',
+};
+
+function toTag(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 36);
+}
 
 export default function Dashboard() {
   const {
@@ -24,6 +57,9 @@ export default function Dashboard() {
   const stats = getStats();
   const recent = getRecentNotes(6);
   const pinned = getPinnedNotes().slice(0, 4);
+  const today = new Date();
+  const todayLabel = formatDashboardDate(today);
+  const todayCelebrations = getHolidaysForDate(today);
 
   const taskProgress = stats.tasks > 0 ? Math.round((stats.completedTasks / stats.tasks) * 100) : 0;
 
@@ -49,6 +85,31 @@ export default function Dashboard() {
     updateScratchPad(scratchPadValue);
   };
 
+  const captureCelebrationReflection = (holiday: Holiday) => {
+    const content = [
+      `# ${holiday.name}`,
+      '',
+      `**Date:** ${todayLabel}`,
+      `**Calendar:** ${celebrationTypeLabels[holiday.type]}`,
+      '',
+      '## Summary',
+      holiday.summary,
+      '',
+      '## Reflection',
+      '',
+      '- ',
+    ].join('\n');
+
+    void createNote({
+      title: `${holiday.name} - ${todayLabel}`,
+      content,
+      type: 'markdown',
+      color: celebrationNoteColors[holiday.type],
+      tags: ['celebration', `calendar-${holiday.type.toLowerCase()}`, toTag(holiday.name)].filter(Boolean),
+      priority: holiday.type === 'BCG' ? 'high' : 'medium',
+    });
+  };
+
   const quickActions = [
     { icon: FileText, label: 'New Note', color: 'from-indigo-500 to-blue-500', action: () => { createNote({ type: 'note' }); } },
     { icon: CheckSquare, label: 'Checklist', color: 'from-green-500 to-emerald-500', action: () => { createNote({ type: 'checklist' }); } },
@@ -66,12 +127,70 @@ export default function Dashboard() {
           <div className="relative">
             <div className="flex items-center gap-2 text-white/75 text-sm font-medium mb-2">
               <Zap className="w-4 h-4 no-transition" />
-              {formatDashboardDate(new Date())}
+              {todayLabel}
             </div>
             <h1 className="text-3xl md:text-4xl font-bold mb-2">
               {getGreeting()}, {profile.name.split(' ')[0]} 👋
             </h1>
             <p className="text-white/75 text-lg">{getMotivation()}</p>
+
+            {todayCelebrations.length > 0 && (
+              <section
+                aria-live="polite"
+                aria-label="Today's celebration reminder"
+                className="mt-6 rounded-2xl border border-white/20 bg-white/[0.14] p-3 md:p-4 shadow-[0_18px_48px_rgba(0,0,0,0.18)] backdrop-blur-md"
+              >
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/20 ring-1 ring-white/25">
+                      <BellRing className="h-5 w-5 text-white no-transition" />
+                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-amber-200 shadow-[0_0_0_4px_rgba(253,230,138,0.2)]" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-white/70">Today&apos;s celebration reminder</p>
+                      <p className="text-sm font-semibold text-white md:text-base">
+                        {todayCelebrations.length} celebration{todayCelebrations.length === 1 ? '' : 's'} on your calendar today
+                      </p>
+                    </div>
+                  </div>
+                  <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-white/80 ring-1 ring-white/20">
+                    <CalendarDays className="h-3.5 w-3.5 no-transition" />
+                    Reminder active
+                  </div>
+                </div>
+
+                <div className="mt-3 grid max-h-64 grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
+                  {todayCelebrations.map((holiday, i) => (
+                    <article
+                      key={`${holiday.type}-${holiday.name}-${i}`}
+                      className="rounded-xl border border-white/15 bg-white/[0.12] p-3 text-left shadow-[0_1px_1px_rgba(255,255,255,0.08)_inset]"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ring-1 ${celebrationToneClasses[holiday.type]}`}>
+                              {celebrationTypeLabels[holiday.type]}
+                            </span>
+                            <span className="text-xs font-semibold text-white/70">{holiday.flag}</span>
+                          </div>
+                          <h2 className="mt-2 text-sm font-bold leading-tight text-white">{holiday.name}</h2>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs leading-relaxed text-white/75 line-clamp-3">{holiday.summary}</p>
+                      <button
+                        type="button"
+                        onClick={() => captureCelebrationReflection(holiday)}
+                        className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white/90 px-3 py-1.5 text-xs font-bold text-surface-900 shadow-sm transition-colors hover:bg-white"
+                        aria-label={`Capture a reflection for ${holiday.name}`}
+                      >
+                        <PenLine className="h-3.5 w-3.5 no-transition" />
+                        Capture reflection
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </div>
 
