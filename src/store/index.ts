@@ -77,6 +77,8 @@ const defaultSettings: AppSettings = {
   spellCheck: true,
   zenMode: false,
   noteViewMode: 'grid',
+  notebookSortBy: 'manual',
+  notebookSortDir: 'asc',
   offlineModeEnabled: false,
   hasSeenTour: false,
 };
@@ -604,6 +606,7 @@ interface AppState {
   deleteNote: (id: string) => Promise<void>;
   bulkDeleteNotes: (ids: string[]) => Promise<void>;
   emptyTrash: () => Promise<void>;
+  cleanupTrashOlderThan: (days: number) => Promise<{ notes: number; notebooks: number }>;
   archiveNote: (id: string) => Promise<void>;
   unarchiveNote: (id: string) => Promise<void>;
   pinNote: (id: string) => Promise<void>;
@@ -630,6 +633,7 @@ interface AppState {
   // Actions — Notebooks
   createNotebook: (name: string, parentId?: string | null, icon?: string) => Notebook;
   updateNotebook: (id: string, updates: Partial<Notebook>) => void;
+  reorderNotebook: (id: string, parentId: string | null, targetIndex: number) => void;
   deleteNotebook: (id: string) => void;
   restoreNotebook: (id: string) => void;
   permanentlyDeleteNotebook: (id: string) => void;
@@ -848,6 +852,13 @@ export const useStore = create<AppState>((set, get) => {
     }
     return ids;
   };
+
+  const sortNotebooksByOrder = (items: Notebook[]) =>
+    [...items].sort((a, b) =>
+      (a.order ?? 0) - (b.order ?? 0) ||
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+      a.name.localeCompare(b.name)
+    );
 
   return {
     notes: initialNotes,
@@ -1308,6 +1319,43 @@ export const useStore = create<AppState>((set, get) => {
       }
     },
 
+    cleanupTrashOlderThan: async (days) => {
+      const cutoff = Date.now() - Math.max(0, days) * 24 * 60 * 60 * 1000;
+      const { notes, notebooks, uid } = get();
+      const expiredNotes = notes.filter(n =>
+        n.trashed &&
+        n.trashedAt &&
+        new Date(n.trashedAt).getTime() <= cutoff
+      );
+      const expiredNotebooks = notebooks.filter(nb =>
+        nb.trashed &&
+        nb.trashedAt &&
+        new Date(nb.trashedAt).getTime() <= cutoff
+      );
+      const expiredNoteIds = new Set(expiredNotes.map(note => note.id));
+      const expiredNotebookIds = new Set(expiredNotebooks.map(nb => nb.id));
+
+      set(s => {
+        const remainingNotes = s.notes.filter(note => !expiredNoteIds.has(note.id));
+        return {
+          notes: remainingNotes,
+          tags: rebuildTags(remainingNotes),
+          notebooks: s.notebooks.filter(nb => !expiredNotebookIds.has(nb.id)),
+          selectedNoteId: expiredNoteIds.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+          editingNote: expiredNoteIds.has(s.selectedNoteId || '') ? false : s.editingNote,
+          selectedNotebookId: expiredNotebookIds.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+        };
+      });
+      persist();
+
+      if (uid) {
+        expiredNotes.forEach(note => deleteNoteFromFirestore(note.id));
+        expiredNotebooks.forEach(nb => deleteNotebookFromFirestore(nb.id));
+      }
+
+      return { notes: expiredNotes.length, notebooks: expiredNotebooks.length };
+    },
+
     archiveNote: async (id) => {
       set(s => {
         const notes = s.notes.map(n =>
@@ -1578,6 +1626,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // ── Notebooks ──
     createNotebook: (name, parentId = null, icon = '📓') => {
+      const siblingCount = get().notebooks.filter(nb => nb.parentId === parentId && !nb.trashed).length;
       const nb: Notebook = {
         id: uuid(),
         name,
@@ -1585,7 +1634,7 @@ export const useStore = create<AppState>((set, get) => {
         color: 'default',
         icon,
         createdAt: now(),
-        order: get().notebooks.length,
+        order: siblingCount,
         sections: [],
       };
       set(s => ({ notebooks: [...s.notebooks, nb] }));
@@ -1600,6 +1649,77 @@ export const useStore = create<AppState>((set, get) => {
       }));
       persist();
       syncNotebookToFirestore(id);
+    },
+
+    reorderNotebook: (id, parentId, targetIndex) => {
+      const state = get();
+      const moving = state.notebooks.find(nb => nb.id === id && !nb.trashed);
+      if (!moving) return;
+      if (moving.id === 'default' && parentId !== null) return;
+      if (parentId === id) return;
+      if (parentId && !state.notebooks.some(nb => nb.id === parentId && !nb.trashed)) return;
+
+      const childIds = getNotebookTreeIds(id);
+      if (parentId && childIds.has(parentId)) return;
+
+      const previous = new Map(state.notebooks.map(nb => [nb.id, { parentId: nb.parentId, order: nb.order }]));
+      let changedIds: string[] = [];
+
+      set(s => {
+        const oldParentId = moving.parentId;
+        const active = s.notebooks.filter(nb => !nb.trashed);
+        const oldSiblings = sortNotebooksByOrder(
+          active.filter(nb => nb.parentId === oldParentId && nb.id !== id)
+        );
+        const targetSiblings = sortNotebooksByOrder(
+          active.filter(nb => nb.parentId === parentId && nb.id !== id)
+        );
+
+        let insertIndex = Math.max(0, Math.min(targetIndex, targetSiblings.length));
+        if (oldParentId === parentId) {
+          const currentIndex = sortNotebooksByOrder(
+            active.filter(nb => nb.parentId === oldParentId)
+          ).findIndex(nb => nb.id === id);
+          if (currentIndex >= 0 && currentIndex < insertIndex) {
+            insertIndex -= 1;
+          }
+        }
+
+        const targetOrder = [
+          ...targetSiblings.slice(0, insertIndex),
+          { ...moving, parentId },
+          ...targetSiblings.slice(insertIndex),
+        ];
+        const updates = new Map<string, Partial<Notebook>>();
+
+        targetOrder.forEach((nb, order) => {
+          updates.set(nb.id, { parentId, order });
+        });
+
+        if (oldParentId !== parentId) {
+          oldSiblings.forEach((nb, order) => {
+            updates.set(nb.id, { parentId: oldParentId, order });
+          });
+        }
+
+        const notebooks = s.notebooks.map(nb => {
+          const update = updates.get(nb.id);
+          return update ? { ...nb, ...update } : nb;
+        });
+
+        changedIds = notebooks
+          .filter(nb => {
+            const before = previous.get(nb.id);
+            return before && (before.parentId !== nb.parentId || before.order !== nb.order);
+          })
+          .map(nb => nb.id);
+
+        return { notebooks };
+      });
+
+      if (changedIds.length === 0) return;
+      persist();
+      changedIds.forEach(notebookId => syncNotebookToFirestore(notebookId));
     },
 
     deleteNotebook: (id) => {
@@ -1972,16 +2092,17 @@ export const useStore = create<AppState>((set, get) => {
         
         let cmp = 0;
         if (sortBy === 'order') cmp = (a.order ?? 0) - (b.order ?? 0);
-        else if (sortBy === 'title') cmp = a.title.localeCompare(b.title);
+        else if (sortBy === 'title') cmp = (a.title || 'Untitled').localeCompare(b.title || 'Untitled');
         else if (sortBy === 'priority') {
-          const pOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
-          const aP = a.priority ? pOrder[a.priority] : 4;
-          const bP = b.priority ? pOrder[b.priority] : 4;
+          const pOrder = { urgent: 4, high: 3, medium: 2, low: 1 };
+          const aP = a.priority ? pOrder[a.priority] : 0;
+          const bP = b.priority ? pOrder[b.priority] : 0;
           cmp = aP - bP;
         }
-        else cmp = new Date(b[sortBy]).getTime() - new Date(a[sortBy]).getTime();
+        else if (sortBy === 'wordCount') cmp = (a.wordCount ?? 0) - (b.wordCount ?? 0);
+        else cmp = new Date(a[sortBy]).getTime() - new Date(b[sortBy]).getTime();
         
-        return sortDir === 'desc' ? cmp : -cmp;
+        return sortDir === 'desc' ? -cmp : cmp;
       });
 
       return filtered;
@@ -2002,7 +2123,7 @@ export const useStore = create<AppState>((set, get) => {
     getNotesByTag: (tag) => get().notes.filter(n => n.tags.includes(tag) && !n.trashed),
     getNoteById: (id) => get().notes.find(n => n.id === id),
     getNotebookById: (id) => get().notebooks.find(nb => nb.id === id),
-    getChildNotebooks: (parentId) => get().notebooks.filter(nb => nb.parentId === parentId),
+    getChildNotebooks: (parentId) => sortNotebooksByOrder(get().notebooks.filter(nb => nb.parentId === parentId)),
 
     getAllTags: () => get().tags,
 

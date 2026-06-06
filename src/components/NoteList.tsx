@@ -8,8 +8,28 @@ import {
   FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban, Share2,
   GripVertical, Pencil, Check
 } from 'lucide-react';
-import type { Note, NoteColor, NoteType, Priority } from '@/types';
+import type { Note, NoteColor, NoteSortBy, NoteType, Priority, SortDirection } from '@/types';
 import { noteColors } from '@/utils/colors';
+
+interface NoteSortOption {
+  label: string;
+  sortBy: NoteSortBy;
+  sortDir: SortDirection;
+}
+
+const noteSortOptions: NoteSortOption[] = [
+  { label: 'Manual order', sortBy: 'order', sortDir: 'asc' },
+  { label: 'Recently updated', sortBy: 'updatedAt', sortDir: 'desc' },
+  { label: 'Oldest updated', sortBy: 'updatedAt', sortDir: 'asc' },
+  { label: 'Newest created', sortBy: 'createdAt', sortDir: 'desc' },
+  { label: 'Oldest created', sortBy: 'createdAt', sortDir: 'asc' },
+  { label: 'Title A-Z', sortBy: 'title', sortDir: 'asc' },
+  { label: 'Title Z-A', sortBy: 'title', sortDir: 'desc' },
+  { label: 'Priority high-low', sortBy: 'priority', sortDir: 'desc' },
+  { label: 'Priority low-high', sortBy: 'priority', sortDir: 'asc' },
+  { label: 'Longest notes', sortBy: 'wordCount', sortDir: 'desc' },
+  { label: 'Shortest notes', sortBy: 'wordCount', sortDir: 'asc' },
+];
 
 export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
@@ -54,6 +74,13 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   };
 
   const title = viewTitles[currentView] || 'Notes';
+  const activeSortValue = `${searchFilters.sortBy}:${searchFilters.sortDir}`;
+
+  const handleSortChange = (value: string) => {
+    const option = noteSortOptions.find(item => `${item.sortBy}:${item.sortDir}` === value);
+    if (!option) return;
+    setSearchFilters({ sortBy: option.sortBy, sortDir: option.sortDir });
+  };
 
   const toggleSelect = (id: string) => {
     const newSet = new Set(selectedIds);
@@ -156,7 +183,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
       await updateNote(noteId, updates);
     }
     await reorderNotes(orderedNotes.map(note => note.id));
-    setSearchFilters({ sortBy: 'order', sortDir: 'desc' });
+    setSearchFilters({ sortBy: 'order', sortDir: 'asc' });
     setDraggedNoteId(null);
   };
 
@@ -621,16 +648,24 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 </div>
 
                 {/* Sort */}
-                <button
-                  onClick={() => setSearchFilters({
-                    sortDir: searchFilters.sortDir === 'desc' ? 'asc' : 'desc'
-                  })}
-                  className="p-2 rounded-lg theme-hover"
-                  title="Toggle sort order"
-                  style={{ color: 'var(--text-tertiary)' }}
+                <label
+                  className="hidden sm:flex items-center gap-1.5 px-2 py-1.5 rounded-lg border theme-border theme-input text-xs font-medium"
+                  title="Sort notes"
                 >
-                  <ArrowUpDown className="w-4 h-4 no-transition" />
-                </button>
+                  <ArrowUpDown className="w-4 h-4 no-transition shrink-0" style={{ color: 'var(--text-tertiary)' }} />
+                  <select
+                    value={activeSortValue}
+                    onChange={e => handleSortChange(e.target.value)}
+                    className="bg-transparent text-theme-secondary focus:outline-none cursor-pointer"
+                    aria-label="Sort notes"
+                  >
+                    {noteSortOptions.map(option => (
+                      <option key={`${option.sortBy}:${option.sortDir}`} value={`${option.sortBy}:${option.sortDir}`}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
                 {/* Filters */}
                 <button
@@ -787,12 +822,12 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             <div>
               <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-muted)' }}>Sort by</p>
               <div className="flex gap-1.5 flex-wrap">
-                {(['order', 'updatedAt', 'createdAt', 'title', 'priority'] as const).map(s => (
+                {noteSortOptions.map(option => (
                   <FilterChip
-                    key={s}
-                    label={s === 'order' ? 'Custom order' : s === 'updatedAt' ? 'Last modified' : s === 'createdAt' ? 'Created' : s === 'title' ? 'Title' : 'Priority'}
-                    active={searchFilters.sortBy === s}
-                    onClick={() => setSearchFilters({ sortBy: s })}
+                    key={`${option.sortBy}:${option.sortDir}`}
+                    label={option.label}
+                    active={searchFilters.sortBy === option.sortBy && searchFilters.sortDir === option.sortDir}
+                    onClick={() => setSearchFilters({ sortBy: option.sortBy, sortDir: option.sortDir })}
                   />
                 ))}
               </div>

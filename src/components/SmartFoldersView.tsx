@@ -79,6 +79,7 @@ export default function SmartFoldersView() {
   } = useStore();
   const [activeFolderId, setActiveFolderId] = useState('recent');
   const [searchName, setSearchName] = useState('');
+  const [localQuery, setLocalQuery] = useState('');
 
   const activeFolder = smartFolders.find(folder => folder.id === activeFolderId) || smartFolders[0];
   const ActiveIcon = activeFolder.icon;
@@ -86,6 +87,15 @@ export default function SmartFoldersView() {
     () => activeFolder.getNotes(notes.filter(note => !note.trashed || activeFolder.id === 'trash')),
     [activeFolder, notes]
   );
+  const visibleNotes = useMemo(() => {
+    const q = localQuery.trim().toLowerCase();
+    if (!q) return activeNotes;
+    return activeNotes.filter(note =>
+      note.title.toLowerCase().includes(q) ||
+      note.content.toLowerCase().includes(q) ||
+      note.tags.some(tag => tag.toLowerCase().includes(q))
+    );
+  }, [activeNotes, localQuery]);
   const hasActiveSearch =
     !!searchFilters.query ||
     searchFilters.tags.length > 0 ||
@@ -208,16 +218,27 @@ export default function SmartFoldersView() {
                 <ActiveIcon className="w-4 h-4 no-transition accent-text" />
                 <h3 className="font-semibold text-theme-primary">{activeFolder.label}</h3>
               </div>
-              <span className="text-xs text-theme-tertiary">{activeNotes.length} notes</span>
+              <span className="text-xs text-theme-tertiary">{visibleNotes.length} notes</span>
             </div>
-            {activeNotes.length === 0 ? (
+            <div className="px-4 py-3 border-b theme-divider">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 no-transition text-theme-tertiary" />
+                <input
+                  value={localQuery}
+                  onChange={event => setLocalQuery(event.target.value)}
+                  placeholder="Search this smart view..."
+                  className="w-full pl-9 pr-3 py-2 rounded-lg theme-input border text-sm focus:outline-none accent-focus"
+                />
+              </div>
+            </div>
+            {visibleNotes.length === 0 ? (
               <div className="p-10 text-center">
                 <FolderSearch className="w-10 h-10 text-theme-muted mx-auto mb-3 no-transition" />
                 <p className="font-medium text-theme-primary">Nothing here right now</p>
               </div>
             ) : (
               <div className="divide-y theme-divider">
-                {activeNotes.map(note => (
+                {visibleNotes.map(note => (
                   <button
                     key={note.id}
                     onClick={() => selectNote(note.id)}

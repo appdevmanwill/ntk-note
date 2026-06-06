@@ -4,6 +4,7 @@ import type { ChecklistItem, NoteColor, Priority } from '@/types';
 import { noteColors, priorityConfig } from '@/utils/colors';
 import { exportToPDF, copyAsPlainText, copyAsMarkdown, copyAsHTML, shareViaEmail, printNote } from '@/utils/export';
 import { getBacklinks, noteDisplayTitle } from '@/utils/links';
+import { compressImageDataUrl, compressImageFile } from '@/utils/imageCompression';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { v4 as uuid } from 'uuid';
@@ -16,12 +17,13 @@ import {
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
   Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus,
-  Undo2, Redo2
+  Undo2, Redo2, History, Cloud
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
 import SketchModal from './SketchModal';
 import ShareModal from './ShareModal';
+import VersionHistory, { saveLocalNoteSnapshot, useVersionHistory, type NoteVersion } from './VersionHistory';
 
 const isMarkdown = (text: string): boolean => {
   if (!text) return false;
@@ -180,6 +182,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [isListening, setIsListening] = useState(false);
   const [showSketchModal, setShowSketchModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [versionStatus, setVersionStatus] = useState('');
   const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
   const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
   const recognitionRef = useRef<any>(null);
@@ -193,6 +197,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const unlockedNote = note ? unlockedNotes[note.id] : undefined;
   const isLocked = !!note?.encrypted && !unlockedNote;
   const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
+  useVersionHistory(note?.id || null, title, content);
 
   const refreshHistoryStatus = useCallback(() => {
     setHistoryStatus({
@@ -393,9 +398,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     }
   };
 
-  const handleInsertDrawing = (dataUrl: string) => {
+  const insertImageMarkdown = useCallback((dataUrl: string, alt = 'Image') => {
     const el = contentRef.current;
-    const imgMarkdown = `\n![Sketch](${dataUrl})\n`;
+    const imgMarkdown = `\n![${alt}](${dataUrl})\n`;
     if (el) {
       const start = el.selectionStart;
       const end = el.selectionEnd;
@@ -409,10 +414,35 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const newContent = content ? content + imgMarkdown : imgMarkdown;
       updateContentWithHistory(newContent);
     }
+  }, [content, updateContentWithHistory]);
+
+  const handleInsertDrawing = (dataUrl: string) => {
+    void compressImageDataUrl(dataUrl)
+      .then(compressed => insertImageMarkdown(compressed, 'Sketch'))
+      .catch(() => insertImageMarkdown(dataUrl, 'Sketch'));
+  };
+
+  const handleInsertImageFile = (file: File) => {
+    void compressImageFile(file)
+      .then(compressed => insertImageMarkdown(compressed, file.name || 'Image'))
+      .catch(error => {
+        console.error('Image compression failed', error);
+        setVersionStatus('Image compression failed. Try a smaller image.');
+        window.setTimeout(() => setVersionStatus(''), 3000);
+      });
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!note || note.type !== 'note') return; // only for regular notes
+    if (!note) return;
+
+    const imageFile = Array.from(e.clipboardData.files).find(file => file.type.startsWith('image/'));
+    if (imageFile) {
+      e.preventDefault();
+      handleInsertImageFile(imageFile);
+      return;
+    }
+
+    if (note.type !== 'note') return; // only for regular notes
 
     const pastedData = e.clipboardData.getData('text/plain');
     if (isMarkdown(pastedData)) {
@@ -568,6 +598,27 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       return;
     }
     useStore.getState().reorderChecklist(note.id, reordered.map(item => item.id));
+  };
+
+  const handleSaveLocalSnapshot = (source: 'manual' | 'cloud-checkpoint' = 'manual') => {
+    if (!note) return;
+    saveLocalNoteSnapshot(note.id, title, content, source);
+    setVersionStatus(source === 'cloud-checkpoint' ? 'Cloud checkpoint saved.' : 'Local snapshot saved.');
+    window.setTimeout(() => setVersionStatus(''), 3000);
+  };
+
+  const handleCloudCheckpoint = () => {
+    if (!note) return;
+    handleSaveLocalSnapshot('cloud-checkpoint');
+    saveNote(title, content, true);
+  };
+
+  const handleRestoreVersion = (version: NoteVersion) => {
+    setTitle(version.title);
+    setContent(version.content);
+    saveNote(version.title, version.content, true);
+    setVersionStatus('Version restored.');
+    window.setTimeout(() => setVersionStatus(''), 3000);
   };
 
   const handleLockNote = async () => {
@@ -835,6 +886,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               )}
               <div className="my-1 border-t theme-divider" />
               <MenuBtn icon={Copy} label="Duplicate" onClick={() => { duplicateNote(note.id); setShowMenu(false); }} />
+              <MenuBtn icon={History} label="Version history" onClick={() => { setShowVersionHistory(true); setShowMenu(false); }} />
+              <MenuBtn icon={History} label="Save local snapshot" onClick={() => { handleSaveLocalSnapshot(); setShowMenu(false); }} />
+              <MenuBtn icon={Cloud} label="Cloud checkpoint" onClick={() => { handleCloudCheckpoint(); setShowMenu(false); }} />
               <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />
               <MenuBtn icon={Share2} label="Export / Share" onClick={() => setShowExportMenu(!showExportMenu)} />
               <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={() => { archiveNote(note.id); setShowMenu(false); }} />
@@ -1031,6 +1085,12 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             <button onClick={() => { setNoteReminder(note.id, undefined); setShowReminder(false); }} className="text-xs text-red-500">Remove</button>
           )}
           <button onClick={() => setShowReminder(false)} className="text-theme-tertiary ml-auto"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+
+      {versionStatus && (
+        <div className="px-4 py-1.5 border-b theme-divider text-xs accent-text" style={{ backgroundColor: 'var(--active-bg)' }}>
+          {versionStatus}
         </div>
       )}
 
@@ -1439,6 +1499,13 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         entityType="note"
         entityId={note.id}
       />
+      {showVersionHistory && (
+        <VersionHistory
+          noteId={note.id}
+          onClose={() => setShowVersionHistory(false)}
+          onRestore={handleRestoreVersion}
+        />
+      )}
     </div>
   );
 }

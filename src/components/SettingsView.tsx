@@ -8,12 +8,18 @@ import {
   User, Palette, Type, Download, Upload,
   Trash2, Moon, Sun, Keyboard, Info,
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
-  AlertTriangle, RefreshCw, Tag, TrendingUp
+  AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink
 } from 'lucide-react';
 import ImportManager from './ImportManager';
 import QuotaDashboard from './QuotaDashboard';
 import BrandMark from './BrandMark';
-import JSZip from 'jszip';
+import {
+  createWorkspaceArchive,
+  exportWorkspaceArchiveToGoogleDrive,
+  getWorkspaceArchiveFileName,
+} from '@/utils/cloudExport';
+import { compressInlineImagesInMarkdown } from '@/utils/imageCompression';
+import { countInlineImages, formatBytes, getOversizedNotes, getStorageHeavyNotes } from '@/utils/storageHealth';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -25,7 +31,7 @@ export default function SettingsView() {
     profile, setProfile, settings, updateSettings, setTheme, setAccent,
     exportAllNotes, importNotes, resetApp, getStats,
     syncConflicts, resolveSyncConflict, online,
-    notes, updateNote,
+    notes, updateNote, cleanupTrashOlderThan, selectNote,
   } = useStore();
 
   const [activeSection, setActiveSection] = useState('profile');
@@ -35,9 +41,19 @@ export default function SettingsView() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installMessage, setInstallMessage] = useState('');
   const [offlineStatus, setOfflineStatus] = useState('');
+  const [cloudExporting, setCloudExporting] = useState(false);
+  const [cloudSharing, setCloudSharing] = useState(false);
+  const [cloudExportStatus, setCloudExportStatus] = useState('');
+  const [cloudExportLink, setCloudExportLink] = useState('');
+  const [cleanupDays, setCleanupDays] = useState(30);
+  const [cleanupStatus, setCleanupStatus] = useState('');
+  const [compressingImages, setCompressingImages] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const stats = getStats();
+  const storageHeavyNotes = getStorageHeavyNotes(notes.filter(note => !note.trashed), 6);
+  const oversizedNotes = getOversizedNotes(notes.filter(note => !note.trashed));
+  const imageHeavyNotes = notes.filter(note => !note.trashed && countInlineImages(note.content) > 0);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -108,57 +124,89 @@ export default function SettingsView() {
   const handleExport = async () => {
     try {
       const data = exportAllNotes();
-      const exportObj = JSON.parse(data);
-      const notesList = exportObj.notes || [];
-
-      const zip = new JSZip();
-      
-      // Add raw JSON dump
-      zip.file('backup.json', data);
-      
-      // Create folders
-      const notesFolder = zip.folder('notes');
-      const imagesFolder = zip.folder('images');
-      
-      let imageCounter = 1;
-
-      notesList.forEach((note: any) => {
-        let content = note.content || '';
-        
-        // Extract base64 images
-        const base64Regex = /!\[([^\]]*)\]\((data:image\/[^;]+;base64,[^)]+)\)/g;
-        content = content.replace(base64Regex, (match: string, alt: string, dataUrl: string) => {
-          const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
-          if (matches && matches.length === 3) {
-            const ext = matches[1];
-            const base64Data = matches[2];
-            const filename = `img_${imageCounter++}.${ext}`;
-            
-            // Add image to images folder
-            imagesFolder?.file(filename, base64Data, { base64: true });
-            
-            // Replace data URL with local relative path in Markdown
-            return `![${alt}](../images/${filename})`;
-          }
-          return match;
-        });
-
-        const safeTitle = (note.title || 'Untitled').replace(/[\\/:*?"<>|]/g, '-');
-        const filename = `${safeTitle.substring(0, 50)}_${note.id.substring(0, 8)}.md`;
-        notesFolder?.file(filename, content);
-      });
-
-      const blob = await zip.generateAsync({ type: 'blob' });
+      const blob = await createWorkspaceArchive(data);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `ntk-notes-workspace-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.download = getWorkspaceArchiveFileName();
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Export failed', err);
       alert('Failed to export workspace. Check console for details.');
     }
+  };
+
+  const handleGoogleDriveExport = async () => {
+    setCloudExporting(true);
+    setCloudExportStatus('Connecting to Google Drive...');
+    setCloudExportLink('');
+
+    try {
+      const result = await exportWorkspaceArchiveToGoogleDrive(exportAllNotes());
+      setCloudExportStatus(`Uploaded ${result.fileName} to Google Drive.`);
+      setCloudExportLink(result.url);
+    } catch (err) {
+      console.error('Google Drive export failed', err);
+      setCloudExportStatus(err instanceof Error ? err.message : 'Google Drive export failed.');
+    } finally {
+      setCloudExporting(false);
+    }
+  };
+
+  const handleCloudShare = async () => {
+    setCloudSharing(true);
+    setCloudExportStatus('');
+    setCloudExportLink('');
+
+    try {
+      const blob = await createWorkspaceArchive(exportAllNotes());
+      const file = new File([blob], getWorkspaceArchiveFileName(), { type: 'application/zip' });
+      const shareData = {
+        title: 'NTK Note backup',
+        text: 'NTK Note workspace backup',
+        files: [file],
+      };
+
+      if (!navigator.canShare?.(shareData)) {
+        setCloudExportStatus('This browser cannot share backup files directly. Download the ZIP and upload it to your cloud storage app.');
+        return;
+      }
+
+      await navigator.share(shareData);
+      setCloudExportStatus('Backup handed off to your selected app.');
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setCloudExportStatus('Cloud share canceled.');
+      } else {
+        console.error('Cloud share failed', err);
+        setCloudExportStatus(err instanceof Error ? err.message : 'Cloud share failed.');
+      }
+    } finally {
+      setCloudSharing(false);
+    }
+  };
+
+  const handleCleanupOldTrash = async () => {
+    const result = await cleanupTrashOlderThan(cleanupDays);
+    setCleanupStatus(`Removed ${result.notes} note${result.notes === 1 ? '' : 's'} and ${result.notebooks} notebook${result.notebooks === 1 ? '' : 's'} from trash.`);
+  };
+
+  const handleCompressInlineImages = async () => {
+    setCompressingImages(true);
+    setCleanupStatus('Compressing inline images...');
+
+    let changed = 0;
+    for (const note of imageHeavyNotes) {
+      const compressed = await compressInlineImagesInMarkdown(note.content);
+      if (compressed !== note.content) {
+        changed += 1;
+        await updateNote(note.id, { content: compressed }, true);
+      }
+    }
+
+    setCompressingImages(false);
+    setCleanupStatus(`Compressed images in ${changed} note${changed === 1 ? '' : 's'}.`);
   };
 
   const sections = [
@@ -926,6 +974,42 @@ export default function SettingsView() {
                 </button>
 
                 <button
+                  onClick={handleGoogleDriveExport}
+                  disabled={cloudExporting || cloudSharing}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: 'rgba(59, 130, 246, 0.08)', color: '#3b82f6' }}
+                >
+                  {cloudExporting ? (
+                    <RefreshCw className="w-5 h-5 no-transition animate-spin" />
+                  ) : (
+                    <Cloud className="w-5 h-5 no-transition" />
+                  )}
+                  <div className="text-left">
+                    <p className="font-medium text-sm">Export to Google Drive</p>
+                    <p className="text-xs opacity-75">Save a ZIP backup to your Drive</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 ml-auto no-transition" />
+                </button>
+
+                <button
+                  onClick={handleCloudShare}
+                  disabled={cloudExporting || cloudSharing}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: 'rgba(14, 165, 233, 0.08)', color: '#0ea5e9' }}
+                >
+                  {cloudSharing ? (
+                    <RefreshCw className="w-5 h-5 no-transition animate-spin" />
+                  ) : (
+                    <DownloadCloud className="w-5 h-5 no-transition" />
+                  )}
+                  <div className="text-left">
+                    <p className="font-medium text-sm">Share to cloud app</p>
+                    <p className="text-xs opacity-75">Use your device share sheet when available</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 ml-auto no-transition" />
+                </button>
+
+                <button
                   onClick={() => fileInputRef.current?.click()}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors"
                   style={{ backgroundColor: 'rgba(16, 185, 129, 0.08)', color: '#10b981' }}
@@ -948,6 +1032,104 @@ export default function SettingsView() {
                 {importResult && (
                   <p className={`text-sm font-medium ${importResult.includes('success') ? 'text-emerald-500' : 'text-red-500'}`}>
                     {importResult}
+                  </p>
+                )}
+
+                {cloudExportStatus && (
+                  <div className="rounded-xl border theme-border px-3 py-2 text-sm text-theme-secondary">
+                    <p>{cloudExportStatus}</p>
+                    {cloudExportLink && (
+                      <a
+                        href={cloudExportLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-500 hover:underline"
+                      >
+                        Open in Drive <ExternalLink className="w-3 h-3 no-transition" />
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+            </SettingCard>
+
+            <SettingCard title="Cleanup & Storage Health">
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    <p className="text-xs text-theme-tertiary">Oversized risk</p>
+                    <p className={`text-xl font-bold ${oversizedNotes.length ? 'text-red-500' : 'text-emerald-500'}`}>{oversizedNotes.length}</p>
+                  </div>
+                  <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    <p className="text-xs text-theme-tertiary">Inline image notes</p>
+                    <p className="text-xl font-bold text-theme-primary">{imageHeavyNotes.length}</p>
+                  </div>
+                  <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    <p className="text-xs text-theme-tertiary">Largest note</p>
+                    <p className="text-xl font-bold text-theme-primary">{storageHeavyNotes[0] ? formatBytes(storageHeavyNotes[0].bytes) : '0 B'}</p>
+                  </div>
+                </div>
+
+                {storageHeavyNotes.length > 0 && (
+                  <div className="rounded-xl border theme-border overflow-hidden">
+                    {storageHeavyNotes.map(({ note, bytes }) => (
+                      <button
+                        key={note.id}
+                        onClick={() => selectNote(note.id)}
+                        className="w-full flex items-center justify-between gap-3 px-3 py-2 border-b last:border-b-0 theme-divider theme-hover text-left"
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium text-theme-primary truncate">{note.title || 'Untitled'}</span>
+                          <span className="block text-xs text-theme-tertiary">{countInlineImages(note.content)} inline image{countInlineImages(note.content) === 1 ? '' : 's'}</span>
+                        </span>
+                        <span className={`text-xs font-semibold shrink-0 ${bytes >= 900000 ? 'text-red-500' : 'text-theme-tertiary'}`}>
+                          {formatBytes(bytes)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={() => void handleCompressInlineImages()}
+                    disabled={compressingImages || imageHeavyNotes.length === 0}
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: 'rgba(59, 130, 246, 0.08)', color: '#3b82f6' }}
+                  >
+                    <RefreshCw className={`w-5 h-5 no-transition ${compressingImages ? 'animate-spin' : ''}`} />
+                    <div className="text-left">
+                      <p className="font-medium text-sm">Compress inline images</p>
+                      <p className="text-xs opacity-75">Reduce base64 image size before sync</p>
+                    </div>
+                  </button>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      value={cleanupDays}
+                      onChange={event => setCleanupDays(Number(event.target.value))}
+                      className="w-20 px-3 py-2 rounded-xl theme-input border text-sm focus:outline-none accent-focus"
+                      aria-label="Trash retention days"
+                    />
+                    <button
+                      onClick={() => void handleCleanupOldTrash()}
+                      className="flex-1 flex items-center gap-3 px-4 py-3 rounded-xl transition-colors"
+                      style={{ backgroundColor: 'rgba(239, 68, 68, 0.08)', color: '#ef4444' }}
+                    >
+                      <Trash2 className="w-5 h-5 no-transition" />
+                      <div className="text-left">
+                        <p className="font-medium text-sm">Clean old trash</p>
+                        <p className="text-xs opacity-75">Older than {cleanupDays} days</p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {cleanupStatus && (
+                  <p className="rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    {cleanupStatus}
                   </p>
                 )}
               </div>

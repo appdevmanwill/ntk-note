@@ -3,12 +3,13 @@ import { useStore } from '@/store';
 import { History, X, RotateCcw, Clock, Eye, ChevronRight } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 
-interface NoteVersion {
+export interface NoteVersion {
   id: string;
   noteId: string;
   title: string;
   content: string;
   timestamp: string;
+  source?: 'auto' | 'manual' | 'cloud-checkpoint' | 'restore';
 }
 
 interface Props {
@@ -18,7 +19,7 @@ interface Props {
 }
 
 // Store versions in localStorage
-const getVersions = (noteId: string): NoteVersion[] => {
+export const getVersions = (noteId: string): NoteVersion[] => {
   try {
     const raw = localStorage.getItem(`ntk-versions-${noteId}`);
     return raw ? JSON.parse(raw) : [];
@@ -27,11 +28,36 @@ const getVersions = (noteId: string): NoteVersion[] => {
   }
 };
 
-const saveVersion = (version: NoteVersion) => {
+export const saveVersion = (version: NoteVersion) => {
   const versions = getVersions(version.noteId);
   // Keep last 50 versions per note
   const newVersions = [version, ...versions].slice(0, 50);
   localStorage.setItem(`ntk-versions-${version.noteId}`, JSON.stringify(newVersions));
+};
+
+export const saveLocalNoteSnapshot = (
+  noteId: string,
+  title: string,
+  content: string,
+  source: NoteVersion['source'] = 'manual'
+) => {
+  const versions = getVersions(noteId);
+  const lastVersion = versions[0];
+
+  if (lastVersion?.title === title && lastVersion.content === content && lastVersion.source === source) {
+    return lastVersion;
+  }
+
+  const version: NoteVersion = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    noteId,
+    title,
+    content,
+    timestamp: new Date().toISOString(),
+    source,
+  };
+  saveVersion(version);
+  return version;
 };
 
 // Hook to automatically save versions
@@ -46,13 +72,7 @@ export const useVersionHistory = (noteId: string | null, title: string, content:
       
       // Only save if content changed
       if (!lastVersion || lastVersion.title !== title || lastVersion.content !== content) {
-        saveVersion({
-          id: Date.now().toString(),
-          noteId,
-          title,
-          content,
-          timestamp: new Date().toISOString(),
-        });
+        saveLocalNoteSnapshot(noteId, title, content, 'auto');
       }
     }, 30000);
 
@@ -75,13 +95,7 @@ export default function VersionHistory({ noteId, onClose, onRestore }: Props) {
     if (confirm('Restore this version? Current content will be saved as a new version.')) {
       // Save current state first
       if (currentNote) {
-        saveVersion({
-          id: Date.now().toString(),
-          noteId,
-          title: currentNote.title,
-          content: currentNote.content,
-          timestamp: new Date().toISOString(),
-        });
+        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore');
       }
       onRestore(version);
       onClose();
@@ -146,6 +160,7 @@ export default function VersionHistory({ noteId, onClose, onRestore }: Props) {
                     </p>
                     <p className="text-xs text-theme-tertiary">
                       {formatDistanceToNow(new Date(v.timestamp), { addSuffix: true })}
+                      {v.source ? ` - ${v.source === 'cloud-checkpoint' ? 'cloud checkpoint' : v.source}` : ''}
                     </p>
                   </div>
                   <ChevronRight className="w-4 h-4 text-surface-300" />

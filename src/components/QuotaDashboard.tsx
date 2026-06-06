@@ -85,22 +85,32 @@ export default function QuotaDashboard() {
         <div className="flex items-start gap-3">
           <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 no-transition" />
           <div>
-            <p className="text-sm font-semibold text-theme-primary">Firebase usage numbers removed</p>
+            <p className="text-sm font-semibold text-theme-primary">Offline-first by design</p>
             <p className="text-xs text-theme-tertiary mt-1">
-              This app will not show estimated Firebase read/write usage. Check exact usage in the Firebase console.
+              Edits save locally first, then upload in batches through the sync queue. Sorting, search, smart views, cleanup, and version snapshots run on this device to avoid extra Firestore reads.
             </p>
           </div>
         </div>
       </div>
 
       {syncConflicts.length > 0 && (
-        <div className="rounded-xl border p-4" style={{ backgroundColor: 'rgba(245, 158, 11, 0.08)', borderColor: 'rgba(245, 158, 11, 0.24)' }}>
+        <div className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'rgba(245, 158, 11, 0.08)', borderColor: 'rgba(245, 158, 11, 0.24)' }}>
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 no-transition" />
             <div>
               <p className="text-sm font-semibold text-theme-primary">{syncConflicts.length} sync conflict{syncConflicts.length === 1 ? '' : 's'}</p>
               <p className="text-xs text-theme-tertiary mt-1">Resolve conflicts below before those notes sync again.</p>
             </div>
+          </div>
+          <div className="space-y-1">
+            {syncConflicts.slice(0, 3).map(conflict => (
+              <div key={conflict.id} className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: 'var(--card-bg)' }}>
+                <p className="font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote.title || 'Untitled note'}</p>
+                <p className="text-theme-tertiary">
+                  Local: {new Date(conflict.local.updatedAt).toLocaleString()} | Cloud: {new Date(conflict.remote.updatedAt).toLocaleString()}
+                </p>
+              </div>
+            ))}
           </div>
         </div>
       )}

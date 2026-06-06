@@ -1,24 +1,52 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import type { CSSProperties, DragEvent } from 'react';
 import { useStore } from '@/store';
 import {
   Home, FileText, Tag, Star, Archive, Trash2,
   Bell, Search, Settings, Plus, ChevronDown, ChevronRight,
   Moon, Sun, LayoutTemplate, LogOut, X, Share2,
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
-  Edit3
+  Edit3, GripVertical, ArrowUpDown
 } from 'lucide-react';
-import type { SidebarView } from '@/types';
+import type { Notebook, NotebookSortBy, SidebarView, SortDirection } from '@/types';
 import ManageNotebooksModal from './ManageNotebooksModal';
 import { signOut } from 'firebase/auth';
 import { auth } from '@/utils/firebase';
 import BrandMark from './BrandMark';
+
+type NotebookDropPosition = 'before' | 'after' | 'inside';
+
+interface NotebookDropTarget {
+  parentId: string | null;
+  index: number;
+  targetId: string;
+  position: NotebookDropPosition;
+}
+
+interface NotebookSortOption {
+  label: string;
+  sortBy: NotebookSortBy;
+  sortDir: SortDirection;
+}
+
+const notebookSortOptions: NotebookSortOption[] = [
+  { label: 'Manual order', sortBy: 'manual', sortDir: 'asc' },
+  { label: 'Name A-Z', sortBy: 'name', sortDir: 'asc' },
+  { label: 'Name Z-A', sortBy: 'name', sortDir: 'desc' },
+  { label: 'Recently used', sortBy: 'recentNote', sortDir: 'desc' },
+  { label: 'Least recently used', sortBy: 'recentNote', sortDir: 'asc' },
+  { label: 'Newest created', sortBy: 'createdAt', sortDir: 'desc' },
+  { label: 'Oldest created', sortBy: 'createdAt', sortDir: 'asc' },
+  { label: 'Most notes', sortBy: 'noteCount', sortDir: 'desc' },
+  { label: 'Fewest notes', sortBy: 'noteCount', sortDir: 'asc' },
+];
 
 export default function Sidebar() {
   const {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, getStats, updateSettings, clearAuth,
+    notes, getStats, updateSettings, clearAuth, reorderNotebook,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
@@ -28,6 +56,8 @@ export default function Sidebar() {
   const [showManageNotebooks, setShowManageNotebooks] = useState(false);
   const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
   const [editNotebookName, setEditNotebookName] = useState('');
+  const [draggedNotebookId, setDraggedNotebookId] = useState<string | null>(null);
+  const [notebookDropTarget, setNotebookDropTarget] = useState<NotebookDropTarget | null>(null);
 
   const stats = getStats();
   const trashedCount = notes.filter(n => n.trashed).length;
@@ -35,6 +65,49 @@ export default function Sidebar() {
   const starredCount = notes.filter(n => n.starred && !n.trashed && !n.archived).length;
   const remindersCount = notes.filter(n => n.reminder && !n.trashed).length;
   const collapsed = settings.sidebarCollapsed;
+  const activeNotebookSortValue = `${settings.notebookSortBy}:${settings.notebookSortDir}`;
+  const visibleNotebooks = useMemo(() => notebooks.filter(nb => !nb.trashed), [notebooks]);
+
+  const getNotebookNoteCount = (notebookId: string) =>
+    notes.filter(note => note.notebookId === notebookId && !note.trashed).length;
+
+  const getNotebookRecentNoteTime = (notebookId: string) =>
+    Math.max(
+      0,
+      ...notes
+        .filter(note => note.notebookId === notebookId && !note.trashed)
+        .map(note => new Date(note.updatedAt).getTime())
+    );
+
+  const sortNotebookItems = (items: Notebook[]) =>
+    [...items].sort((a, b) => {
+      let cmp = 0;
+      if (settings.notebookSortBy === 'name') {
+        cmp = a.name.localeCompare(b.name);
+      } else if (settings.notebookSortBy === 'createdAt') {
+        cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      } else if (settings.notebookSortBy === 'recentNote') {
+        cmp = getNotebookRecentNoteTime(a.id) - getNotebookRecentNoteTime(b.id);
+      } else if (settings.notebookSortBy === 'noteCount') {
+        cmp = getNotebookNoteCount(a.id) - getNotebookNoteCount(b.id);
+      } else {
+        cmp = (a.order ?? 0) - (b.order ?? 0);
+      }
+
+      if (cmp === 0) {
+        cmp =
+          (a.order ?? 0) - (b.order ?? 0) ||
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime() ||
+          a.name.localeCompare(b.name);
+      }
+
+      return settings.notebookSortDir === 'desc' ? -cmp : cmp;
+    });
+
+  const topLevelNotebooks = useMemo(
+    () => sortNotebookItems(visibleNotebooks.filter(nb => !nb.parentId)),
+    [visibleNotebooks, settings.notebookSortBy, settings.notebookSortDir, notes]
+  );
 
   const navItems: { view: SidebarView; icon: typeof Home; label: string; badge?: number }[] = [
     { view: 'home', icon: Home, label: 'Home' },
@@ -63,6 +136,89 @@ export default function Sidebar() {
       useStore.getState().updateNotebook(id, { name: editNotebookName.trim() });
     }
     setEditingNotebookId(null);
+  };
+
+  const getOrderedChildNotebooks = (parentId: string) =>
+    sortNotebookItems(visibleNotebooks.filter(nb => nb.parentId === parentId));
+
+  const isNotebookDescendant = (candidateParentId: string | null, notebookId: string) => {
+    let currentId = candidateParentId;
+    while (currentId) {
+      if (currentId === notebookId) return true;
+      currentId = notebooks.find(nb => nb.id === currentId)?.parentId ?? null;
+    }
+    return false;
+  };
+
+  const canDropNotebook = (notebookId: string | null, parentId: string | null) => {
+    if (!notebookId) return false;
+    if (notebookId === parentId) return false;
+    if (notebookId === 'default' && parentId !== null) return false;
+    return !isNotebookDescendant(parentId, notebookId);
+  };
+
+  const handleNotebookDragStart = (event: DragEvent<HTMLElement>, notebook: Notebook) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', notebook.id);
+    setDraggedNotebookId(notebook.id);
+  };
+
+  const clearNotebookDrag = () => {
+    setDraggedNotebookId(null);
+    setNotebookDropTarget(null);
+  };
+
+  const handleNotebookDragOver = (
+    event: DragEvent<HTMLElement>,
+    targetNotebook: Notebook,
+    rowParentId: string | null,
+    targetIndex: number,
+    allowInside: boolean
+  ) => {
+    const dragId = draggedNotebookId || event.dataTransfer.getData('text/plain');
+    if (!dragId) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const yRatio = (event.clientY - rect.top) / Math.max(rect.height, 1);
+    let position: NotebookDropPosition;
+    let parentId = rowParentId;
+    let index = targetIndex;
+
+    if (allowInside && yRatio > 0.28 && yRatio < 0.72) {
+      position = 'inside';
+      parentId = targetNotebook.id;
+      index = getOrderedChildNotebooks(targetNotebook.id).length;
+    } else {
+      position = yRatio < 0.5 ? 'before' : 'after';
+      index = position === 'before' ? targetIndex : targetIndex + 1;
+    }
+
+    if (!canDropNotebook(dragId, parentId)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setNotebookDropTarget({ parentId, index, targetId: targetNotebook.id, position });
+  };
+
+  const handleNotebookDrop = (event: DragEvent<HTMLElement>) => {
+    const dragId = draggedNotebookId || event.dataTransfer.getData('text/plain');
+    if (!dragId || !notebookDropTarget) return;
+
+    event.preventDefault();
+    reorderNotebook(dragId, notebookDropTarget.parentId, notebookDropTarget.index);
+    updateSettings({ notebookSortBy: 'manual', notebookSortDir: 'asc' });
+    clearNotebookDrag();
+  };
+
+  const getNotebookDropStyle = (targetId: string): CSSProperties => {
+    if (notebookDropTarget?.targetId !== targetId) return {};
+    if (notebookDropTarget.position === 'before') {
+      return { boxShadow: 'inset 0 2px 0 var(--accent-primary)' };
+    }
+    if (notebookDropTarget.position === 'after') {
+      return { boxShadow: 'inset 0 -2px 0 var(--accent-primary)' };
+    }
+    return { backgroundColor: 'var(--active-bg)', outline: '1px solid var(--accent-primary)' };
   };
 
   const handleNavClick = (view: SidebarView) => {
@@ -195,6 +351,34 @@ export default function Sidebar() {
               </div>
             </div>
 
+            {notebooksExpanded && (
+              <div className="px-3 pb-2">
+                <label
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border theme-border theme-input text-xs"
+                  title="Sort notebooks"
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5 no-transition shrink-0 text-theme-tertiary" />
+                  <select
+                    value={activeNotebookSortValue}
+                    onChange={e => {
+                      const option = notebookSortOptions.find(item => `${item.sortBy}:${item.sortDir}` === e.target.value);
+                      if (option) {
+                        updateSettings({ notebookSortBy: option.sortBy, notebookSortDir: option.sortDir });
+                      }
+                    }}
+                    className="w-full min-w-0 bg-transparent text-theme-secondary focus:outline-none cursor-pointer"
+                    aria-label="Sort notebooks"
+                  >
+                    {notebookSortOptions.map(option => (
+                      <option key={`${option.sortBy}:${option.sortDir}`} value={`${option.sortBy}:${option.sortDir}`}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+
             {showNewNotebook && (
               <div className="px-3 pb-2">
                 <input
@@ -212,14 +396,19 @@ export default function Sidebar() {
 
             {notebooksExpanded && (
               <div className="space-y-0.5">
-                {notebooks.filter(nb => !nb.parentId && !nb.trashed).map(nb => {
-                  const childNotebooks = notebooks.filter(sub => sub.parentId === nb.id && !sub.trashed);
+                {topLevelNotebooks.map((nb, notebookIndex) => {
+                  const childNotebooks = getOrderedChildNotebooks(nb.id);
                   const noteCount = notes.filter(n => n.notebookId === nb.id && !n.trashed).length;
                   const isSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === nb.id;
                   
                   return (
                     <div key={nb.id} className="group">
-                      <div className="flex items-center">
+                      <div
+                        className="flex items-center rounded-xl"
+                        onDragOver={(e) => handleNotebookDragOver(e, nb, null, notebookIndex, true)}
+                        onDrop={handleNotebookDrop}
+                        style={getNotebookDropStyle(nb.id)}
+                      >
                         {editingNotebookId === nb.id ? (
                           <div className="flex-1 px-3 py-1">
                             <input
@@ -239,6 +428,20 @@ export default function Sidebar() {
                         ) : (
                           <>
                             <button
+                              type="button"
+                              draggable
+                              onDragStart={(e) => handleNotebookDragStart(e, nb)}
+                              onDragEnd={clearNotebookDrag}
+                              onClick={(e) => e.stopPropagation()}
+                              className={`ml-1 p-1 rounded theme-hover text-theme-tertiary cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all ${
+                                draggedNotebookId === nb.id ? 'opacity-100' : ''
+                              }`}
+                              title="Drag notebook"
+                              aria-label={`Drag ${nb.name}`}
+                            >
+                              <GripVertical className="w-3.5 h-3.5 no-transition" />
+                            </button>
+                            <button
                               onClick={() => { selectNotebook(nb.id); handleNavClick('notebooks'); }}
                               onDoubleClick={(e) => {
                                 e.stopPropagation();
@@ -247,7 +450,7 @@ export default function Sidebar() {
                                 setEditNotebookName(nb.name);
                               }}
                               className={`
-                                flex-1 flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all
+                                flex-1 flex items-center gap-3 px-2 py-2 rounded-xl text-sm transition-all
                                 ${isSelected
                                   ? 'font-medium'
                                   : 'text-theme-secondary theme-hover'
@@ -291,11 +494,17 @@ export default function Sidebar() {
                         )}
                       </div>
                       {/* Sub-notebooks */}
-                      {childNotebooks.map(sub => {
+                      {childNotebooks.map((sub, subIndex) => {
                         const subSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === sub.id;
                         const subCount = notes.filter(n => n.notebookId === sub.id && !n.trashed).length;
                         return (
-                          <div key={sub.id} className="group/sub flex items-center">
+                          <div
+                            key={sub.id}
+                            className="group/sub flex items-center rounded-xl"
+                            onDragOver={(e) => handleNotebookDragOver(e, sub, nb.id, subIndex, false)}
+                            onDrop={handleNotebookDrop}
+                            style={getNotebookDropStyle(sub.id)}
+                          >
                             {editingNotebookId === sub.id ? (
                               <div className="flex-1 pl-9 pr-3 py-1">
                                 <input
@@ -315,6 +524,20 @@ export default function Sidebar() {
                             ) : (
                               <>
                                 <button
+                                  type="button"
+                                  draggable
+                                  onDragStart={(e) => handleNotebookDragStart(e, sub)}
+                                  onDragEnd={clearNotebookDrag}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className={`ml-6 p-1 rounded theme-hover text-theme-tertiary cursor-grab active:cursor-grabbing opacity-0 group-hover/sub:opacity-100 focus:opacity-100 transition-all ${
+                                    draggedNotebookId === sub.id ? 'opacity-100' : ''
+                                  }`}
+                                  title="Drag notebook"
+                                  aria-label={`Drag ${sub.name}`}
+                                >
+                                  <GripVertical className="w-3 h-3 no-transition" />
+                                </button>
+                                <button
                                   onClick={() => { selectNotebook(sub.id); handleNavClick('notebooks'); }}
                                   onDoubleClick={(e) => {
                                     e.stopPropagation();
@@ -322,7 +545,7 @@ export default function Sidebar() {
                                     setEditNotebookName(sub.name);
                                   }}
                                   className={`
-                                    flex-1 flex items-center gap-2 pl-9 pr-3 py-1.5 rounded-xl text-sm transition-all
+                                    flex-1 flex items-center gap-2 px-2 py-1.5 rounded-xl text-sm transition-all
                                     ${subSelected
                                       ? 'font-medium'
                                       : 'text-theme-tertiary theme-hover'

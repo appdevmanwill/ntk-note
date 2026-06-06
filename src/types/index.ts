@@ -111,6 +111,10 @@ export type ThemeAccent =
   | 'orange' | 'amber' | 'emerald' | 'teal' | 'cyan'
   | 'violet' | 'rose';
 
+export type NoteSortBy = 'order' | 'updatedAt' | 'createdAt' | 'title' | 'priority' | 'wordCount';
+export type SortDirection = 'asc' | 'desc';
+export type NotebookSortBy = 'manual' | 'name' | 'createdAt' | 'recentNote' | 'noteCount';
+
 export interface UserProfile {
   name: string;
   email: string;
@@ -136,6 +140,8 @@ export interface AppSettings {
   spellCheck: boolean;
   zenMode: boolean;
   noteViewMode: 'grid' | 'list' | 'kanban';
+  notebookSortBy: NotebookSortBy;
+  notebookSortDir: SortDirection;
   offlineModeEnabled: boolean;
   hasSeenTour: boolean;
 }
@@ -157,8 +163,8 @@ export interface SearchFilters {
   hasChecklist: boolean | null;
   dateRange: { start: string; end: string } | null;
   sharedBy: string[];
-  sortBy: 'order' | 'updatedAt' | 'createdAt' | 'title' | 'priority';
-  sortDir: 'asc' | 'desc';
+  sortBy: NoteSortBy;
+  sortDir: SortDirection;
 }
 
 export interface KeyboardShortcut {
