@@ -20,6 +20,7 @@ export default function CalendarWidget() {
   const { notes } = useStore();
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [openHolidayKey, setOpenHolidayKey] = useState<string | null>(null);
   
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
@@ -94,7 +95,10 @@ export default function CalendarWidget() {
           return (
             <div key={day.toISOString()} className="flex items-center justify-center h-8">
               <button
-                onClick={() => setSelectedDate(day)}
+                onClick={() => {
+                  setSelectedDate(day);
+                  setOpenHolidayKey(null);
+                }}
                 className={`
                   w-7 h-7 rounded-lg flex items-center justify-center text-xs font-semibold relative transition-all duration-75 cursor-pointer
                   ${today ? 'text-white' : ''}
@@ -150,17 +154,37 @@ export default function CalendarWidget() {
         
         <div className="space-y-1.5">
           {/* Holidays */}
-          {selectedDayHolidays.map((holiday, i) => (
-            <div key={`h-${i}`} className="flex items-center gap-2.5 p-2 rounded-lg bg-[var(--card-bg)] border theme-divider shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-shadow hover:shadow-[0_2px_4px_rgba(0,0,0,0.04)]">
-              <span className="text-base select-none leading-none">{holiday.flag}</span>
-              <div className="flex flex-col min-w-0">
-                <span className="text-xs font-semibold text-theme-primary leading-tight truncate">{holiday.name}</span>
-                <span className="text-[9px] text-theme-tertiary font-bold tracking-wide uppercase mt-0.5">
-                  {holidayTypeLabels[holiday.type]}
-                </span>
-              </div>
-            </div>
-          ))}
+          {selectedDayHolidays.map((holiday, i) => {
+            const holidayKey = `${selectedDate.toISOString()}-${holiday.type}-${holiday.name}-${i}`;
+            const isOpen = openHolidayKey === holidayKey;
+
+            return (
+              <button
+                key={`h-${i}`}
+                type="button"
+                onClick={() => setOpenHolidayKey(isOpen ? null : holidayKey)}
+                aria-expanded={isOpen}
+                aria-label={`${holiday.name} summary`}
+                className="w-full flex items-start gap-2.5 p-2 rounded-lg bg-[var(--card-bg)] border theme-divider shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-shadow hover:shadow-[0_2px_4px_rgba(0,0,0,0.04)] text-left"
+              >
+                <span className="text-base select-none leading-none pt-0.5">{holiday.flag}</span>
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="flex items-start gap-1.5">
+                    <span className="text-xs font-semibold text-theme-primary leading-tight flex-1">{holiday.name}</span>
+                    <ChevronRight className={`w-3.5 h-3.5 shrink-0 text-theme-muted transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                  </span>
+                  <span className="text-[9px] text-theme-tertiary font-bold tracking-wide uppercase mt-0.5">
+                    {holidayTypeLabels[holiday.type]}
+                  </span>
+                  {isOpen && (
+                    <span className="mt-2 text-[11px] leading-snug text-theme-secondary">
+                      {holiday.summary}
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
 
           {/* Reminders */}
           {selectedDayReminders.map((r, i) => (
