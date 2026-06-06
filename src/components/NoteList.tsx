@@ -439,8 +439,8 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     <div className="flex-1 flex flex-col h-full overflow-hidden" style={{ backgroundColor: 'var(--app-bg)' }}>
       {/* Header */}
       <div className="px-4 md:px-6 pt-4 pb-3 shrink-0">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
+        <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
             {activeNotebook && (
               <div className="flex items-center gap-1">
@@ -470,12 +470,22 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2 xl:flex-nowrap xl:justify-end">
+            {!bulkMode && canCreateNoteHere && (
+              <button
+                onClick={handleCreateNoteHere}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg accent-button px-3 py-2 text-sm font-semibold transition-colors"
+              >
+                <Plus className="w-4 h-4 no-transition" />
+                <span>{activeNotebook ? 'New note here' : 'New Note'}</span>
+              </button>
+            )}
+
             {onCollapsePanel && (
               <button
                 type="button"
                 onClick={onCollapsePanel}
-                className="hidden lg:inline-flex p-2 rounded-lg theme-hover text-theme-tertiary"
+                className="hidden xl:inline-flex p-2 rounded-lg theme-hover text-theme-tertiary"
                 title="Collapse notes list"
                 aria-label="Collapse notes list"
               >
@@ -688,17 +698,6 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 >
                   <SlidersHorizontal className="w-4 h-4 no-transition" />
                 </button>
-
-                {/* New note */}
-                {canCreateNoteHere && (
-                  <button
-                    onClick={handleCreateNoteHere}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg accent-button text-sm font-medium transition-colors"
-                  >
-                    <Plus className="w-4 h-4 no-transition" />
-                    <span className="hidden sm:inline">{activeNotebook ? 'New in Notebook' : 'New Note'}</span>
-                  </button>
-                )}
 
                 {/* Empty trash */}
                 {currentView === 'trash' && filteredNotes.length > 0 && (

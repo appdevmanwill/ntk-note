@@ -46,7 +46,7 @@ export default function Sidebar() {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, getStats, updateSettings, clearAuth, reorderNotebook,
+    notes, getStats, updateSettings, clearAuth, reorderNotebook, moveNote,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
@@ -58,6 +58,7 @@ export default function Sidebar() {
   const [editNotebookName, setEditNotebookName] = useState('');
   const [draggedNotebookId, setDraggedNotebookId] = useState<string | null>(null);
   const [notebookDropTarget, setNotebookDropTarget] = useState<NotebookDropTarget | null>(null);
+  const [noteDropNotebookId, setNoteDropNotebookId] = useState<string | null>(null);
 
   const stats = getStats();
   const trashedCount = notes.filter(n => n.trashed).length;
@@ -167,6 +168,55 @@ export default function Sidebar() {
   const clearNotebookDrag = () => {
     setDraggedNotebookId(null);
     setNotebookDropTarget(null);
+    setNoteDropNotebookId(null);
+  };
+
+  const isNoteDrag = (event: DragEvent<HTMLElement>) =>
+    Array.from(event.dataTransfer.types).includes('application/x-ntk-note-id');
+
+  const getDraggedNoteId = (event: DragEvent<HTMLElement>) =>
+    event.dataTransfer.getData('application/x-ntk-note-id');
+
+  const handleNotebookRowDragOver = (
+    event: DragEvent<HTMLElement>,
+    targetNotebook: Notebook,
+    rowParentId: string | null,
+    targetIndex: number,
+    allowInside: boolean
+  ) => {
+    if (isNoteDrag(event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      setNotebookDropTarget(null);
+      setNoteDropNotebookId(targetNotebook.id);
+      return;
+    }
+
+    handleNotebookDragOver(event, targetNotebook, rowParentId, targetIndex, allowInside);
+  };
+
+  const handleNotebookRowDrop = (event: DragEvent<HTMLElement>, targetNotebook: Notebook) => {
+    const noteId = getDraggedNoteId(event);
+    if (noteId) {
+      event.preventDefault();
+      event.stopPropagation();
+      const note = notes.find(item => item.id === noteId && !item.trashed);
+      if (note && note.notebookId !== targetNotebook.id) {
+        void moveNote(note.id, targetNotebook.id);
+      }
+      setNoteDropNotebookId(null);
+      return;
+    }
+
+    handleNotebookDrop(event);
+  };
+
+  const handleNotebookRowDragLeave = (event: DragEvent<HTMLElement>, targetId: string) => {
+    if (noteDropNotebookId !== targetId) return;
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+    setNoteDropNotebookId(null);
   };
 
   const handleNotebookDragOver = (
@@ -211,6 +261,13 @@ export default function Sidebar() {
   };
 
   const getNotebookDropStyle = (targetId: string): CSSProperties => {
+    if (noteDropNotebookId === targetId) {
+      return {
+        backgroundColor: 'var(--active-bg)',
+        outline: '1px solid var(--accent-primary)',
+        boxShadow: '0 0 0 3px var(--accent-glow)',
+      };
+    }
     if (notebookDropTarget?.targetId !== targetId) return {};
     if (notebookDropTarget.position === 'before') {
       return { boxShadow: 'inset 0 2px 0 var(--accent-primary)' };
@@ -405,8 +462,9 @@ export default function Sidebar() {
                     <div key={nb.id} className="group">
                       <div
                         className="flex items-center rounded-xl"
-                        onDragOver={(e) => handleNotebookDragOver(e, nb, null, notebookIndex, true)}
-                        onDrop={handleNotebookDrop}
+                        onDragOver={(e) => handleNotebookRowDragOver(e, nb, null, notebookIndex, true)}
+                        onDrop={(e) => handleNotebookRowDrop(e, nb)}
+                        onDragLeave={(e) => handleNotebookRowDragLeave(e, nb.id)}
                         style={getNotebookDropStyle(nb.id)}
                       >
                         {editingNotebookId === nb.id ? (
@@ -501,8 +559,9 @@ export default function Sidebar() {
                           <div
                             key={sub.id}
                             className="group/sub flex items-center rounded-xl"
-                            onDragOver={(e) => handleNotebookDragOver(e, sub, nb.id, subIndex, false)}
-                            onDrop={handleNotebookDrop}
+                            onDragOver={(e) => handleNotebookRowDragOver(e, sub, nb.id, subIndex, false)}
+                            onDrop={(e) => handleNotebookRowDrop(e, sub)}
+                            onDragLeave={(e) => handleNotebookRowDragLeave(e, sub.id)}
                             style={getNotebookDropStyle(sub.id)}
                           >
                             {editingNotebookId === sub.id ? (

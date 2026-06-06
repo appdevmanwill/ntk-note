@@ -299,16 +299,16 @@ export default function App() {
               />
             )}
             <div className={`
-              ${editingNote && selectedNoteId ? 'hidden lg:flex' : 'flex'}
-              ${noteListCollapsed ? 'lg:hidden' : 'lg:flex'}
+              ${editingNote && selectedNoteId ? 'hidden xl:flex' : 'flex'}
+              ${noteListCollapsed ? 'xl:hidden' : 'xl:flex'}
               flex-1 min-w-0
             `}>
               <NoteList onCollapsePanel={toggleNoteListCollapse} />
             </div>
             <div className={`
-              ${editingNote && selectedNoteId ? 'flex' : 'hidden lg:flex'}
-              ${editorPanelCollapsed ? 'lg:hidden' : 'lg:flex'}
-              flex-1 min-w-0 lg:border-l theme-divider
+              ${editingNote && selectedNoteId ? 'flex' : 'hidden xl:flex'}
+              ${editorPanelCollapsed ? 'xl:hidden' : 'xl:flex'}
+              flex-1 min-w-0 xl:border-l theme-divider
             `}>
               <NoteEditor onCollapsePanel={toggleEditorPanelCollapse} />
             </div>
@@ -363,7 +363,7 @@ function CollapsedPanelRail({
   return (
     <div
       className={`
-        hidden lg:flex w-12 shrink-0 items-start justify-center border-r theme-divider
+        hidden xl:flex w-12 shrink-0 items-start justify-center border-r theme-divider
         ${side === 'right' ? 'border-r-0 border-l' : ''}
       `}
       style={{ backgroundColor: 'var(--app-bg-subtle)' }}
