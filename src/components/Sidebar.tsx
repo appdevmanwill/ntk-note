@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { useStore } from '@/store';
 import {
@@ -41,12 +41,15 @@ const notebookSortOptions: NotebookSortOption[] = [
   { label: 'Fewest notes', sortBy: 'noteCount', sortDir: 'asc' },
 ];
 
+const NOTEBOOK_EXPANSION_STORAGE_KEY = 'ntk-expanded-notebooks';
+
 export default function Sidebar() {
   const {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
     notes, getStats, updateSettings, clearAuth, reorderNotebook, moveNote,
+    selectedNotebookId, selectedTagId,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
@@ -59,6 +62,20 @@ export default function Sidebar() {
   const [draggedNotebookId, setDraggedNotebookId] = useState<string | null>(null);
   const [notebookDropTarget, setNotebookDropTarget] = useState<NotebookDropTarget | null>(null);
   const [noteDropNotebookId, setNoteDropNotebookId] = useState<string | null>(null);
+  const [hasStoredNotebookExpansion, setHasStoredNotebookExpansion] = useState(() => (
+    typeof window !== 'undefined' && window.localStorage.getItem(NOTEBOOK_EXPANSION_STORAGE_KEY) !== null
+  ));
+  const [expandedNotebookIds, setExpandedNotebookIds] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const stored = window.localStorage.getItem(NOTEBOOK_EXPANSION_STORAGE_KEY);
+      if (!stored) return new Set();
+      const ids = JSON.parse(stored);
+      return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []);
+    } catch {
+      return new Set();
+    }
+  });
 
   const stats = getStats();
   const trashedCount = notes.filter(n => n.trashed).length;
@@ -68,6 +85,11 @@ export default function Sidebar() {
   const collapsed = settings.sidebarCollapsed;
   const activeNotebookSortValue = `${settings.notebookSortBy}:${settings.notebookSortDir}`;
   const visibleNotebooks = useMemo(() => notebooks.filter(nb => !nb.trashed), [notebooks]);
+  const parentNotebookIds = useMemo(() => new Set(
+    visibleNotebooks
+      .filter(parent => visibleNotebooks.some(child => child.parentId === parent.id))
+      .map(nb => nb.id)
+  ), [visibleNotebooks]);
 
   const getNotebookNoteCount = (notebookId: string) =>
     notes.filter(note => note.notebookId === notebookId && !note.trashed).length;
@@ -141,6 +163,67 @@ export default function Sidebar() {
 
   const getOrderedChildNotebooks = (parentId: string) =>
     sortNotebookItems(visibleNotebooks.filter(nb => nb.parentId === parentId));
+
+  const updateExpandedNotebookIds = (updater: (previous: Set<string>) => Set<string>) => {
+    setExpandedNotebookIds(previous => {
+      const next = updater(new Set(previous));
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(NOTEBOOK_EXPANSION_STORAGE_KEY, JSON.stringify([...next]));
+      }
+      return next;
+    });
+    setHasStoredNotebookExpansion(true);
+  };
+
+  const expandNotebook = (notebookId: string) => {
+    updateExpandedNotebookIds(previous => {
+      previous.add(notebookId);
+      return previous;
+    });
+  };
+
+  const toggleNotebookExpanded = (notebookId: string) => {
+    updateExpandedNotebookIds(previous => {
+      if (previous.has(notebookId)) {
+        previous.delete(notebookId);
+      } else {
+        previous.add(notebookId);
+      }
+      return previous;
+    });
+  };
+
+  useEffect(() => {
+    if (hasStoredNotebookExpansion || parentNotebookIds.size === 0) return;
+    setExpandedNotebookIds(previous => {
+      const next = new Set(previous);
+      parentNotebookIds.forEach(id => next.add(id));
+      return next;
+    });
+  }, [hasStoredNotebookExpansion, parentNotebookIds]);
+
+  useEffect(() => {
+    if (!selectedNotebookId) return;
+    const ancestorIds: string[] = [];
+    let parentId = notebooks.find(nb => nb.id === selectedNotebookId)?.parentId ?? null;
+    while (parentId) {
+      ancestorIds.push(parentId);
+      parentId = notebooks.find(nb => nb.id === parentId)?.parentId ?? null;
+    }
+    if (ancestorIds.length === 0) return;
+
+    setExpandedNotebookIds(previous => {
+      const next = new Set(previous);
+      let changed = false;
+      ancestorIds.forEach(id => {
+        if (!next.has(id)) {
+          next.add(id);
+          changed = true;
+        }
+      });
+      return changed ? next : previous;
+    });
+  }, [notebooks, selectedNotebookId]);
 
   const isNotebookDescendant = (candidateParentId: string | null, notebookId: string) => {
     let currentId = candidateParentId;
@@ -256,6 +339,9 @@ export default function Sidebar() {
 
     event.preventDefault();
     reorderNotebook(dragId, notebookDropTarget.parentId, notebookDropTarget.index);
+    if (notebookDropTarget.position === 'inside' && notebookDropTarget.parentId) {
+      expandNotebook(notebookDropTarget.parentId);
+    }
     updateSettings({ notebookSortBy: 'manual', notebookSortDir: 'asc' });
     clearNotebookDrag();
   };
@@ -455,8 +541,10 @@ export default function Sidebar() {
               <div className="space-y-0.5">
                 {topLevelNotebooks.map((nb, notebookIndex) => {
                   const childNotebooks = getOrderedChildNotebooks(nb.id);
+                  const hasChildren = childNotebooks.length > 0;
+                  const isExpanded = expandedNotebookIds.has(nb.id);
                   const noteCount = notes.filter(n => n.notebookId === nb.id && !n.trashed).length;
-                  const isSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === nb.id;
+                  const isSelected = currentView === 'notebooks' && selectedNotebookId === nb.id;
                   
                   return (
                     <div key={nb.id} className="group">
@@ -485,13 +573,34 @@ export default function Sidebar() {
                           </div>
                         ) : (
                           <>
+                            {hasChildren ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleNotebookExpanded(nb.id);
+                                }}
+                                className="ml-1 p-1 rounded theme-hover text-theme-tertiary transition-all"
+                                title={isExpanded ? 'Collapse sub-notebooks' : 'Expand sub-notebooks'}
+                                aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${nb.name}`}
+                                aria-expanded={isExpanded}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3.5 h-3.5 no-transition" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5 no-transition" />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="ml-1 w-[22px] shrink-0" aria-hidden="true" />
+                            )}
                             <button
                               type="button"
                               draggable
                               onDragStart={(e) => handleNotebookDragStart(e, nb)}
                               onDragEnd={clearNotebookDrag}
                               onClick={(e) => e.stopPropagation()}
-                              className={`ml-1 p-1 rounded theme-hover text-theme-tertiary cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all ${
+                              className={`p-1 rounded theme-hover text-theme-tertiary cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all ${
                                 draggedNotebookId === nb.id ? 'opacity-100' : ''
                               }`}
                               title="Drag notebook"
@@ -540,7 +649,9 @@ export default function Sidebar() {
                                 e.stopPropagation();
                                 const name = prompt('Sub-notebook name:');
                                 if (name?.trim()) {
-                                  createNotebook(name.trim(), nb.id, '📁');
+                                  createNotebook(name.trim(), nb.id, '\uD83D\uDCC1');
+                                  expandNotebook(nb.id);
+                                  setNotebooksExpanded(true);
                                 }
                               }}
                               className="opacity-0 group-hover:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
@@ -552,8 +663,8 @@ export default function Sidebar() {
                         )}
                       </div>
                       {/* Sub-notebooks */}
-                      {childNotebooks.map((sub, subIndex) => {
-                        const subSelected = currentView === 'notebooks' && useStore.getState().selectedNotebookId === sub.id;
+                      {hasChildren && isExpanded && childNotebooks.map((sub, subIndex) => {
+                        const subSelected = currentView === 'notebooks' && selectedNotebookId === sub.id;
                         const subCount = notes.filter(n => n.notebookId === sub.id && !n.trashed).length;
                         return (
                           <div
@@ -655,7 +766,7 @@ export default function Sidebar() {
                   <p className="text-xs text-theme-tertiary py-1">No tags yet</p>
                 )}
                 {tags.map(tag => {
-                  const isActive = currentView === 'tags' && useStore.getState().selectedTagId === tag.id;
+                  const isActive = currentView === 'tags' && selectedTagId === tag.id;
                   return (
                     <button
                       key={tag.id}

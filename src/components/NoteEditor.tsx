@@ -794,12 +794,12 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   return (
     <div
-      className={`note-theme-editor flex-1 flex flex-col h-full ${settings.zenMode ? 'zen-mode' : ''}`}
+      className={`note-theme-editor flex-1 min-w-0 overflow-hidden flex flex-col h-full ${settings.zenMode ? 'zen-mode' : ''}`}
       data-note-theme={activeNoteTheme}
       style={{ backgroundColor: 'var(--note-theme-bg, var(--editor-bg))' }}
     >
       {/* Top bar */}
-      <div className="flex flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button
             onClick={() => { selectNote(null); setEditingNote(false); }}
@@ -1030,8 +1030,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
       {/* Format Switcher */}
       {!isLocked && (
-        <div className="flex items-center justify-start gap-2 overflow-x-auto px-4 py-1.5 bg-[var(--app-bg-subtle)]/30 border-b theme-divider shrink-0 sm:justify-between">
-          <div className="flex shrink-0 items-center gap-1 bg-[var(--card-bg)] border theme-border rounded-lg p-0.5 shadow-sm">
+        <div className="flex min-w-0 items-center justify-start gap-2 overflow-x-auto px-4 py-1.5 bg-[var(--app-bg-subtle)]/30 border-b theme-divider shrink-0 sm:justify-between">
+          <div className="flex min-w-max shrink-0 items-center gap-1 bg-[var(--card-bg)] border theme-border rounded-lg p-0.5 shadow-sm">
             <button
               onClick={() => setActiveFormat('plain')}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
@@ -1313,8 +1313,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       )}
 
       {/* Editor Area */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-4 md:px-8 py-4">
+      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
+        <div className="w-full max-w-3xl min-w-0 mx-auto px-4 md:px-8 py-4">
           {isLocked ? (
             <div className="min-h-[45vh] flex items-center justify-center text-center">
               <div>
@@ -1332,7 +1332,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 onChange={e => handleTitleChange(e.target.value)}
                 onBlur={() => saveNote(title, content, true)}
                 placeholder="Untitled"
-                className="w-full text-2xl md:text-3xl font-bold bg-transparent focus:outline-none mb-4"
+                className="w-full min-w-0 text-2xl md:text-3xl font-bold bg-transparent focus:outline-none mb-4"
                 spellCheck={settings.spellCheck}
                 style={{
                   color: 'var(--text-primary)',
@@ -1344,7 +1344,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
               {/* Content area based on type */}
               {note.type === 'checklist' && activeFormat === 'plain' ? (
-                <div className="space-y-1">
+                <div className="min-w-0 space-y-1">
                   {[...activeChecklist].sort((a, b) => a.order - b.order).map((item) => (
                     <div
                       key={item.id}
@@ -1385,7 +1385,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                         type="text"
                         value={item.text}
                         onChange={e => handleChecklistUpdate(item.id, { text: e.target.value })}
-                        className={`flex-1 bg-transparent text-sm focus:outline-none ${item.checked ? 'line-through text-theme-tertiary' : 'text-theme-primary'}`}
+                        className={`min-w-0 flex-1 bg-transparent text-sm focus:outline-none ${item.checked ? 'line-through text-theme-tertiary' : 'text-theme-primary'}`}
                         spellCheck={settings.spellCheck}
                         style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}
                       />
@@ -1405,7 +1405,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                       onChange={e => setNewChecklistItem(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') handleAddChecklistItem(); }}
                       placeholder="Add item..."
-                      className="flex-1 bg-transparent text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none"
+                      className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none"
                       spellCheck={settings.spellCheck}
                       style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}
                     />
@@ -1417,14 +1417,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                       onBlur={() => saveNote(title, content, true)}
                       onPaste={handlePaste}
                       placeholder="Add notes..."
-                      className="w-full min-h-[100px] bg-transparent text-theme-primary placeholder:text-theme-muted resize-none focus:outline-none"
+                      className="w-full min-w-0 max-w-full min-h-[100px] overflow-x-hidden bg-transparent text-theme-primary placeholder:text-theme-muted resize-none focus:outline-none"
                       spellCheck={settings.spellCheck}
-                      style={{ fontSize: `${settings.editorFontSize}px`, lineHeight: '1.7', fontFamily: settings.editorFontFamily }}
+                      style={{ fontSize: `${settings.editorFontSize}px`, lineHeight: '1.7', fontFamily: settings.editorFontFamily, overflowWrap: 'break-word' }}
                     />
                   </div>
                 </div>
               ) : activeFormat === 'rich' ? (
-                <div className="note-content prose dark:prose-invert max-w-none" style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}>
+                <div className="note-content prose dark:prose-invert max-w-none min-w-0 overflow-x-hidden break-words" style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}>
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '*No content yet*'}</ReactMarkdown>
                 </div>
               ) : activeFormat === 'code' ? (
@@ -1435,17 +1435,18 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onBlur={() => saveNote(title, content, true)}
                   onPaste={handlePaste}
                   placeholder="Raw note source code..."
-                  className="w-full min-h-[calc(100vh-300px)] bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
+                  className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-auto bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
                   style={{
                     color: 'var(--text-primary)',
                     fontSize: `${settings.editorFontSize}px`,
                     lineHeight: '1.8',
+                    overflowWrap: 'normal',
                   }}
                   spellCheck={false}
                 />
               ) : activeFormat === 'html' ? (
-                <div className="font-mono text-xs overflow-x-auto bg-[var(--app-bg-subtle)] p-4 rounded-xl border theme-border select-all max-h-[60vh] overflow-y-auto">
-                  <pre className="text-theme-secondary whitespace-pre-wrap">{convertMarkdownToHTML(content)}</pre>
+                <div className="max-w-full min-w-0 font-mono text-xs overflow-x-auto bg-[var(--app-bg-subtle)] p-4 rounded-xl border theme-border select-all max-h-[60vh] overflow-y-auto">
+                  <pre className="text-theme-secondary whitespace-pre-wrap break-words">{convertMarkdownToHTML(content)}</pre>
                 </div>
               ) : (
                 <textarea
@@ -1455,12 +1456,13 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onBlur={() => saveNote(title, content, true)}
                   onPaste={handlePaste}
                   placeholder={note.type === 'markdown' ? 'Write in Markdown...' : 'Start writing...'}
-                  className="w-full min-h-[calc(100vh-300px)] bg-transparent resize-none focus:outline-none editor-area"
+                  className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-hidden bg-transparent resize-none focus:outline-none editor-area"
                   style={{
                     color: 'var(--text-primary)',
                     fontSize: `${settings.editorFontSize}px`,
                     lineHeight: '1.8',
                     fontFamily: settings.editorFontFamily,
+                    overflowWrap: 'break-word',
                   }}
                   spellCheck={settings.spellCheck}
                 />
