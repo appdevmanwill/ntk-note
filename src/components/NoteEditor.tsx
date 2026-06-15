@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '@/store';
-import type { ChecklistItem, NoteColor, Priority } from '@/types';
+import type { ChecklistItem, NoteColor, Notebook, Priority } from '@/types';
 import { noteColors, priorityConfig } from '@/utils/colors';
 import { exportToPDF, copyAsPlainText, copyAsMarkdown, copyAsHTML, shareViaEmail, printNote } from '@/utils/export';
 import { getBacklinks, noteDisplayTitle } from '@/utils/links';
@@ -141,6 +141,11 @@ type NoteDraft = {
   content: string;
 };
 
+type NotebookMoveRow = {
+  notebook: Notebook;
+  depth: number;
+};
+
 export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
     selectedNoteId, notes, updateNote, selectNote, trashNote,
@@ -167,6 +172,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [reminderTime, setReminderTime] = useState('');
   const [showPriority, setShowPriority] = useState(false);
   const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [showMovePanel, setShowMovePanel] = useState(false);
   const [notebookSearch, setNotebookSearch] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showExportPanel, setShowExportPanel] = useState(false);
@@ -193,6 +199,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const movePanelRef = useRef<HTMLDivElement>(null);
   const exportPanelRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const undoStackRef = useRef<NoteDraft[]>([]);
@@ -617,11 +624,30 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     saveNote(title, content, true);
   };
 
-  const openMoveDialog = () => {
+  const closeMoveSurface = () => {
+    setShowMoveMenu(false);
+    setShowMovePanel(false);
     setNotebookSearch('');
-    setShowMoveMenu(true);
+  };
+
+  const openMoveDialog = () => {
+    const useDesktopPanel = typeof window !== 'undefined' && window.innerWidth >= 1280;
+    setNotebookSearch('');
     setShowMenu(false);
+    setShowColorPicker(false);
+    setShowThemePicker(false);
+    setShowPriority(false);
+    setShowExportMenu(false);
     setShowExportPanel(false);
+
+    if (useDesktopPanel) {
+      setShowMovePanel(true);
+      setShowMoveMenu(false);
+      return;
+    }
+
+    setShowMoveMenu(true);
+    setShowMovePanel(false);
   };
 
   const closeExportSurface = () => {
@@ -644,6 +670,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     if (useDesktopPanel) {
       setShowExportPanel(true);
       setShowExportMenu(false);
+      setShowMovePanel(false);
+      setShowMoveMenu(false);
       setShowMenu(false);
       return;
     }
@@ -653,9 +681,10 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const handleMoveToNotebook = (notebookId: string) => {
     if (!note) return;
-    moveNote(note.id, notebookId);
-    setShowMoveMenu(false);
-    setNotebookSearch('');
+    if (note.notebookId !== notebookId) {
+      void moveNote(note.id, notebookId);
+    }
+    closeMoveSurface();
   };
 
   const handleRestoreVersion = (version: NoteVersion) => {
@@ -700,13 +729,15 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     const handleClick = (e: MouseEvent) => {
       const target = e.target as Node;
       const insideMenu = menuRef.current?.contains(target);
+      const insideMovePanel = movePanelRef.current?.contains(target);
       const insideExportPanel = exportPanelRef.current?.contains(target);
 
-      if (!insideMenu && !insideExportPanel) {
+      if (!insideMenu && !insideMovePanel && !insideExportPanel) {
         setShowMenu(false);
         setShowColorPicker(false);
         setShowThemePicker(false);
         setShowPriority(false);
+        setShowMovePanel(false);
         setShowExportMenu(false);
         setShowExportPanel(false);
       }
@@ -724,6 +755,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         setShowColorPicker(false);
         setShowThemePicker(false);
         setShowPriority(false);
+        setShowMoveMenu(false);
+        setShowMovePanel(false);
         setShowExportMenu(false);
         setShowExportPanel(false);
         return;
@@ -785,7 +818,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const backlinks = getBacklinks(note.id, notes);
   const notebookQuery = notebookSearch.trim().toLowerCase();
   const visibleNotebooks = notebooks.filter(nb => !nb.trashed);
-  const notebookRows: Array<{ notebook: typeof visibleNotebooks[number]; depth: number }> = [];
+  const notebookRows: NotebookMoveRow[] = [];
   const visitedNotebookIds = new Set<string>();
   const sortNotebookRows = (items: typeof visibleNotebooks) =>
     [...items].sort((a, b) =>
@@ -807,6 +840,19 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const filteredNotebookRows = notebookQuery
     ? notebookRows.filter(({ notebook }) => notebook.name.toLowerCase().includes(notebookQuery))
     : notebookRows;
+  const getNotebookNoteCount = (notebookId: string) =>
+    notes.filter(item => item.notebookId === notebookId && !item.trashed).length;
+  const getNotebookRecentTime = (notebookId: string) =>
+    Math.max(
+      0,
+      ...notes
+        .filter(item => item.notebookId === notebookId && !item.trashed)
+        .map(item => new Date(item.updatedAt).getTime())
+    );
+  const recentNotebookRows = notebookRows
+    .filter(({ notebook: nb }) => nb.id !== note.notebookId && getNotebookRecentTime(nb.id) > 0)
+    .sort((a, b) => getNotebookRecentTime(b.notebook.id) - getNotebookRecentTime(a.notebook.id))
+    .slice(0, 3);
 
   const toolbarButtons = [
     { icon: Bold, action: () => insertFormatting('**', '**'), title: 'Bold (Ctrl+B)' },
@@ -956,6 +1002,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           <button
             onClick={() => {
               setShowMenu(!showMenu);
+              setShowMovePanel(false);
+              setShowMoveMenu(false);
               setShowExportMenu(false);
               setShowExportPanel(false);
             }}
@@ -1071,6 +1119,91 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 </div>
               )}
 
+            </div>
+          )}
+
+          {showMovePanel && (
+            <div
+              ref={movePanelRef}
+              className="fixed right-4 top-20 bottom-4 z-50 hidden w-[420px] flex-col overflow-hidden rounded-2xl border theme-menu shadow-2xl xl:flex"
+              role="dialog"
+              aria-modal="false"
+              aria-labelledby="move-note-panel-title"
+            >
+              <div className="flex items-start justify-between gap-4 border-b theme-divider px-5 py-4">
+                <div className="min-w-0">
+                  <p id="move-note-panel-title" className="text-lg font-bold text-theme-primary">Move note</p>
+                  <p className="mt-1 truncate text-sm text-theme-tertiary">{title || noteDisplayTitle(note)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeMoveSurface}
+                  className="rounded-lg p-2 text-theme-tertiary theme-hover"
+                  aria-label="Close move note panel"
+                >
+                  <X className="h-5 w-5 no-transition" />
+                </button>
+              </div>
+
+              <div className="border-b theme-divider px-5 py-4">
+                <label className="flex items-center gap-2 rounded-xl border theme-border theme-input px-3 py-2.5">
+                  <Search className="h-4 w-4 shrink-0 text-theme-tertiary no-transition" />
+                  <input
+                    value={notebookSearch}
+                    onChange={e => setNotebookSearch(e.target.value)}
+                    className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary outline-none"
+                    placeholder="Search notebooks..."
+                    autoFocus
+                  />
+                </label>
+              </div>
+
+              <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+                {notebook && (
+                  <section>
+                    <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-theme-tertiary">Current location</h3>
+                    <div className="flex items-center gap-3 rounded-xl border theme-border px-3 py-3 theme-active">
+                      <span className="text-lg">{notebook.icon}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold accent-text">{notebook.name}</span>
+                        <span className="block text-xs text-theme-tertiary">
+                          {getNotebookNoteCount(notebook.id)} note{getNotebookNoteCount(notebook.id) === 1 ? '' : 's'}
+                        </span>
+                      </span>
+                      <Check className="h-4 w-4 shrink-0 accent-text no-transition" />
+                    </div>
+                  </section>
+                )}
+
+                {!notebookQuery && recentNotebookRows.length > 0 && (
+                  <section>
+                    <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-theme-tertiary">Recently used</h3>
+                    <MoveNotebookList
+                      rows={recentNotebookRows}
+                      currentNotebookId={note.notebookId}
+                      getNoteCount={getNotebookNoteCount}
+                      onMove={handleMoveToNotebook}
+                      emptyTitle="No recent notebooks"
+                      emptyHint="Your used notebooks will appear here."
+                      compact
+                    />
+                  </section>
+                )}
+
+                <section>
+                  <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-theme-tertiary">
+                    {notebookQuery ? 'Search results' : 'All notebooks'}
+                  </h3>
+                  <MoveNotebookList
+                    rows={filteredNotebookRows}
+                    currentNotebookId={note.notebookId}
+                    getNoteCount={getNotebookNoteCount}
+                    onMove={handleMoveToNotebook}
+                    emptyTitle="No notebook matches your search."
+                    emptyHint="Try a shorter name or clear the search field."
+                  />
+                </section>
+              </div>
             </div>
           )}
 
@@ -1624,7 +1757,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           role="dialog"
           aria-modal="true"
           aria-labelledby="move-note-dialog-title"
-          onMouseDown={() => setShowMoveMenu(false)}
+          onMouseDown={closeMoveSurface}
         >
           <div
             className="flex max-h-[82dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border theme-menu shadow-2xl"
@@ -1639,7 +1772,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               </div>
               <button
                 type="button"
-                onClick={() => setShowMoveMenu(false)}
+                onClick={closeMoveSurface}
                 className="rounded-lg p-2 text-theme-tertiary theme-hover"
                 aria-label="Close move note dialog"
               >
@@ -1661,47 +1794,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 py-3">
-              {filteredNotebookRows.length === 0 ? (
-                <div className="rounded-xl border border-dashed theme-divider px-4 py-8 text-center">
-                  <p className="text-sm font-medium text-theme-secondary">No notebook matches your search.</p>
-                  <p className="mt-1 text-xs text-theme-tertiary">Try a shorter name or clear the search field.</p>
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {filteredNotebookRows.map(({ notebook: nb, depth }) => {
-                    const isCurrent = note.notebookId === nb.id;
-                    const noteCount = notes.filter(item => item.notebookId === nb.id && !item.trashed).length;
-                    return (
-                      <button
-                        type="button"
-                        key={nb.id}
-                        onClick={() => handleMoveToNotebook(nb.id)}
-                        className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors ${
-                          isCurrent ? 'theme-active' : 'theme-hover'
-                        }`}
-                        style={{ paddingLeft: `${12 + depth * 18}px` }}
-                      >
-                        <span className="text-lg">{nb.icon}</span>
-                        <span className="min-w-0 flex-1">
-                          <span className={`block truncate text-sm font-semibold ${isCurrent ? 'accent-text' : 'text-theme-primary'}`}>
-                            {nb.name}
-                          </span>
-                          <span className="block text-xs text-theme-tertiary">
-                            {noteCount} note{noteCount === 1 ? '' : 's'}{isCurrent ? ' - Current location' : ''}
-                          </span>
-                        </span>
-                        {isCurrent ? (
-                          <Check className="h-4 w-4 shrink-0 accent-text no-transition" />
-                        ) : (
-                          <span className="shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold accent-soft">
-                            Move here
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <MoveNotebookList
+                rows={filteredNotebookRows}
+                currentNotebookId={note.notebookId}
+                getNoteCount={getNotebookNoteCount}
+                onMove={handleMoveToNotebook}
+                emptyTitle="No notebook matches your search."
+                emptyHint="Try a shorter name or clear the search field."
+              />
             </div>
           </div>
         </div>
@@ -1775,5 +1875,72 @@ function ExportPanelBtn({ icon: Icon, title, meta, onClick }: {
         <span className="block truncate text-xs text-theme-tertiary">{meta}</span>
       </span>
     </button>
+  );
+}
+
+function MoveNotebookList({
+  rows,
+  currentNotebookId,
+  getNoteCount,
+  onMove,
+  emptyTitle,
+  emptyHint,
+  compact = false,
+}: {
+  rows: NotebookMoveRow[];
+  currentNotebookId: string;
+  getNoteCount: (notebookId: string) => number;
+  onMove: (notebookId: string) => void;
+  emptyTitle: string;
+  emptyHint: string;
+  compact?: boolean;
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed theme-divider px-4 py-6 text-center">
+        <p className="text-sm font-medium text-theme-secondary">{emptyTitle}</p>
+        <p className="mt-1 text-xs text-theme-tertiary">{emptyHint}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      {rows.map(({ notebook: nb, depth }) => {
+        const isCurrent = currentNotebookId === nb.id;
+        const noteCount = getNoteCount(nb.id);
+        return (
+          <button
+            type="button"
+            key={nb.id}
+            onClick={() => {
+              if (!isCurrent) onMove(nb.id);
+            }}
+            disabled={isCurrent}
+            className={`flex w-full items-center gap-3 rounded-xl text-left transition-colors disabled:cursor-default ${
+              compact ? 'px-3 py-2.5' : 'px-3 py-3'
+            } ${isCurrent ? 'theme-active' : 'theme-hover'}`}
+            style={{ paddingLeft: `${12 + depth * 18}px` }}
+          >
+            <span className="text-lg">{nb.icon}</span>
+            <span className="min-w-0 flex-1">
+              <span className={`block truncate text-sm font-semibold ${isCurrent ? 'accent-text' : 'text-theme-primary'}`}>
+                {nb.name}
+              </span>
+              <span className="block text-xs text-theme-tertiary">
+                {noteCount} note{noteCount === 1 ? '' : 's'}{isCurrent ? ' - Current location' : ''}
+              </span>
+            </span>
+            {isCurrent ? (
+              <Check className="h-4 w-4 shrink-0 accent-text no-transition" />
+            ) : (
+              <span className="shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold accent-soft">
+                Move here
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }
