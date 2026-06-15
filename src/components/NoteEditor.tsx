@@ -17,7 +17,8 @@ import {
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
   Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus,
-  Undo2, Redo2, History, Cloud, Search, Check
+  Undo2, Redo2, History, Cloud, Search, Check,
+  type LucideIcon
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
@@ -168,6 +169,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [notebookSearch, setNotebookSearch] = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showExportPanel, setShowExportPanel] = useState(false);
   const [isPreview, setIsPreview] = useState(false);
   const [newChecklistItem, setNewChecklistItem] = useState('');
   const [showLockDialog, setShowLockDialog] = useState(false);
@@ -191,6 +193,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const exportPanelRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const undoStackRef = useRef<NoteDraft[]>([]);
   const redoStackRef = useRef<NoteDraft[]>([]);
@@ -618,6 +621,34 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     setNotebookSearch('');
     setShowMoveMenu(true);
     setShowMenu(false);
+    setShowExportPanel(false);
+  };
+
+  const closeExportSurface = () => {
+    setShowExportMenu(false);
+    setShowExportPanel(false);
+    setShowMenu(false);
+  };
+
+  const runExportAction = (action: () => void) => {
+    action();
+    closeExportSurface();
+  };
+
+  const openExportSurface = () => {
+    const useDesktopPanel = typeof window !== 'undefined' && window.innerWidth >= 1280;
+    setShowColorPicker(false);
+    setShowThemePicker(false);
+    setShowPriority(false);
+
+    if (useDesktopPanel) {
+      setShowExportPanel(true);
+      setShowExportMenu(false);
+      setShowMenu(false);
+      return;
+    }
+
+    setShowExportMenu(previous => !previous);
   };
 
   const handleMoveToNotebook = (notebookId: string) => {
@@ -667,12 +698,17 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   // Close menus on outside click
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideMenu = menuRef.current?.contains(target);
+      const insideExportPanel = exportPanelRef.current?.contains(target);
+
+      if (!insideMenu && !insideExportPanel) {
         setShowMenu(false);
         setShowColorPicker(false);
         setShowThemePicker(false);
         setShowPriority(false);
         setShowExportMenu(false);
+        setShowExportPanel(false);
       }
     };
     document.addEventListener('mousedown', handleClick);
@@ -683,6 +719,15 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!note) return;
+      if (e.key === 'Escape') {
+        setShowMenu(false);
+        setShowColorPicker(false);
+        setShowThemePicker(false);
+        setShowPriority(false);
+        setShowExportMenu(false);
+        setShowExportPanel(false);
+        return;
+      }
       if (e.ctrlKey || e.metaKey) {
         const key = e.key.toLowerCase();
         if (key === 'z') {
@@ -909,7 +954,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
           {/* More menu */}
           <button
-            onClick={() => setShowMenu(!showMenu)}
+            onClick={() => {
+              setShowMenu(!showMenu);
+              setShowExportMenu(false);
+              setShowExportPanel(false);
+            }}
             className="p-1.5 rounded-lg theme-hover" style={{ color: 'var(--text-tertiary)' }}
             aria-label="More note actions"
           >
@@ -935,7 +984,20 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               <MenuBtn icon={History} label="Save local snapshot" onClick={() => { handleSaveLocalSnapshot(); setShowMenu(false); }} />
               <MenuBtn icon={Cloud} label="Cloud checkpoint" onClick={() => { handleCloudCheckpoint(); setShowMenu(false); }} />
               <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />
-              <MenuBtn icon={Share2} label="Export / Share" onClick={() => setShowExportMenu(!showExportMenu)} />
+              <MenuBtn icon={Share2} label="Export / Share" onClick={openExportSurface} />
+              {showExportMenu && (
+                <div className="px-3 py-2 border-t theme-divider xl:hidden">
+                  <p className="text-xs text-theme-tertiary mb-2">Export & Share</p>
+                  <div className="space-y-1">
+                    <ExportBtn icon={Download} label="Export as PDF" onClick={() => runExportAction(() => exportToPDF(note))} />
+                    <ExportBtn icon={FileText} label="Copy as plain text" onClick={() => runExportAction(() => copyAsPlainText(note))} />
+                    <ExportBtn icon={Code} label="Copy as Markdown" onClick={() => runExportAction(() => copyAsMarkdown(note))} />
+                    <ExportBtn icon={Type} label="Copy as HTML" onClick={() => runExportAction(() => copyAsHTML(note))} />
+                    <ExportBtn icon={Mail} label="Share via email" onClick={() => runExportAction(() => shareViaEmail(note))} />
+                    <ExportBtn icon={FileText} label="Print note" onClick={() => runExportAction(() => printNote(note))} />
+                  </div>
+                </div>
+              )}
               <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={() => { archiveNote(note.id); setShowMenu(false); }} />
               <div className="my-1 border-t theme-divider" />
               <MenuBtn icon={Trash2} label="Move to trash" onClick={() => { trashNote(note.id); setShowMenu(false); }} danger />
@@ -1009,20 +1071,48 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 </div>
               )}
 
-              {/* Export submenu */}
-              {showExportMenu && (
-                <div className="px-3 py-2 border-t theme-divider">
-                  <p className="text-xs text-theme-tertiary mb-2">Export & Share</p>
-                  <div className="space-y-1">
-                    <ExportBtn icon={Download} label="Export as PDF" onClick={() => { exportToPDF(note); setShowMenu(false); }} />
-                    <ExportBtn icon={FileText} label="Copy as plain text" onClick={() => { copyAsPlainText(note); setShowMenu(false); }} />
-                    <ExportBtn icon={Code} label="Copy as Markdown" onClick={() => { copyAsMarkdown(note); setShowMenu(false); }} />
-                    <ExportBtn icon={Type} label="Copy as HTML" onClick={() => { copyAsHTML(note); setShowMenu(false); }} />
-                    <ExportBtn icon={Mail} label="Share via email" onClick={() => { shareViaEmail(note); setShowMenu(false); }} />
-                    <ExportBtn icon={FileText} label="Print note" onClick={() => { printNote(note); setShowMenu(false); }} />
-                  </div>
+            </div>
+          )}
+
+          {showExportPanel && (
+            <div
+              ref={exportPanelRef}
+              className="fixed right-4 top-20 bottom-4 z-50 hidden w-[360px] flex-col overflow-hidden rounded-2xl border theme-menu shadow-2xl xl:flex"
+              role="dialog"
+              aria-modal="false"
+              aria-labelledby="export-share-panel-title"
+            >
+              <div className="flex items-start justify-between gap-4 border-b theme-divider px-5 py-4">
+                <div className="min-w-0">
+                  <p id="export-share-panel-title" className="text-lg font-bold text-theme-primary">Export & Share</p>
+                  <p className="mt-1 truncate text-sm text-theme-tertiary">{title || noteDisplayTitle(note)}</p>
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={closeExportSurface}
+                  className="rounded-lg p-2 text-theme-tertiary theme-hover"
+                  aria-label="Close export panel"
+                >
+                  <X className="h-5 w-5 no-transition" />
+                </button>
+              </div>
+
+              <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+                <ExportPanelSection title="File">
+                  <ExportPanelBtn icon={Download} title="PDF" meta="Export note" onClick={() => runExportAction(() => exportToPDF(note))} />
+                  <ExportPanelBtn icon={FileText} title="Print" meta="Printer-ready view" onClick={() => runExportAction(() => printNote(note))} />
+                </ExportPanelSection>
+
+                <ExportPanelSection title="Copy">
+                  <ExportPanelBtn icon={FileText} title="Plain text" meta="Clean text" onClick={() => runExportAction(() => copyAsPlainText(note))} />
+                  <ExportPanelBtn icon={Code} title="Markdown" meta="Portable source" onClick={() => runExportAction(() => copyAsMarkdown(note))} />
+                  <ExportPanelBtn icon={Type} title="HTML" meta="Formatted markup" onClick={() => runExportAction(() => copyAsHTML(note))} />
+                </ExportPanelSection>
+
+                <ExportPanelSection title="Send">
+                  <ExportPanelBtn icon={Mail} title="Email" meta="Open mail draft" onClick={() => runExportAction(() => shareViaEmail(note))} />
+                </ExportPanelSection>
+              </div>
             </div>
           )}
         </div>
@@ -1628,7 +1718,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 }
 
 function MenuBtn({ icon: Icon, label, onClick, danger }: {
-  icon: typeof Trash2; label: string; onClick: () => void; danger?: boolean;
+  icon: LucideIcon; label: string; onClick: () => void; danger?: boolean;
 }) {
   return (
     <button
@@ -1644,7 +1734,7 @@ function MenuBtn({ icon: Icon, label, onClick, danger }: {
 }
 
 function ExportBtn({ icon: Icon, label, onClick }: {
-  icon: typeof Download; label: string; onClick: () => void;
+  icon: LucideIcon; label: string; onClick: () => void;
 }) {
   return (
     <button
@@ -1653,6 +1743,37 @@ function ExportBtn({ icon: Icon, label, onClick }: {
       style={{ color: 'var(--text-secondary)' }}
     >
       <Icon className="w-3.5 h-3.5 no-transition" /> {label}
+    </button>
+  );
+}
+
+function ExportPanelSection({ title, children }: {
+  title: string; children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-theme-tertiary">{title}</h3>
+      <div className="grid gap-2">{children}</div>
+    </section>
+  );
+}
+
+function ExportPanelBtn({ icon: Icon, title, meta, onClick }: {
+  icon: LucideIcon; title: string; meta: string; onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-lg border theme-border px-3 py-3 text-left transition-colors theme-hover"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg accent-soft">
+        <Icon className="h-4 w-4 no-transition" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold text-theme-primary">{title}</span>
+        <span className="block truncate text-xs text-theme-tertiary">{meta}</span>
+      </span>
     </button>
   );
 }
