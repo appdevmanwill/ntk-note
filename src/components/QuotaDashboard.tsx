@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useStore } from '@/store';
-import { AlertTriangle, CheckCircle2, Cloud, Database, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, Database, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 
 export default function QuotaDashboard() {
-  const { syncQueue, syncConflicts, online, uid, flushSyncQueue } = useStore();
+  const { syncQueue, syncConflicts, online, uid, flushSyncQueue, resolveSyncConflict, selectNote, setCurrentView } = useStore();
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -104,11 +104,42 @@ export default function QuotaDashboard() {
           </div>
           <div className="space-y-1">
             {syncConflicts.slice(0, 3).map(conflict => (
-              <div key={conflict.id} className="rounded-lg px-3 py-2 text-xs" style={{ backgroundColor: 'var(--card-bg)' }}>
-                <p className="font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote.title || 'Untitled note'}</p>
-                <p className="text-theme-tertiary">
-                  Local: {new Date(conflict.local.updatedAt).toLocaleString()} | Cloud: {new Date(conflict.remote.updatedAt).toLocaleString()}
-                </p>
+              <div key={conflict.id} className="rounded-lg px-3 py-3 text-xs" style={{ backgroundColor: 'var(--card-bg)' }}>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote.title || 'Untitled note'}</p>
+                    <p className="text-theme-tertiary">
+                      Local: {new Date(conflict.local.updatedAt).toLocaleString()} | Cloud: {new Date(conflict.remote.updatedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCurrentView('all-notes');
+                        window.setTimeout(() => selectNote(conflict.noteId), 0);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border theme-border px-2.5 py-1.5 font-semibold text-theme-secondary theme-hover"
+                    >
+                      <Eye className="w-3.5 h-3.5 no-transition" />
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void resolveSyncConflict(conflict.id, 'local')}
+                      className="rounded-lg bg-emerald-500/10 px-2.5 py-1.5 font-semibold text-emerald-500"
+                    >
+                      Keep local
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void resolveSyncConflict(conflict.id, 'remote')}
+                      className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 font-semibold text-blue-500"
+                    >
+                      Keep cloud
+                    </button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>

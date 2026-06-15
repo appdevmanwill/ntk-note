@@ -9,6 +9,7 @@ import TemplatesView from '@/components/TemplatesView';
 import SettingsView from '@/components/SettingsView';
 import GraphView from '@/components/GraphView';
 import SmartFoldersView from '@/components/SmartFoldersView';
+import ShareCenterView from '@/components/ShareCenterView';
 import CommandPalette from '@/components/CommandPalette';
 import MobileNav from '@/components/MobileNav';
 import PublicNoteReader from '@/components/PublicNoteReader';
@@ -259,7 +260,7 @@ export default function App() {
 
   // Determine main content
   const renderMainContent = () => {
-    const splitViews: SidebarView[] = ['all-notes', 'search', 'starred', 'reminders', 'archived', 'trash', 'notebooks', 'tags', 'shared'];
+    const splitViews: SidebarView[] = ['all-notes', 'search', 'starred', 'reminders', 'archived', 'trash', 'notebooks', 'tags'];
     const noteListCollapsed = settings.noteListCollapsed;
     const editorPanelCollapsed = settings.editorPanelCollapsed;
 
@@ -279,6 +280,8 @@ export default function App() {
         return <GraphView />;
       case 'smart-folders':
         return <SmartFoldersView />;
+      case 'shared':
+        return <ShareCenterView />;
       case 'all-notes':
       case 'search':
       case 'starred':
@@ -287,7 +290,6 @@ export default function App() {
       case 'trash':
       case 'notebooks':
       case 'tags':
-      case 'shared':
         return (
           <div className="flex flex-1 overflow-hidden">
             {noteListCollapsed && (

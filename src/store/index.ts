@@ -6,11 +6,18 @@ import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'fi
 import { signOut } from 'firebase/auth';
 import { premiumFontFamilies } from '@/utils/fonts';
 import { encryptNoteData, decryptNoteData } from '@/utils/crypto';
+import {
+  getEntityParticipants,
+  legacyEmailsToShareAccess,
+  normalizeEmail,
+  normalizeShareAccess,
+  shareAccessToRoleArrays,
+} from '@/utils/collaboration';
 import type {
   Note, Notebook, Tag, NoteColor, Priority,
   ChecklistItem, UserProfile, AppSettings, SidebarView,
   SearchFilters, ThemeMode, ThemeAccent, NoteTheme, Reminder, NoteTemplate, Section,
-  SavedSearch, SyncConflict, SyncQueueItem
+  SavedSearch, SyncConflict, SyncQueueItem, ShareAccess, TeamSpace, ActivityItem
 } from '@/types';
 
 // ── Helpers ──
@@ -40,6 +47,7 @@ const countWords = (text: string) => text.trim() ? text.trim().split(/\s+/).leng
 const countChars = (text: string) => text.length;
 
 const syncTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const activityThrottle: Record<string, number> = {};
 
 // ── Default Data ──
 const defaultNotebook: Notebook = {
@@ -81,6 +89,7 @@ const defaultSettings: AppSettings = {
   notebookSortDir: 'asc',
   offlineModeEnabled: false,
   hasSeenTour: false,
+  backupReminderDays: 14,
 };
 
 const defaultSearchFilters: SearchFilters = {
@@ -553,6 +562,8 @@ interface AppState {
   tags: Tag[];
   templates: NoteTemplate[];
   savedSearches: SavedSearch[];
+  teamSpaces: TeamSpace[];
+  activityItems: ActivityItem[];
   profile: UserProfile;
   settings: AppSettings;
   
@@ -578,6 +589,9 @@ interface AppState {
   uid: string | null;
   unsubscribeNotes: (() => void) | null;
   unsubscribeNotebooks: (() => void) | null;
+  unsubscribeSettings: (() => void) | null;
+  unsubscribeTeamSpaces: (() => void) | null;
+  unsubscribeActivity: (() => void) | null;
   unsubscribeSharedNotes: (() => void) | null;
   unsubscribeSharedNotebooks: (() => void) | null;
   initFirestore: (uid: string) => void;
@@ -666,8 +680,12 @@ interface AppState {
   // Actions — Templates
   createFromTemplate: (templateId: string) => Promise<Note | null>;
   
-  shareNote: (noteId: string, sharedWith: string[], isPublished: boolean) => Promise<void>;
-  shareNotebook: (notebookId: string, sharedWith: string[]) => Promise<void>;
+  createTeamSpace: (name: string, notebookIds?: string[]) => TeamSpace;
+  updateTeamSpace: (id: string, updates: Partial<TeamSpace>) => void;
+  deleteTeamSpace: (id: string) => void;
+  addActivity: (item: Omit<ActivityItem, 'id' | 'createdAt' | 'actorEmail' | 'actorName'> & { actorEmail?: string; actorName?: string }) => Promise<ActivityItem>;
+  shareNote: (noteId: string, sharedWith: string[], isPublished: boolean, shareAccess?: ShareAccess[]) => Promise<void>;
+  shareNotebook: (notebookId: string, sharedWith: string[], shareAccess?: ShareAccess[]) => Promise<void>;
   
   // Actions — Export/Import
   exportAllNotes: () => string;
@@ -701,6 +719,8 @@ export const useStore = create<AppState>((set, get) => {
   const initialOnboarded = loadJSON<boolean>('ntk-onboarded', false);
   const initialScratchPad = loadJSON<string>('ntk-scratchpad', '');
   const initialSavedSearches = loadJSON<SavedSearch[]>('ntk-saved-searches', []);
+  const initialTeamSpaces = loadJSON<TeamSpace[]>('ntk-team-spaces', []);
+  const initialActivityItems = loadJSON<ActivityItem[]>('ntk-activity-items', []);
   const initialSyncQueue = loadJSON<SyncQueueItem[]>('ntk-sync-queue', []);
   const initialSyncConflicts = loadJSON<SyncConflict[]>('ntk-sync-conflicts', []);
 
@@ -714,6 +734,8 @@ export const useStore = create<AppState>((set, get) => {
     saveJSON('ntk-onboarded', state.isOnboarded);
     saveJSON('ntk-scratchpad', state.scratchPad);
     saveJSON('ntk-saved-searches', state.savedSearches);
+    saveJSON('ntk-team-spaces', state.teamSpaces);
+    saveJSON('ntk-activity-items', state.activityItems.slice(0, 200));
     saveJSON('ntk-sync-queue', state.syncQueue);
     saveJSON('ntk-sync-conflicts', state.syncConflicts);
   };
@@ -751,12 +773,20 @@ export const useStore = create<AppState>((set, get) => {
 
     for (const item of [...state.syncQueue]) {
       const isNotebook = item.entityType === 'notebook';
-      if (!isNotebook && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
+      const isTeamSpace = item.entityType === 'teamSpace';
+      if (!isNotebook && !isTeamSpace && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
         continue;
       }
 
       try {
-        if (isNotebook) {
+        if (isTeamSpace) {
+          const teamSpace = get().teamSpaces.find(space => space.id === item.noteId);
+          if (item.operation === 'delete') {
+            await deleteDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId));
+          } else if (teamSpace) {
+            await setDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId), stripUndefined(teamSpace));
+          }
+        } else if (isNotebook) {
           const nb = get().notebooks.find(n => n.id === item.noteId);
           if (item.operation === 'delete') {
             if (nb?.isShared) {
@@ -838,6 +868,22 @@ export const useStore = create<AppState>((set, get) => {
     void flushQueuedSync();
   };
 
+  const syncTeamSpaceToFirestore = (teamSpaceId: string) => {
+    enqueueSync(teamSpaceId, 'upsert', 'teamSpace');
+    void flushQueuedSync();
+  };
+
+  const deleteTeamSpaceFromFirestore = (teamSpaceId: string) => {
+    enqueueSync(teamSpaceId, 'delete', 'teamSpace');
+    void flushQueuedSync();
+  };
+
+  const syncSettingsToFirestore = (settings?: AppSettings) => {
+    const { uid } = get();
+    if (!uid) return;
+    void setDoc(doc(db, `users/${uid}/meta/settings`), stripUndefined(settings || get().settings), { merge: true }).catch(console.error);
+  };
+
   const getNotebookTreeIds = (notebookId: string) => {
     const ids = new Set([notebookId]);
     let changed = true;
@@ -866,6 +912,8 @@ export const useStore = create<AppState>((set, get) => {
     tags: rebuildTags(initialNotes),
     templates: [...defaultTemplates, ...premiumTemplates],
     savedSearches: initialSavedSearches,
+    teamSpaces: initialTeamSpaces,
+    activityItems: initialActivityItems,
     profile: initialProfile,
     settings: initialSettings,
     currentView: 'home',
@@ -884,6 +932,9 @@ export const useStore = create<AppState>((set, get) => {
     uid: null,
     unsubscribeNotes: null,
     unsubscribeNotebooks: null,
+    unsubscribeSettings: null,
+    unsubscribeTeamSpaces: null,
+    unsubscribeActivity: null,
     unsubscribeSharedNotes: null,
     unsubscribeSharedNotebooks: null,
     
@@ -994,13 +1045,76 @@ export const useStore = create<AppState>((set, get) => {
         console.error("Firestore notebooks sync error:", error);
       });
 
+      const settingsRef = doc(db, `users/${uid}/meta/settings`);
+      let isFirstSettingsSnapshot = true;
+      const unsubscribeSettings = onSnapshot(settingsRef, (snapshot) => {
+        if (snapshot.exists()) {
+          const remoteSettings = snapshot.data() as Partial<AppSettings>;
+          set(s => {
+            const settings = { ...s.settings, ...remoteSettings };
+            settings.editorFontFamily = fontValue(settings.editorFontFamily);
+            return { settings };
+          });
+          persist();
+        } else if (isFirstSettingsSnapshot) {
+          void setDoc(settingsRef, stripUndefined(get().settings), { merge: true }).catch(console.error);
+        }
+        isFirstSettingsSnapshot = false;
+      }, (error) => {
+        console.error("Firestore settings sync error:", error);
+      });
+
+      const teamSpacesRef = collection(db, `users/${uid}/team_spaces`);
+      let isFirstTeamSpacesSnapshot = true;
+      const unsubscribeTeamSpaces = onSnapshot(teamSpacesRef, (snapshot) => {
+        const remoteSpaces = snapshot.docs.map(doc => doc.data() as TeamSpace);
+        set(s => {
+          const merged = [...s.teamSpaces];
+          const remoteIds = new Set(remoteSpaces.map(space => space.id));
+          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'teamSpace').map(item => item.noteId));
+
+          if (isFirstTeamSpacesSnapshot) {
+            s.teamSpaces.forEach(space => {
+              if (!remoteIds.has(space.id) && !pendingIds.has(space.id)) {
+                void setDoc(doc(db, `users/${uid}/team_spaces`, space.id), stripUndefined(space)).catch(console.error);
+                remoteIds.add(space.id);
+              }
+            });
+            isFirstTeamSpacesSnapshot = false;
+          }
+
+          remoteSpaces.forEach(remote => {
+            const idx = merged.findIndex(space => space.id === remote.id);
+            if (idx >= 0) {
+              if (!pendingIds.has(remote.id)) {
+                merged[idx] = remote;
+              }
+            } else {
+              merged.push(remote);
+            }
+          });
+
+          return {
+            teamSpaces: remoteIds.size === 0
+              ? merged
+              : merged.filter(space => remoteIds.has(space.id) || pendingIds.has(space.id)),
+          };
+        });
+        saveJSON('ntk-team-spaces', get().teamSpaces);
+        void flushQueuedSync();
+      }, (error) => {
+        console.error("Firestore team spaces sync error:", error);
+      });
+
       // Synchronize shared notes & notebooks real-time
       const email = auth.currentUser?.email;
       let unsubscribeSharedNotes = () => {};
       let unsubscribeSharedNotebooks = () => {};
+      let unsubscribeActivity = () => {};
 
       if (email) {
-        const sharedNotesQuery = query(collection(db, 'shared_notes'), where('sharedWith', 'array-contains', email));
+        const normalizedEmail = normalizeEmail(email);
+        const sharedNotesQuery = query(collection(db, 'shared_notes'), where('sharedWith', 'array-contains', normalizedEmail));
         unsubscribeSharedNotes = onSnapshot(sharedNotesQuery, (snapshot) => {
           const sharedNotes = snapshot.docs.map(doc => ({
             ...doc.data(),
@@ -1025,7 +1139,7 @@ export const useStore = create<AppState>((set, get) => {
           console.error("Firestore shared notes sync error:", error);
         });
 
-        const sharedNotebooksQuery = query(collection(db, 'shared_notebooks'), where('sharedWith', 'array-contains', email));
+        const sharedNotebooksQuery = query(collection(db, 'shared_notebooks'), where('sharedWith', 'array-contains', normalizedEmail));
         unsubscribeSharedNotebooks = onSnapshot(sharedNotebooksQuery, (snapshot) => {
           const sharedNotebooks = snapshot.docs.map(doc => ({
             ...doc.data(),
@@ -1049,11 +1163,31 @@ export const useStore = create<AppState>((set, get) => {
         }, (error) => {
           console.error("Firestore shared notebooks sync error:", error);
         });
+
+        const activityQuery = query(collection(db, 'activity_feed'), where('participants', 'array-contains', normalizedEmail));
+        unsubscribeActivity = onSnapshot(activityQuery, (snapshot) => {
+          const remoteActivity = snapshot.docs.map(doc => doc.data() as ActivityItem);
+          set(s => {
+            const merged = new Map<string, ActivityItem>();
+            [...remoteActivity, ...s.activityItems].forEach(item => merged.set(item.id, item));
+            return {
+              activityItems: [...merged.values()]
+                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                .slice(0, 200),
+            };
+          });
+          saveJSON('ntk-activity-items', get().activityItems.slice(0, 200));
+        }, (error) => {
+          console.error("Firestore activity feed sync error:", error);
+        });
       }
 
       set({
         unsubscribeNotes: unsubscribe,
         unsubscribeNotebooks: unsubscribeNbs,
+        unsubscribeSettings,
+        unsubscribeTeamSpaces,
+        unsubscribeActivity,
         unsubscribeSharedNotes,
         unsubscribeSharedNotebooks
       });
@@ -1061,9 +1195,12 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     clearAuth: () => {
-      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
+      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSettings, unsubscribeTeamSpaces, unsubscribeActivity, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
       if (unsubscribeNotes) unsubscribeNotes();
       if (unsubscribeNotebooks) unsubscribeNotebooks();
+      if (unsubscribeSettings) unsubscribeSettings();
+      if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
+      if (unsubscribeActivity) unsubscribeActivity();
       if (unsubscribeSharedNotes) unsubscribeSharedNotes();
       if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       // Clear persisted auth / onboarding state
@@ -1073,6 +1210,11 @@ export const useStore = create<AppState>((set, get) => {
         uid: null,
         unsubscribeNotes: null,
         unsubscribeNotebooks: null,
+        unsubscribeSettings: null,
+        unsubscribeTeamSpaces: null,
+        unsubscribeActivity: null,
+        unsubscribeSharedNotes: null,
+        unsubscribeSharedNotebooks: null,
         isOnboarded: false,
         profile: defaultProfile,
         currentView: 'home',
@@ -1123,14 +1265,17 @@ export const useStore = create<AppState>((set, get) => {
     updateSettings: (updates) => {
       set(s => ({ settings: { ...s.settings, ...updates } }));
       persist();
+      syncSettingsToFirestore();
     },
     setTheme: (theme) => {
       set(s => ({ settings: { ...s.settings, theme } }));
       persist();
+      syncSettingsToFirestore();
     },
     setAccent: (accent) => {
       set(s => ({ settings: { ...s.settings, accent } }));
       persist();
+      syncSettingsToFirestore();
     },
     setNoteTheme: async (id, theme) => {
       set(s => ({
@@ -1142,6 +1287,7 @@ export const useStore = create<AppState>((set, get) => {
     toggleZenMode: () => {
       set(s => ({ settings: { ...s.settings, zenMode: !s.settings.zenMode } }));
       persist();
+      syncSettingsToFirestore();
     },
     flushSyncQueue: flushQueuedSync,
     resolveSyncConflict: async (conflictId, strategy) => {
@@ -1201,6 +1347,9 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     updateNote: async (id, updates, immediateSync = false) => {
+      let activityMessage = '';
+      let activityShared = false;
+      let activityParticipants: string[] = [];
       set(s => {
         const notes = s.notes.map(n => {
           if (n.id !== id) return n;
@@ -1210,6 +1359,20 @@ export const useStore = create<AppState>((set, get) => {
             updated.wordCount = countWords(fullText);
             updated.charCount = countChars(updates.content ?? n.content);
           }
+          if (updated.isShared) {
+            const isTextEdit = updates.title !== undefined || updates.content !== undefined;
+            const throttleKey = `edit-${id}`;
+            const canLogTextEdit = !isTextEdit || Date.now() - (activityThrottle[throttleKey] || 0) > 5 * 60 * 1000;
+            if (canLogTextEdit) {
+              activityThrottle[throttleKey] = Date.now();
+              activityShared = true;
+              activityParticipants = getEntityParticipants(updated, updated.sharedBy || s.profile.email);
+              if (updates.notebookId !== undefined) activityMessage = `Moved ${updated.title || 'Untitled note'} to another notebook.`;
+              else if (updates.archived !== undefined) activityMessage = `${updates.archived ? 'Archived' : 'Unarchived'} ${updated.title || 'Untitled note'}.`;
+              else if (updates.trashed !== undefined) activityMessage = `${updates.trashed ? 'Moved' : 'Restored'} ${updated.title || 'Untitled note'} ${updates.trashed ? 'to trash' : 'from trash'}.`;
+              else activityMessage = `Edited ${updated.title || 'Untitled note'}.`;
+            }
+          }
           return updated;
         });
         return { notes, tags: rebuildTags(notes) };
@@ -1217,6 +1380,17 @@ export const useStore = create<AppState>((set, get) => {
       persist();
       const isTextEdit = updates.title !== undefined || updates.content !== undefined;
       syncNoteToFirestore(id, (isTextEdit && !immediateSync) ? 5000 : 0);
+      if (activityShared && activityMessage) {
+        void get().addActivity({
+          entityType: 'note',
+          entityId: id,
+          noteId: id,
+          action: 'note-updated',
+          message: activityMessage,
+          participants: activityParticipants,
+          shared: true,
+        });
+      }
     },
 
     deleteNote: async (id) => {
@@ -1418,11 +1592,26 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     moveNote: async (noteId, notebookId) => {
+      const previous = get().notes.find(n => n.id === noteId);
       set(s => ({
         notes: s.notes.map(n => n.id === noteId ? { ...n, notebookId, sectionId: undefined, updatedAt: now() } : n)
       }));
       persist();
       syncNoteToFirestore(noteId);
+      const updated = get().notes.find(n => n.id === noteId);
+      if (updated?.isShared && previous?.notebookId !== notebookId) {
+        const targetNotebook = get().notebooks.find(nb => nb.id === notebookId);
+        void get().addActivity({
+          entityType: 'note',
+          entityId: noteId,
+          noteId,
+          notebookId,
+          action: 'note-moved',
+          message: `Moved ${updated.title || 'Untitled note'} to ${targetNotebook?.name || 'another notebook'}.`,
+          participants: getEntityParticipants(updated, updated.sharedBy || get().profile.email),
+          shared: true,
+        });
+      }
     },
 
     setNoteColor: async (id, color) => {
@@ -1912,19 +2101,109 @@ export const useStore = create<AppState>((set, get) => {
       });
     },
 
-    shareNote: async (noteId, sharedWith, isPublished) => {
+    createTeamSpace: (name, notebookIds = []) => {
+      const { uid, profile } = get();
+      const trimmed = name.trim() || 'Team Space';
+      const teamSpace: TeamSpace = {
+        id: uuid(),
+        name: trimmed,
+        icon: '\uD83C\uDFE2',
+        color: 'blue',
+        pinned: true,
+        notebookIds,
+        members: [],
+        ownerId: uid || undefined,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+
+      set(s => ({ teamSpaces: [teamSpace, ...s.teamSpaces] }));
+      persist();
+      syncTeamSpaceToFirestore(teamSpace.id);
+
+      notebookIds.forEach(notebookId => {
+        const notebook = get().notebooks.find(nb => nb.id === notebookId);
+        if (notebook) {
+          get().updateNotebook(notebookId, { teamSpaceId: teamSpace.id });
+        }
+      });
+
+      void get().addActivity({
+        entityType: 'team-space',
+        entityId: teamSpace.id,
+        teamSpaceId: teamSpace.id,
+        action: 'team-space-created',
+        message: `Created team space ${trimmed}.`,
+        participants: [profile.email],
+      });
+
+      return teamSpace;
+    },
+
+    updateTeamSpace: (id, updates) => {
+      set(s => ({
+        teamSpaces: s.teamSpaces.map(space =>
+          space.id === id ? { ...space, ...updates, updatedAt: now() } : space
+        ),
+      }));
+      persist();
+      syncTeamSpaceToFirestore(id);
+    },
+
+    deleteTeamSpace: (id) => {
+      const affectedNotebookIds = get().notebooks
+        .filter(nb => nb.teamSpaceId === id)
+        .map(nb => nb.id);
+      set(s => ({
+        teamSpaces: s.teamSpaces.filter(space => space.id !== id),
+        notebooks: s.notebooks.map(nb => nb.teamSpaceId === id ? { ...nb, teamSpaceId: null } : nb),
+      }));
+      persist();
+      deleteTeamSpaceFromFirestore(id);
+      affectedNotebookIds.forEach(notebookId => syncNotebookToFirestore(notebookId));
+    },
+
+    addActivity: async (item) => {
+      const { uid, profile } = get();
+      const participants = [...new Set(item.participants.map(normalizeEmail).filter(Boolean))];
+      const activity: ActivityItem = {
+        ...item,
+        id: uuid(),
+        actorEmail: normalizeEmail(item.actorEmail || profile.email || 'local'),
+        actorName: item.actorName || profile.name,
+        participants,
+        createdAt: now(),
+      };
+
+      set(s => ({
+        activityItems: [activity, ...s.activityItems.filter(existing => existing.id !== activity.id)].slice(0, 200),
+      }));
+      persist();
+
+      if (uid && item.shared && participants.length > 1) {
+        await setDoc(doc(db, 'activity_feed', activity.id), stripUndefined(activity)).catch(console.error);
+      }
+
+      return activity;
+    },
+
+    shareNote: async (noteId, sharedWith, isPublished, shareAccess) => {
       const { notes, uid, profile } = get();
       const note = notes.find(n => n.id === noteId);
       if (!note || !uid) return;
 
-      const isSharedOrPublished = sharedWith.length > 0 || isPublished;
+      const access = normalizeShareAccess(shareAccess || legacyEmailsToShareAccess(sharedWith, note.shareAccess));
+      const roleArrays = shareAccessToRoleArrays(access);
+      const isSharedOrPublished = roleArrays.sharedWith.length > 0 || isPublished;
+      const sharedBy = note.sharedBy || profile.email || 'Anonymous';
       const updatedNote: Note = {
         ...note,
         ownerId: note.ownerId || uid,
-        sharedWith,
+        ...roleArrays,
+        shareAccess: access,
         isPublished,
         isShared: isSharedOrPublished,
-        sharedBy: note.sharedBy || profile.email || 'Anonymous'
+        sharedBy,
       };
 
       set(s => ({
@@ -1940,20 +2219,36 @@ export const useStore = create<AppState>((set, get) => {
         }
       }
       await setDoc(doc(db, `users/${uid}/notes`, noteId), stripUndefined(updatedNote));
+
+      await get().addActivity({
+        entityType: 'note',
+        entityId: noteId,
+        noteId,
+        action: 'share-updated',
+        message: isSharedOrPublished
+          ? `Updated sharing for ${note.title || 'Untitled note'}.`
+          : `Stopped sharing ${note.title || 'Untitled note'}.`,
+        participants: getEntityParticipants(updatedNote, sharedBy),
+        shared: isSharedOrPublished,
+      });
     },
 
-    shareNotebook: async (notebookId, sharedWith) => {
+    shareNotebook: async (notebookId, sharedWith, shareAccess) => {
       const { notebooks, uid, profile } = get();
       const notebook = notebooks.find(nb => nb.id === notebookId);
       if (!notebook || !uid) return;
 
-      const isShared = sharedWith.length > 0;
+      const access = normalizeShareAccess(shareAccess || legacyEmailsToShareAccess(sharedWith, notebook.shareAccess));
+      const roleArrays = shareAccessToRoleArrays(access);
+      const isShared = roleArrays.sharedWith.length > 0;
+      const sharedBy = notebook.sharedBy || profile.email || 'Anonymous';
       const updatedNotebook: Notebook = {
         ...notebook,
         ownerId: notebook.ownerId || uid,
-        sharedWith,
+        ...roleArrays,
+        shareAccess: access,
         isShared,
-        sharedBy: notebook.sharedBy || profile.email || 'Anonymous'
+        sharedBy,
       };
 
       set(s => ({
@@ -1969,12 +2264,25 @@ export const useStore = create<AppState>((set, get) => {
         }
       }
       await setDoc(doc(db, `users/${uid}/notebooks`, notebookId), stripUndefined(updatedNotebook));
+
+      await get().addActivity({
+        entityType: 'notebook',
+        entityId: notebookId,
+        notebookId,
+        teamSpaceId: notebook.teamSpaceId || undefined,
+        action: 'share-updated',
+        message: isShared
+          ? `Updated sharing for notebook ${notebook.name}.`
+          : `Stopped sharing notebook ${notebook.name}.`,
+        participants: getEntityParticipants(updatedNotebook, sharedBy),
+        shared: isShared,
+      });
     },
 
     // ── Export/Import ──
     exportAllNotes: () => {
-      const { notes, notebooks, profile } = get();
-      return JSON.stringify({ notes, notebooks, profile, exportedAt: now() }, null, 2);
+      const { notes, notebooks, teamSpaces, activityItems, profile } = get();
+      return JSON.stringify({ notes, notebooks, teamSpaces, activityItems, profile, exportedAt: now() }, null, 2);
     },
 
     importNotes: (json) => {
@@ -1987,7 +2295,18 @@ export const useStore = create<AppState>((set, get) => {
             const newNotes = data.notes.filter((n: Note) => !existingIds.has(n.id));
             importedNotes = newNotes;
             const notes = [...s.notes, ...newNotes];
-            return { notes, tags: rebuildTags(notes) };
+            const importedTeamSpaces = Array.isArray(data.teamSpaces)
+              ? data.teamSpaces.filter((space: TeamSpace) => !s.teamSpaces.some(existing => existing.id === space.id))
+              : [];
+            const importedActivity = Array.isArray(data.activityItems)
+              ? data.activityItems.filter((item: ActivityItem) => !s.activityItems.some(existing => existing.id === item.id))
+              : [];
+            return {
+              notes,
+              tags: rebuildTags(notes),
+              teamSpaces: [...s.teamSpaces, ...importedTeamSpaces],
+              activityItems: [...importedActivity, ...s.activityItems].slice(0, 200),
+            };
           });
           if (data.notebooks && Array.isArray(data.notebooks)) {
             set(s => {
@@ -1998,6 +2317,9 @@ export const useStore = create<AppState>((set, get) => {
           }
           persist();
           importedNotes.forEach(note => syncNoteToFirestore(note.id));
+          if (Array.isArray(data.teamSpaces)) {
+            data.teamSpaces.forEach((space: TeamSpace) => syncTeamSpaceToFirestore(space.id));
+          }
           return true;
         }
         return false;
@@ -2007,8 +2329,24 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     resetApp: async () => {
-      const { notes, uid, unsubscribeNotes } = get();
+      const {
+        notes,
+        uid,
+        unsubscribeNotes,
+        unsubscribeNotebooks,
+        unsubscribeSettings,
+        unsubscribeTeamSpaces,
+        unsubscribeActivity,
+        unsubscribeSharedNotes,
+        unsubscribeSharedNotebooks,
+      } = get();
       if (unsubscribeNotes) unsubscribeNotes();
+      if (unsubscribeNotebooks) unsubscribeNotebooks();
+      if (unsubscribeSettings) unsubscribeSettings();
+      if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
+      if (unsubscribeActivity) unsubscribeActivity();
+      if (unsubscribeSharedNotes) unsubscribeSharedNotes();
+      if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       if (uid) {
         await Promise.all(notes.map(note =>
           deleteDoc(doc(db, `users/${uid}/notes`, note.id)).catch(console.error)
@@ -2022,17 +2360,27 @@ export const useStore = create<AppState>((set, get) => {
       localStorage.removeItem('ntk-onboarded');
       localStorage.removeItem('ntk-scratchpad');
       localStorage.removeItem('ntk-saved-searches');
+      localStorage.removeItem('ntk-team-spaces');
+      localStorage.removeItem('ntk-activity-items');
       localStorage.removeItem('ntk-sync-queue');
       localStorage.removeItem('ntk-sync-conflicts');
       set({
         notes: [],
         notebooks: [defaultNotebook],
         tags: [],
+        teamSpaces: [],
+        activityItems: [],
         profile: defaultProfile,
         settings: defaultSettings,
         isOnboarded: false,
         uid: null,
         unsubscribeNotes: null,
+        unsubscribeNotebooks: null,
+        unsubscribeSettings: null,
+        unsubscribeTeamSpaces: null,
+        unsubscribeActivity: null,
+        unsubscribeSharedNotes: null,
+        unsubscribeSharedNotebooks: null,
         currentView: 'home',
         selectedNoteId: null,
         editingNote: false,

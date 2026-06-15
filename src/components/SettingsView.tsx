@@ -141,6 +141,7 @@ export default function SettingsView() {
       a.download = getWorkspaceArchiveFileName();
       a.click();
       URL.revokeObjectURL(url);
+      updateSettings({ lastBackupAt: new Date().toISOString() });
     } catch (err) {
       console.error('Export failed', err);
       alert('Failed to export workspace. Check console for details.');
@@ -156,6 +157,7 @@ export default function SettingsView() {
       const result = await exportWorkspaceArchiveToGoogleDrive(exportAllNotes());
       setCloudExportStatus(`Uploaded ${result.fileName} to Google Drive.`);
       setCloudExportLink(result.url);
+      updateSettings({ lastBackupAt: new Date().toISOString() });
     } catch (err) {
       console.error('Google Drive export failed', err);
       setCloudExportStatus(err instanceof Error ? err.message : 'Google Drive export failed.');
@@ -185,6 +187,7 @@ export default function SettingsView() {
 
       await navigator.share(shareData);
       setCloudExportStatus('Backup handed off to your selected app.');
+      updateSettings({ lastBackupAt: new Date().toISOString() });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         setCloudExportStatus('Cloud share canceled.');

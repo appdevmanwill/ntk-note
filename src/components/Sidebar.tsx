@@ -138,7 +138,7 @@ export default function Sidebar() {
     { view: 'search', icon: Search, label: 'Search' },
     { view: 'starred', icon: Star, label: 'Starred', badge: starredCount || undefined },
     { view: 'reminders', icon: Bell, label: 'Reminders', badge: remindersCount || undefined },
-    { view: 'shared', icon: Share2, label: 'Shared' },
+    { view: 'shared', icon: Share2, label: 'Share Center' },
     { view: 'smart-folders', icon: FolderSearch, label: 'Smart Folders' },
     { view: 'graph', icon: GitBranch, label: 'Graph' },
     { view: 'templates', icon: LayoutTemplate, label: 'Templates' },

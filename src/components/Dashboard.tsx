@@ -3,7 +3,7 @@ import { useStore } from '@/store';
 import {
   Plus, FileText, CheckSquare, Type, Sparkles, Pin,
   Clock, TrendingUp, BarChart3, ListChecks, BookOpen,
-  ChevronRight, Star, Zap, Upload, BellRing, CalendarDays, PenLine
+  ChevronRight, Star, Zap, Upload, BellRing, CalendarDays, PenLine, DownloadCloud
 } from 'lucide-react';
 import ImportManager from './ImportManager';
 import { isThisWeek } from 'date-fns';
@@ -60,6 +60,10 @@ export default function Dashboard() {
   const today = new Date();
   const todayLabel = formatDashboardDate(today);
   const todayCelebrations = getHolidaysForDate(today);
+  const backupDays = settings.lastBackupAt
+    ? Math.floor((Date.now() - new Date(settings.lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))
+    : null;
+  const backupDue = backupDays === null || backupDays >= settings.backupReminderDays;
 
   const taskProgress = stats.tasks > 0 ? Math.round((stats.completedTasks / stats.tasks) * 100) : 0;
 
@@ -193,6 +197,34 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+
+        {backupDue && (
+          <section className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500">
+                  <DownloadCloud className="h-5 w-5 no-transition" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-theme-primary">Cloud backup reminder</p>
+                  <p className="mt-1 text-sm leading-6 text-theme-tertiary">
+                    {backupDays === null
+                      ? 'Create your first portable backup to Google Drive or another cloud app.'
+                      : `Your last backup was ${backupDays} day${backupDays === 1 ? '' : 's'} ago.`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCurrentView('settings')}
+                className="inline-flex w-fit items-center gap-2 rounded-xl accent-button px-4 py-2.5 text-sm font-bold"
+              >
+                Backup now
+                <ChevronRight className="h-4 w-4 no-transition" />
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Quick Actions */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

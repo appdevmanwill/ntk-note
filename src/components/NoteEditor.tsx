@@ -18,6 +18,7 @@ import {
 } from '@/utils/export';
 import { getBacklinks, noteDisplayTitle } from '@/utils/links';
 import { compressImageDataUrl, compressImageFile } from '@/utils/imageCompression';
+import { canEditRole, getEntityRole, roleLabels } from '@/utils/collaboration';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { v4 as uuid } from 'uuid';
@@ -37,6 +38,7 @@ import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
 import SketchModal from './SketchModal';
 import ShareModal from './ShareModal';
+import NoteCollaborationPanel from './NoteCollaborationPanel';
 import VersionHistory, { saveCloudNoteCheckpoint, saveLocalNoteSnapshot, useVersionHistory, type NoteVersion } from './VersionHistory';
 
 const isMarkdown = (text: string): boolean => {
@@ -174,7 +176,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     setNoteReminder, settings, toggleZenMode, notebooks, moveNote,
     setEditingNote, setNoteTheme,
     lockNote, unlockNote, relockNote, updateUnlockedNote, unlockedNotes,
-    templates,
+    templates, profile,
   } = useStore();
 
   const note = notes.find(n => n.id === selectedNoteId);
@@ -231,6 +233,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const unlockedNote = note ? unlockedNotes[note.id] : undefined;
   const isLocked = !!note?.encrypted && !unlockedNote;
   const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
+  const accessRole = note ? getEntityRole(note, profile.email, uid) : 'owner';
+  const canEditNote = canEditRole(accessRole);
   useVersionHistory(note?.id || null, title, content);
 
   const showActionToast = useCallback((message: string, undo?: () => void) => {
@@ -268,7 +272,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   // Auto-save
   const saveNote = useCallback((t: string, c: string, immediate = false) => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     if (!settings.autoSave && !immediate) return;
     if (immediate) {
@@ -286,7 +290,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         updateNote(note.id, { title: t, content: c });
       }
     }, 300);
-  }, [note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
+  }, [canEditNote, note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
 
   const undoNoteChange = useCallback(() => {
     const previous = undoStackRef.current[undoStackRef.current.length - 1];
@@ -313,10 +317,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   }, [content, refreshHistoryStatus, saveNote, title]);
 
   const updateContentWithHistory = useCallback((nextContent: string) => {
+    if (!canEditNote) return;
     pushHistory({ title, content });
     setContent(nextContent);
     saveNote(title, nextContent);
-  }, [content, pushHistory, saveNote, title]);
+  }, [canEditNote, content, pushHistory, saveNote, title]);
 
   const noteIdRef = useRef<string | null>(null);
   const stateRef = useRef({ title, content, notes, unlockedNotes });
@@ -391,6 +396,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   }, [updateNote, updateUnlockedNote]);
 
   const appendDictationText = useCallback((textToAppend: string) => {
+    if (!canEditNote) return;
     const el = contentRef.current;
     const spacing = textToAppend.startsWith(' ') ? '' : ' ';
     const formattedText = spacing + textToAppend.trim();
@@ -409,10 +415,10 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const newContent = content ? content + formattedText : textToAppend.trim();
       updateContentWithHistory(newContent);
     }
-  }, [content, updateContentWithHistory]);
+  }, [canEditNote, content, updateContentWithHistory]);
 
   const toggleListening = () => {
-    if (!isSpeechSupported) return;
+    if (!isSpeechSupported || !canEditNote) return;
     
     if (isListening) {
       if (recognitionRef.current) {
@@ -451,6 +457,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const insertImageMarkdown = useCallback((dataUrl: string, alt = 'Image') => {
+    if (!canEditNote) return;
     const el = contentRef.current;
     const imgMarkdown = `\n![${alt}](${dataUrl})\n`;
     if (el) {
@@ -466,17 +473,25 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       const newContent = content ? content + imgMarkdown : imgMarkdown;
       updateContentWithHistory(newContent);
     }
-  }, [content, updateContentWithHistory]);
+  }, [canEditNote, content, updateContentWithHistory]);
 
   const handleInsertDrawing = (dataUrl: string) => {
+    if (!canEditNote) return;
     void compressImageDataUrl(dataUrl)
       .then(compressed => insertImageMarkdown(compressed, 'Sketch'))
       .catch(() => insertImageMarkdown(dataUrl, 'Sketch'));
   };
 
   const handleInsertImageFile = (file: File) => {
+    if (!canEditNote) return;
     void compressImageFile(file)
-      .then(compressed => insertImageMarkdown(compressed, file.name || 'Image'))
+      .then(compressed => {
+        if (compressed.length > 700000) {
+          showActionToast('Image is still large after compression. Keep it in cloud storage and paste the link.');
+          return;
+        }
+        insertImageMarkdown(compressed, file.name || 'Image');
+      })
       .catch(error => {
         console.error('Image compression failed', error);
         setVersionStatus('Image compression failed. Try a smaller image.');
@@ -485,7 +500,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
 
     const imageFile = Array.from(e.clipboardData.files).find(file => file.type.startsWith('image/'));
     if (imageFile) {
@@ -524,17 +539,20 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   }, []);
 
   const handleTitleChange = (val: string) => {
+    if (!canEditNote) return;
     pushHistory({ title, content });
     setTitle(val);
     saveNote(val, content);
   };
 
   const handleContentChange = (val: string) => {
+    if (!canEditNote) return;
     updateContentWithHistory(val);
   };
 
   // Toolbar actions for rich text in textarea
   const insertFormatting = (before: string, after: string = '') => {
+    if (!canEditNote) return;
     const el = contentRef.current;
     if (!el) return;
     const start = el.selectionStart;
@@ -562,6 +580,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const insertAtLineStart = (prefix: string) => {
+    if (!canEditNote) return;
     const el = contentRef.current;
     if (!el) return;
     const start = el.selectionStart;
@@ -571,6 +590,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleAddTag = () => {
+    if (!canEditNote) return;
     const nextTag = tagInput.trim();
     if (nextTag && note) {
       void addNoteTag(note.id, nextTag).then(() => {
@@ -581,6 +601,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleSetReminder = async () => {
+    if (!canEditNote) return;
     if (note && reminderDate && reminderTime) {
       if ('Notification' in window && Notification.permission === 'default') {
         await Notification.requestPermission().catch(() => undefined);
@@ -600,6 +621,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleAddChecklistItem = () => {
+    if (!canEditNote) return;
     if (note && newChecklistItem.trim()) {
       if (note.encrypted && unlockedNote) {
         const item: ChecklistItem = {
@@ -617,7 +639,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleChecklistUpdate = (itemId: string, updates: Partial<ChecklistItem>) => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     if (note.encrypted && unlockedNote) {
       updateUnlockedNote(note.id, {
         checklist: unlockedNote.checklist.map(item => item.id === itemId ? { ...item, ...updates } : item),
@@ -628,7 +650,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleChecklistRemove = (itemId: string) => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     if (note.encrypted && unlockedNote) {
       updateUnlockedNote(note.id, {
         checklist: unlockedNote.checklist.filter(item => item.id !== itemId),
@@ -639,7 +661,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleChecklistReorder = (targetItemId: string, draggedItemId: string) => {
-    if (!note || draggedItemId === targetItemId) return;
+    if (!note || !canEditNote || draggedItemId === targetItemId) return;
     const items = [...activeChecklist].sort((a, b) => a.order - b.order);
     const draggedIdx = items.findIndex(item => item.id === draggedItemId);
     if (draggedIdx < 0) return;
@@ -664,7 +686,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleCloudCheckpoint = async () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     saveNote(title, content, true);
     if (note.encrypted) {
       handleSaveLocalSnapshot('cloud-checkpoint');
@@ -695,7 +717,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handlePinToggle = () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     const wasPinned = note.pinned;
     runSyncedAction(
       () => pinNote(note.id),
@@ -705,7 +727,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleStarToggle = () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     const wasStarred = note.starred;
     runSyncedAction(
       () => starNote(note.id),
@@ -715,7 +737,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleArchiveToggle = () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     const noteId = note.id;
     if (note.archived) {
       runSyncedAction(
@@ -734,7 +756,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleTrashNote = () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     const noteId = note.id;
     runSyncedAction(
       () => trashNote(noteId),
@@ -749,7 +771,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleDuplicateNote = () => {
-    if (!note) return;
+    if (!note || !canEditNote) return;
     const sourceId = note.id;
     void duplicateNote(sourceId).then(duplicate => {
       if (!duplicate) return;
@@ -765,6 +787,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const openMoveDialog = () => {
+    if (!canEditNote) return;
     const useDesktopPanel = typeof window !== 'undefined' && window.innerWidth >= 1280;
     setNotebookSearch('');
     setShowMenu(false);
@@ -1070,8 +1093,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             <button
               type="button"
               onClick={openMoveDialog}
+              disabled={!canEditNote}
               className="inline-flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-theme-tertiary theme-hover"
-              title="Move note to another notebook"
+              title={canEditNote ? 'Move note to another notebook' : 'Only owners and editors can move this note'}
               aria-label="Move note to another notebook"
             >
               <span className="shrink-0">{notebook.icon}</span>
@@ -1100,7 +1124,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             </button>
           )}
 
-          {!isLocked && (
+          {!isLocked && canEditNote && (
             <>
               <button
                 onClick={undoNoteChange}
@@ -1128,17 +1152,21 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
           <button
             onClick={handlePinToggle}
+            disabled={!canEditNote}
             className="p-1.5 rounded-lg transition-colors"
             style={{ backgroundColor: note.pinned ? 'var(--active-bg)' : 'transparent', color: note.pinned ? 'var(--accent-primary)' : 'var(--text-tertiary)' }}
             aria-label={note.pinned ? 'Unpin note' : 'Pin note'}
+            title={canEditNote ? undefined : 'Only owners and editors can pin shared notes'}
           >
             <Pin className="w-4 h-4" />
           </button>
           <button
             onClick={handleStarToggle}
+            disabled={!canEditNote}
             className="p-1.5 rounded-lg transition-colors theme-hover"
             style={{ color: note.starred ? '#f59e0b' : 'var(--text-tertiary)' }}
             aria-label={note.starred ? 'Unstar note' : 'Star note'}
+            title={canEditNote ? undefined : 'Only owners and editors can star shared notes'}
           >
             <Star className={`w-4 h-4 ${note.starred ? 'fill-amber-500' : ''}`} />
           </button>
@@ -1170,29 +1198,41 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
           {showMenu && (
             <div className="absolute right-4 top-12 z-40 w-56 rounded-xl py-1.5 animate-scale-in theme-menu border">
-              <MenuSectionLabel label="Organize" />
-              <MenuBtn icon={Palette} label="Note color" onClick={() => { setShowColorPicker(!showColorPicker); }} />
-              <MenuBtn icon={Sparkles} label="Note theme" onClick={() => { setShowThemePicker(!showThemePicker); }} />
-              <MenuBtn icon={AlertCircle} label="Priority" onClick={() => { setShowPriority(!showPriority); }} />
-              <MenuBtn icon={Tag} label="Add tag" onClick={() => { setShowTagInput(!showTagInput); setShowMenu(false); }} />
-              <MenuBtn icon={Bell} label={note.reminder ? 'Update reminder' : 'Set reminder'} onClick={() => { setShowReminder(!showReminder); setShowMenu(false); }} />
-              <MenuBtn icon={Hash} label="Move to notebook" onClick={openMoveDialog} />
-              <MenuBtn icon={Copy} label="Duplicate" onClick={handleDuplicateNote} />
-              <div className="my-1 border-t theme-divider" />
-              <MenuSectionLabel label="Protect" />
-              {note.encrypted && unlockedNote ? (
-                <MenuBtn icon={Lock} label="Lock now" onClick={() => { relockNote(note.id); setShowMenu(false); }} />
-              ) : (
-                <MenuBtn icon={ShieldCheck} label={note.encrypted ? 'Unlock note' : 'Encrypt / lock note'} onClick={() => { setShowLockDialog(true); setShowMenu(false); }} />
+              {!canEditNote && (
+                <div className="mx-2 mb-1 rounded-lg border theme-border bg-[var(--input-bg)] px-3 py-2">
+                  <p className="text-xs font-semibold text-theme-primary">{roleLabels[accessRole]} access</p>
+                  <p className="mt-1 text-[11px] leading-4 text-theme-tertiary">
+                    You can read{accessRole === 'commenter' ? ' and comment on' : ''} this shared note.
+                  </p>
+                </div>
               )}
-              <div className="my-1 border-t theme-divider" />
+              {canEditNote && (
+                <>
+                  <MenuSectionLabel label="Organize" />
+                  <MenuBtn icon={Palette} label="Note color" onClick={() => { setShowColorPicker(!showColorPicker); }} />
+                  <MenuBtn icon={Sparkles} label="Note theme" onClick={() => { setShowThemePicker(!showThemePicker); }} />
+                  <MenuBtn icon={AlertCircle} label="Priority" onClick={() => { setShowPriority(!showPriority); }} />
+                  <MenuBtn icon={Tag} label="Add tag" onClick={() => { setShowTagInput(!showTagInput); setShowMenu(false); }} />
+                  <MenuBtn icon={Bell} label={note.reminder ? 'Update reminder' : 'Set reminder'} onClick={() => { setShowReminder(!showReminder); setShowMenu(false); }} />
+                  <MenuBtn icon={Hash} label="Move to notebook" onClick={openMoveDialog} />
+                  <MenuBtn icon={Copy} label="Duplicate" onClick={handleDuplicateNote} />
+                  <div className="my-1 border-t theme-divider" />
+                  <MenuSectionLabel label="Protect" />
+                  {note.encrypted && unlockedNote ? (
+                    <MenuBtn icon={Lock} label="Lock now" onClick={() => { relockNote(note.id); setShowMenu(false); }} />
+                  ) : (
+                    <MenuBtn icon={ShieldCheck} label={note.encrypted ? 'Unlock note' : 'Encrypt / lock note'} onClick={() => { setShowLockDialog(true); setShowMenu(false); }} />
+                  )}
+                  <div className="my-1 border-t theme-divider" />
+                </>
+              )}
               <MenuSectionLabel label="History" />
               <MenuBtn icon={History} label="Version history" onClick={openVersionHistory} />
               <MenuBtn icon={History} label="Save local snapshot" onClick={() => { handleSaveLocalSnapshot(); setShowMenu(false); }} />
-              <MenuBtn icon={Cloud} label="Cloud checkpoint" onClick={() => { handleCloudCheckpoint(); setShowMenu(false); }} />
+              {canEditNote && <MenuBtn icon={Cloud} label="Cloud checkpoint" onClick={() => { handleCloudCheckpoint(); setShowMenu(false); }} />}
               <div className="my-1 border-t theme-divider" />
               <MenuSectionLabel label="Share" />
-              <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />
+              {accessRole === 'owner' && <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />}
               <MenuBtn icon={Share2} label="Export / Share" onClick={openExportSurface} />
               {showExportMenu && (
                 <div className="px-3 py-2 border-t theme-divider xl:hidden">
@@ -1224,10 +1264,14 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   </div>
                 </div>
               )}
-              <div className="my-1 border-t theme-divider" />
-              <MenuSectionLabel label="Cleanup" />
-              <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={handleArchiveToggle} />
-              <MenuBtn icon={Trash2} label="Move to trash" onClick={handleTrashNote} danger />
+              {canEditNote && (
+                <>
+                  <div className="my-1 border-t theme-divider" />
+                  <MenuSectionLabel label="Cleanup" />
+                  <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={handleArchiveToggle} />
+                  <MenuBtn icon={Trash2} label="Move to trash" onClick={handleTrashNote} danger />
+                </>
+              )}
               
               {/* Color picker submenu */}
               {showColorPicker && (
@@ -1535,7 +1579,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           <input type="date" value={reminderDate} onChange={e => setReminderDate(e.target.value)} className="bg-transparent text-sm text-theme-primary focus:outline-none" />
           <input type="time" value={reminderTime} onChange={e => setReminderTime(e.target.value)} className="bg-transparent text-sm text-theme-primary focus:outline-none" />
           <button onClick={handleSetReminder} className="text-xs text-orange-600 font-medium">Set</button>
-          {note.reminder && (
+          {note.reminder && canEditNote && (
             <button onClick={() => { setNoteReminder(note.id, undefined); setShowReminder(false); }} className="text-xs text-red-500">Remove</button>
           )}
           <button onClick={() => setShowReminder(false)} className="text-theme-tertiary ml-auto"><X className="w-4 h-4" /></button>
@@ -1548,30 +1592,48 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         </div>
       )}
 
+      {note.isShared && (
+        <div className="border-b theme-divider px-4 py-2" style={{ backgroundColor: 'var(--input-bg)' }}>
+          <div className="mx-auto flex max-w-3xl items-start gap-2 text-xs text-theme-tertiary">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 accent-text no-transition" />
+            <p>
+              Shared note - <span className="font-semibold text-theme-secondary">{roleLabels[accessRole]}</span>
+              {!canEditNote && (
+                <span> - Content is read-only{accessRole === 'commenter' ? ', but comments are enabled' : ''}.</span>
+              )}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Tags display */}
       {note.tags.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-4 py-2 border-b theme-divider">
           {note.tags.map(tag => (
             <span key={tag} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--badge-bg)', color: 'var(--badge-text)' }}>
               <Tag className="w-3 h-3" />{tag}
-              <button
-                onClick={() => {
-                  void removeNoteTag(note.id, tag).then(() => {
-                    showActionToast(`Removed #${tag}.`, () => void addNoteTag(note.id, tag));
-                  });
-                }}
-                className="hover:text-red-500 ml-0.5"
-              >
-                <X className="w-3 h-3" />
-              </button>
+              {canEditNote && (
+                <button
+                  onClick={() => {
+                    void removeNoteTag(note.id, tag).then(() => {
+                      showActionToast(`Removed #${tag}.`, () => void addNoteTag(note.id, tag));
+                    });
+                  }}
+                  className="hover:text-red-500 ml-0.5"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </span>
           ))}
-          <button
-            onClick={() => setShowTagInput(true)}
-            className="text-xs text-theme-tertiary flex items-center gap-0.5"
-          >
-            <Plus className="w-3 h-3" /> Add
-          </button>
+          {canEditNote && (
+            <button
+              onClick={() => setShowTagInput(true)}
+              className="text-xs text-theme-tertiary flex items-center gap-0.5"
+            >
+              <Plus className="w-3 h-3" /> Add
+            </button>
+          )}
         </div>
       )}
 
@@ -1660,7 +1722,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       )}
 
       {/* Formatting Toolbar */}
-      {showToolbar && !isPreview && !isLocked && note.type !== 'checklist' && (
+      {showToolbar && canEditNote && !isPreview && !isLocked && note.type !== 'checklist' && (
         <div className="flex items-center gap-0.5 px-3 py-1.5 border-b theme-divider overflow-x-auto shrink-0">
           {toolbarButtons.map((btn, i) => {
             if (!btn) return <div key={i} className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--divider)' }} />;
@@ -1767,8 +1829,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 value={title}
                 onChange={e => handleTitleChange(e.target.value)}
                 onBlur={() => saveNote(title, content, true)}
+                readOnly={!canEditNote}
                 placeholder="Untitled"
-                className="w-full min-w-0 text-2xl md:text-3xl font-bold bg-transparent focus:outline-none mb-4"
+                className="w-full min-w-0 text-2xl md:text-3xl font-bold bg-transparent focus:outline-none mb-4 read-only:cursor-default"
                 spellCheck={settings.spellCheck}
                 style={{
                   color: 'var(--text-primary)',
@@ -1784,7 +1847,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   {[...activeChecklist].sort((a, b) => a.order - b.order).map((item) => (
                     <div
                       key={item.id}
-                      draggable
+                      draggable={canEditNote}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('checklistItemId', item.id);
                         e.dataTransfer.effectAllowed = 'move';
@@ -1815,19 +1878,22 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                         type="checkbox"
                         checked={item.checked}
                         onChange={e => handleChecklistUpdate(item.id, { checked: e.target.checked })}
+                        disabled={!canEditNote}
                         className="mt-0.5 accent-range w-[18px] h-[18px] cursor-pointer"
                       />
                       <input
                         type="text"
                         value={item.text}
                         onChange={e => handleChecklistUpdate(item.id, { text: e.target.value })}
+                        readOnly={!canEditNote}
                         className={`min-w-0 flex-1 bg-transparent text-sm focus:outline-none ${item.checked ? 'line-through text-theme-tertiary' : 'text-theme-primary'}`}
                         spellCheck={settings.spellCheck}
                         style={{ fontSize: `${settings.editorFontSize}px`, fontFamily: settings.editorFontFamily }}
                       />
                       <button
                         onClick={() => handleChecklistRemove(item.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded theme-hover text-theme-tertiary transition-all"
+                        disabled={!canEditNote}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded theme-hover text-theme-tertiary transition-all disabled:hidden"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -1840,6 +1906,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                       value={newChecklistItem}
                       onChange={e => setNewChecklistItem(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') handleAddChecklistItem(); }}
+                      readOnly={!canEditNote}
                       placeholder="Add item..."
                       className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary placeholder:text-theme-muted focus:outline-none"
                       spellCheck={settings.spellCheck}
@@ -1852,6 +1919,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                       onChange={e => handleContentChange(e.target.value)}
                       onBlur={() => saveNote(title, content, true)}
                       onPaste={handlePaste}
+                      readOnly={!canEditNote}
                       placeholder="Add notes..."
                       className="w-full min-w-0 max-w-full min-h-[100px] overflow-x-hidden bg-transparent text-theme-primary placeholder:text-theme-muted resize-none focus:outline-none"
                       spellCheck={settings.spellCheck}
@@ -1870,6 +1938,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onChange={e => handleContentChange(e.target.value)}
                   onBlur={() => saveNote(title, content, true)}
                   onPaste={handlePaste}
+                  readOnly={!canEditNote}
                   placeholder="Raw note source code..."
                   className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-auto bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
                   style={{
@@ -1891,6 +1960,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onChange={e => handleContentChange(e.target.value)}
                   onBlur={() => saveNote(title, content, true)}
                   onPaste={handlePaste}
+                  readOnly={!canEditNote}
                   placeholder={note.type === 'markdown' ? 'Write in Markdown...' : 'Start writing...'}
                   className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-hidden bg-transparent resize-none focus:outline-none editor-area"
                   style={{
@@ -1924,6 +1994,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   </div>
                 </div>
               )}
+
+              <NoteCollaborationPanel note={note} accessRole={accessRole} />
             </>
           )}
         </div>

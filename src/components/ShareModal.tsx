@@ -3,6 +3,8 @@ import { useStore } from '@/store';
 import { db } from '@/utils/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import { X, UserPlus, Globe, Copy, Check, Users, Trash2, Send, Share2 } from 'lucide-react';
+import type { ShareAccess, ShareRole } from '@/types';
+import { collaboratorRoles, legacyEmailsToShareAccess, normalizeEmail, normalizeShareAccess, roleLabels } from '@/utils/collaboration';
 
 
 interface ShareModalProps {
@@ -19,9 +21,10 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
   const notebook = entityType === 'notebook' ? notebooks.find(nb => nb.id === entityId) : null;
 
   const [emailInput, setEmailInput] = useState('');
+  const [newUserRole, setNewUserRole] = useState<Exclude<ShareRole, 'owner'>>('editor');
   const [usersDirectory, setUsersDirectory] = useState<{ email: string; name: string }[]>([]);
   const [filteredDirectory, setFilteredDirectory] = useState<{ email: string; name: string }[]>([]);
-  const [sharedWith, setSharedWith] = useState<string[]>([]);
+  const [shareAccess, setShareAccess] = useState<ShareAccess[]>([]);
   const [isPublished, setIsPublished] = useState(false);
   const [copied, setCopied] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -31,10 +34,10 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
   useEffect(() => {
     if (isOpen) {
       if (note) {
-        setSharedWith(note.sharedWith || []);
+        setShareAccess(normalizeShareAccess(note.shareAccess || legacyEmailsToShareAccess(note.sharedWith || [])));
         setIsPublished(!!note.isPublished);
       } else if (notebook) {
-        setSharedWith(notebook.sharedWith || []);
+        setShareAccess(normalizeShareAccess(notebook.shareAccess || legacyEmailsToShareAccess(notebook.sharedWith || [])));
       }
       
       // Load user directory from Firestore
@@ -62,6 +65,17 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
 
   if (!isOpen) return null;
 
+  const commitAccess = (nextAccess: ShareAccess[], nextPublished = isPublished) => {
+    const normalized = normalizeShareAccess(nextAccess);
+    setShareAccess(normalized);
+    const emails = normalized.map(item => item.email);
+    if (entityType === 'note') {
+      void shareNote(entityId, emails, nextPublished, normalized);
+    } else {
+      void shareNotebook(entityId, emails, normalized);
+    }
+  };
+
   const handleEmailChange = (val: string) => {
     setEmailInput(val);
     if (val.trim()) {
@@ -77,39 +91,32 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
   };
 
   const addShareUser = (email: string) => {
-    const trimmed = email.trim().toLowerCase();
-    if (trimmed && !sharedWith.includes(trimmed) && trimmed !== profile.email) {
-      const updated = [...sharedWith, trimmed];
-      setSharedWith(updated);
+    const trimmed = normalizeEmail(email);
+    if (trimmed && trimmed !== normalizeEmail(profile.email)) {
+      const current = normalizeShareAccess(shareAccess);
+      const exists = current.some(item => item.email === trimmed);
+      const updated = exists
+        ? current.map(item => item.email === trimmed ? { ...item, role: newUserRole } : item)
+        : [...current, { email: trimmed, role: newUserRole, addedAt: new Date().toISOString() }];
       setEmailInput('');
       setDropdownOpen(false);
-      
-      // Sync immediately to DB
-      if (entityType === 'note') {
-        void shareNote(entityId, updated, isPublished);
-      } else {
-        void shareNotebook(entityId, updated);
-      }
+      commitAccess(updated);
     }
   };
 
   const removeShareUser = (email: string) => {
-    const updated = sharedWith.filter(e => e !== email);
-    setSharedWith(updated);
-    
-    // Sync immediately to DB
-    if (entityType === 'note') {
-      void shareNote(entityId, updated, isPublished);
-    } else {
-      void shareNotebook(entityId, updated);
-    }
+    commitAccess(shareAccess.filter(item => item.email !== email));
+  };
+
+  const updateShareRole = (email: string, role: Exclude<ShareRole, 'owner'>) => {
+    commitAccess(shareAccess.map(item => item.email === email ? { ...item, role } : item));
   };
 
   const togglePublicPublish = () => {
     if (entityType !== 'note') return;
     const nextPublished = !isPublished;
     setIsPublished(nextPublished);
-    void shareNote(entityId, sharedWith, nextPublished);
+    commitAccess(shareAccess, nextPublished);
   };
 
   const getPublicUrl = () => {
@@ -178,6 +185,16 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
                 placeholder="Enter collaborator email..."
                 className="flex-1 px-3.5 py-2.5 rounded-xl theme-input border text-sm focus:outline-none accent-focus"
               />
+              <select
+                value={newUserRole}
+                onChange={event => setNewUserRole(event.target.value as Exclude<ShareRole, 'owner'>)}
+                className="w-28 rounded-xl border theme-input px-2 py-2 text-xs font-semibold text-theme-secondary focus:outline-none accent-focus"
+                aria-label="New collaborator role"
+              >
+                {collaboratorRoles.map(role => (
+                  <option key={role} value={role}>{roleLabels[role]}</option>
+                ))}
+              </select>
               <button
                 onClick={() => addShareUser(emailInput)}
                 disabled={!emailInput.trim()}
@@ -208,18 +225,28 @@ export default function ShareModal({ isOpen, onClose, entityType, entityId }: Sh
           <div className="space-y-2">
             <h4 className="text-xs uppercase font-bold tracking-wider text-theme-tertiary flex items-center gap-1">
               <Users className="w-3.5 h-3.5" />
-              Who has access ({sharedWith.length})
+              Who has access ({shareAccess.length})
             </h4>
-            {sharedWith.length === 0 ? (
+            {shareAccess.length === 0 ? (
               <p className="text-xs text-theme-muted italic py-1">Private (Only you can access this)</p>
             ) : (
               <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                {sharedWith.map(email => (
-                  <div key={email} className="flex items-center justify-between p-2 rounded-lg bg-[var(--app-bg-subtle)]/20 border theme-border">
-                    <span className="text-xs text-theme-primary font-mono truncate mr-2">{email}</span>
+                {shareAccess.map(access => (
+                  <div key={access.email} className="flex items-center gap-2 p-2 rounded-lg bg-[var(--app-bg-subtle)]/20 border theme-border">
+                    <span className="min-w-0 flex-1 text-xs text-theme-primary font-mono truncate">{access.email}</span>
+                    <select
+                      value={access.role}
+                      onChange={event => updateShareRole(access.email, event.target.value as Exclude<ShareRole, 'owner'>)}
+                      className="w-28 rounded-lg border theme-input px-2 py-1.5 text-xs text-theme-secondary focus:outline-none"
+                      aria-label={`Role for ${access.email}`}
+                    >
+                      {collaboratorRoles.map(role => (
+                        <option key={role} value={role}>{roleLabels[role]}</option>
+                      ))}
+                    </select>
                     <button
-                      onClick={() => removeShareUser(email)}
-                      className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer"
+                      onClick={() => removeShareUser(access.email)}
+                      className="p-1 rounded theme-hover text-theme-tertiary hover:text-red-500 cursor-pointer shrink-0"
                       title="Remove collaborator"
                     >
                       <Trash2 className="w-3.5 h-3.5" />

@@ -7,6 +7,14 @@ export type Priority = 'low' | 'medium' | 'high' | 'urgent';
 
 export type NoteType = 'note' | 'checklist' | 'markdown';
 
+export type ShareRole = 'owner' | 'editor' | 'commenter' | 'viewer';
+
+export interface ShareAccess {
+  email: string;
+  role: Exclude<ShareRole, 'owner'>;
+  addedAt: string;
+}
+
 export type NoteTheme =
   | 'canvas' | 'parchment' | 'midnight' | 'ocean' | 'forest'
   | 'sunset' | 'lavender' | 'graphite' | 'mint' | 'rose';
@@ -56,6 +64,10 @@ export interface Note {
   order: number;
   ownerId?: string;
   sharedWith?: string[];
+  shareAccess?: ShareAccess[];
+  editors?: string[];
+  commenters?: string[];
+  viewers?: string[];
   isPublished?: boolean;
   isShared?: boolean;
   sharedBy?: string;
@@ -80,10 +92,56 @@ export interface Notebook {
   sections: Section[];
   ownerId?: string;
   sharedWith?: string[];
+  shareAccess?: ShareAccess[];
+  editors?: string[];
+  commenters?: string[];
+  viewers?: string[];
   isShared?: boolean;
   sharedBy?: string;
   trashed?: boolean;
   trashedAt?: string;
+  teamSpaceId?: string | null;
+}
+
+export interface TeamSpace {
+  id: string;
+  name: string;
+  icon: string;
+  color: NoteColor;
+  pinned: boolean;
+  notebookIds: string[];
+  members: ShareAccess[];
+  ownerId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActivityItem {
+  id: string;
+  entityType: 'note' | 'notebook' | 'team-space';
+  entityId: string;
+  noteId?: string;
+  notebookId?: string;
+  teamSpaceId?: string;
+  action: string;
+  message: string;
+  actorEmail: string;
+  actorName?: string;
+  participants: string[];
+  createdAt: string;
+  shared?: boolean;
+}
+
+export interface NoteComment {
+  id: string;
+  noteId: string;
+  body: string;
+  authorEmail: string;
+  authorName?: string;
+  mentions: string[];
+  participants: string[];
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Tag {
@@ -144,6 +202,8 @@ export interface AppSettings {
   notebookSortDir: SortDirection;
   offlineModeEnabled: boolean;
   hasSeenTour: boolean;
+  lastBackupAt?: string;
+  backupReminderDays: number;
 }
 
 export type SidebarView = 
@@ -189,7 +249,7 @@ export interface SyncQueueItem {
   operation: 'upsert' | 'delete';
   createdAt: string;
   attempts: number;
-  entityType?: 'note' | 'notebook';
+  entityType?: 'note' | 'notebook' | 'teamSpace';
 }
 
 export interface SyncConflict {
