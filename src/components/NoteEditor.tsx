@@ -2,7 +2,20 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useStore } from '@/store';
 import type { ChecklistItem, NoteColor, Notebook, Priority } from '@/types';
 import { noteColors, priorityConfig } from '@/utils/colors';
-import { exportToPDF, copyAsPlainText, copyAsMarkdown, copyAsHTML, shareViaEmail, printNote } from '@/utils/export';
+import {
+  exportToPDF,
+  copyAsPlainText,
+  copyAsMarkdown,
+  copyAsHTML,
+  shareViaEmail,
+  printNote,
+  loadNoteExportOptions,
+  saveNoteExportOptions,
+  loadLastExportFormat,
+  saveLastExportFormat,
+  type NoteExportFormat,
+  type NoteExportOptions,
+} from '@/utils/export';
 import { getBacklinks, noteDisplayTitle } from '@/utils/links';
 import { compressImageDataUrl, compressImageFile } from '@/utils/imageCompression';
 import ReactMarkdown from 'react-markdown';
@@ -24,7 +37,7 @@ import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
 import SketchModal from './SketchModal';
 import ShareModal from './ShareModal';
-import VersionHistory, { saveLocalNoteSnapshot, useVersionHistory, type NoteVersion } from './VersionHistory';
+import VersionHistory, { saveCloudNoteCheckpoint, saveLocalNoteSnapshot, useVersionHistory, type NoteVersion } from './VersionHistory';
 
 const isMarkdown = (text: string): boolean => {
   if (!text) return false;
@@ -146,10 +159,16 @@ type NotebookMoveRow = {
   depth: number;
 };
 
+type ActionToast = {
+  id: number;
+  message: string;
+  undo?: () => void;
+};
+
 export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
-    selectedNoteId, notes, updateNote, selectNote, trashNote,
-    archiveNote, pinNote, starNote, duplicateNote,
+    uid, selectedNoteId, notes, updateNote, selectNote, trashNote, restoreNote,
+    archiveNote, unarchiveNote, pinNote, starNote, duplicateNote,
     setNoteColor, setNotePriority, addNoteTag, removeNoteTag,
     addChecklistItem, updateChecklistItem, removeChecklistItem,
     setNoteReminder, settings, toggleZenMode, notebooks, moveNote,
@@ -192,7 +211,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [showSketchModal, setShowSketchModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [versionHistoryPresentation, setVersionHistoryPresentation] = useState<'modal' | 'panel'>('modal');
   const [versionStatus, setVersionStatus] = useState('');
+  const [actionToast, setActionToast] = useState<ActionToast | null>(null);
+  const [exportOptions, setExportOptions] = useState<NoteExportOptions>(() => loadNoteExportOptions());
+  const [lastExportFormat, setLastExportFormat] = useState<NoteExportFormat | null>(() => loadLastExportFormat());
   const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
   const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
   const recognitionRef = useRef<any>(null);
@@ -209,6 +232,24 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const isLocked = !!note?.encrypted && !unlockedNote;
   const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
   useVersionHistory(note?.id || null, title, content);
+
+  const showActionToast = useCallback((message: string, undo?: () => void) => {
+    const id = Date.now();
+    setActionToast({ id, message, undo });
+    window.setTimeout(() => {
+      setActionToast(current => current?.id === id ? null : current);
+    }, 5000);
+  }, []);
+
+  const updateExportOption = useCallback((key: keyof NoteExportOptions, value: boolean) => {
+    const next = { ...exportOptions, [key]: value };
+    setExportOptions(next);
+    saveNoteExportOptions(next);
+  }, [exportOptions]);
+
+  const runSyncedAction = useCallback((action: () => void | Promise<void>, message: string, undo?: () => void) => {
+    void Promise.resolve(action()).then(() => showActionToast(message, undo));
+  }, [showActionToast]);
 
   const refreshHistoryStatus = useCallback(() => {
     setHistoryStatus({
@@ -530,8 +571,11 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   };
 
   const handleAddTag = () => {
-    if (tagInput.trim() && note) {
-      addNoteTag(note.id, tagInput.trim());
+    const nextTag = tagInput.trim();
+    if (nextTag && note) {
+      void addNoteTag(note.id, nextTag).then(() => {
+        showActionToast(`Added #${nextTag}.`, () => void removeNoteTag(note.id, nextTag));
+      });
       setTagInput('');
     }
   };
@@ -615,13 +659,103 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     if (!note) return;
     saveLocalNoteSnapshot(note.id, title, content, source);
     setVersionStatus(source === 'cloud-checkpoint' ? 'Cloud checkpoint saved.' : 'Local snapshot saved.');
+    if (source === 'manual') showActionToast('Local snapshot saved on this device.');
     window.setTimeout(() => setVersionStatus(''), 3000);
   };
 
-  const handleCloudCheckpoint = () => {
+  const handleCloudCheckpoint = async () => {
     if (!note) return;
-    handleSaveLocalSnapshot('cloud-checkpoint');
     saveNote(title, content, true);
+    if (note.encrypted) {
+      handleSaveLocalSnapshot('cloud-checkpoint');
+      showActionToast('Encrypted note checkpoint kept on this device.');
+      return;
+    }
+    try {
+      await saveCloudNoteCheckpoint(uid, note.id, title, content);
+      setVersionStatus('Cloud checkpoint saved.');
+      showActionToast(uid ? 'Cloud checkpoint synced.' : 'Cloud checkpoint saved locally. Sign in to sync it.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Cloud checkpoint failed.';
+      setVersionStatus(message);
+      showActionToast(message);
+    }
+    window.setTimeout(() => setVersionStatus(''), 3000);
+  };
+
+  const openVersionHistory = () => {
+    const useDesktopPanel = typeof window !== 'undefined' && window.innerWidth >= 1280;
+    setVersionHistoryPresentation(useDesktopPanel ? 'panel' : 'modal');
+    setShowVersionHistory(true);
+    setShowMenu(false);
+    setShowMoveMenu(false);
+    setShowMovePanel(false);
+    setShowExportMenu(false);
+    setShowExportPanel(false);
+  };
+
+  const handlePinToggle = () => {
+    if (!note) return;
+    const wasPinned = note.pinned;
+    runSyncedAction(
+      () => pinNote(note.id),
+      wasPinned ? 'Note unpinned.' : 'Note pinned.',
+      () => void pinNote(note.id)
+    );
+  };
+
+  const handleStarToggle = () => {
+    if (!note) return;
+    const wasStarred = note.starred;
+    runSyncedAction(
+      () => starNote(note.id),
+      wasStarred ? 'Note removed from starred.' : 'Note starred.',
+      () => void starNote(note.id)
+    );
+  };
+
+  const handleArchiveToggle = () => {
+    if (!note) return;
+    const noteId = note.id;
+    if (note.archived) {
+      runSyncedAction(
+        () => unarchiveNote(noteId),
+        'Note unarchived.',
+        () => void archiveNote(noteId)
+      );
+    } else {
+      runSyncedAction(
+        () => archiveNote(noteId),
+        'Note archived.',
+        () => void unarchiveNote(noteId)
+      );
+    }
+    setShowMenu(false);
+  };
+
+  const handleTrashNote = () => {
+    if (!note) return;
+    const noteId = note.id;
+    runSyncedAction(
+      () => trashNote(noteId),
+      'Note moved to trash.',
+      () => {
+        void restoreNote(noteId);
+        selectNote(noteId);
+        setEditingNote(true);
+      }
+    );
+    setShowMenu(false);
+  };
+
+  const handleDuplicateNote = () => {
+    if (!note) return;
+    const sourceId = note.id;
+    void duplicateNote(sourceId).then(duplicate => {
+      if (!duplicate) return;
+      showActionToast('Note duplicated.', () => void trashNote(duplicate.id));
+    });
+    setShowMenu(false);
   };
 
   const closeMoveSurface = () => {
@@ -656,8 +790,21 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     setShowMenu(false);
   };
 
-  const runExportAction = (action: () => void) => {
-    action();
+  const exportFormatLabels: Record<NoteExportFormat, string> = {
+    pdf: 'PDF',
+    print: 'print view',
+    plain: 'plain text',
+    markdown: 'Markdown',
+    html: 'HTML',
+    email: 'email draft',
+  };
+
+  const runExportAction = (format: NoteExportFormat, action: () => void | Promise<void>) => {
+    saveLastExportFormat(format);
+    setLastExportFormat(format);
+    void Promise.resolve(action()).then(() => {
+      showActionToast(`Exported ${exportFormatLabels[format]}.`);
+    });
     closeExportSurface();
   };
 
@@ -681,8 +828,15 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const handleMoveToNotebook = (notebookId: string) => {
     if (!note) return;
+    const previousNotebookId = note.notebookId;
     if (note.notebookId !== notebookId) {
-      void moveNote(note.id, notebookId);
+      const targetNotebook = notebooks.find(nb => nb.id === notebookId);
+      void moveNote(note.id, notebookId).then(() => {
+        showActionToast(
+          `Moved to ${targetNotebook?.name || 'notebook'}.`,
+          () => void moveNote(note.id, previousNotebookId)
+        );
+      });
     }
     closeMoveSurface();
   };
@@ -809,6 +963,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           <h3 className="text-lg font-medium text-theme-secondary">Select a note to edit</h3>
           <p className="text-sm text-theme-tertiary mt-1">Or create a new one to get started</p>
         </div>
+        <ActionToastView toast={actionToast} onClose={() => setActionToast(null)} />
       </div>
     );
   }
@@ -972,7 +1127,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           )}
 
           <button
-            onClick={() => pinNote(note.id)}
+            onClick={handlePinToggle}
             className="p-1.5 rounded-lg transition-colors"
             style={{ backgroundColor: note.pinned ? 'var(--active-bg)' : 'transparent', color: note.pinned ? 'var(--accent-primary)' : 'var(--text-tertiary)' }}
             aria-label={note.pinned ? 'Unpin note' : 'Pin note'}
@@ -980,7 +1135,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             <Pin className="w-4 h-4" />
           </button>
           <button
-            onClick={() => starNote(note.id)}
+            onClick={handleStarToggle}
             className="p-1.5 rounded-lg transition-colors theme-hover"
             style={{ color: note.starred ? '#f59e0b' : 'var(--text-tertiary)' }}
             aria-label={note.starred ? 'Unstar note' : 'Star note'}
@@ -1015,40 +1170,64 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
           {showMenu && (
             <div className="absolute right-4 top-12 z-40 w-56 rounded-xl py-1.5 animate-scale-in theme-menu border">
+              <MenuSectionLabel label="Organize" />
               <MenuBtn icon={Palette} label="Note color" onClick={() => { setShowColorPicker(!showColorPicker); }} />
               <MenuBtn icon={Sparkles} label="Note theme" onClick={() => { setShowThemePicker(!showThemePicker); }} />
               <MenuBtn icon={AlertCircle} label="Priority" onClick={() => { setShowPriority(!showPriority); }} />
               <MenuBtn icon={Tag} label="Add tag" onClick={() => { setShowTagInput(!showTagInput); setShowMenu(false); }} />
               <MenuBtn icon={Bell} label={note.reminder ? 'Update reminder' : 'Set reminder'} onClick={() => { setShowReminder(!showReminder); setShowMenu(false); }} />
               <MenuBtn icon={Hash} label="Move to notebook" onClick={openMoveDialog} />
+              <MenuBtn icon={Copy} label="Duplicate" onClick={handleDuplicateNote} />
+              <div className="my-1 border-t theme-divider" />
+              <MenuSectionLabel label="Protect" />
               {note.encrypted && unlockedNote ? (
                 <MenuBtn icon={Lock} label="Lock now" onClick={() => { relockNote(note.id); setShowMenu(false); }} />
               ) : (
                 <MenuBtn icon={ShieldCheck} label={note.encrypted ? 'Unlock note' : 'Encrypt / lock note'} onClick={() => { setShowLockDialog(true); setShowMenu(false); }} />
               )}
               <div className="my-1 border-t theme-divider" />
-              <MenuBtn icon={Copy} label="Duplicate" onClick={() => { duplicateNote(note.id); setShowMenu(false); }} />
-              <MenuBtn icon={History} label="Version history" onClick={() => { setShowVersionHistory(true); setShowMenu(false); }} />
+              <MenuSectionLabel label="History" />
+              <MenuBtn icon={History} label="Version history" onClick={openVersionHistory} />
               <MenuBtn icon={History} label="Save local snapshot" onClick={() => { handleSaveLocalSnapshot(); setShowMenu(false); }} />
               <MenuBtn icon={Cloud} label="Cloud checkpoint" onClick={() => { handleCloudCheckpoint(); setShowMenu(false); }} />
+              <div className="my-1 border-t theme-divider" />
+              <MenuSectionLabel label="Share" />
               <MenuBtn icon={Share2} label="Share / Publish" onClick={() => { setShowShareModal(true); setShowMenu(false); }} />
               <MenuBtn icon={Share2} label="Export / Share" onClick={openExportSurface} />
               {showExportMenu && (
                 <div className="px-3 py-2 border-t theme-divider xl:hidden">
                   <p className="text-xs text-theme-tertiary mb-2">Export & Share</p>
+                  <div className="mb-2 rounded-lg border theme-border p-2" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    <ExportOptionToggle
+                      label="Include title"
+                      checked={exportOptions.includeTitle}
+                      onChange={() => updateExportOption('includeTitle', !exportOptions.includeTitle)}
+                    />
+                    <ExportOptionToggle
+                      label="Include dates"
+                      checked={exportOptions.includeDates}
+                      onChange={() => updateExportOption('includeDates', !exportOptions.includeDates)}
+                    />
+                    <ExportOptionToggle
+                      label="Include tags"
+                      checked={exportOptions.includeTags}
+                      onChange={() => updateExportOption('includeTags', !exportOptions.includeTags)}
+                    />
+                  </div>
                   <div className="space-y-1">
-                    <ExportBtn icon={Download} label="Export as PDF" onClick={() => runExportAction(() => exportToPDF(note))} />
-                    <ExportBtn icon={FileText} label="Copy as plain text" onClick={() => runExportAction(() => copyAsPlainText(note))} />
-                    <ExportBtn icon={Code} label="Copy as Markdown" onClick={() => runExportAction(() => copyAsMarkdown(note))} />
-                    <ExportBtn icon={Type} label="Copy as HTML" onClick={() => runExportAction(() => copyAsHTML(note))} />
-                    <ExportBtn icon={Mail} label="Share via email" onClick={() => runExportAction(() => shareViaEmail(note))} />
-                    <ExportBtn icon={FileText} label="Print note" onClick={() => runExportAction(() => printNote(note))} />
+                    <ExportBtn icon={Download} label="Export as PDF" onClick={() => runExportAction('pdf', () => exportToPDF(note, exportOptions))} />
+                    <ExportBtn icon={FileText} label="Copy as plain text" onClick={() => runExportAction('plain', () => copyAsPlainText(note, exportOptions))} />
+                    <ExportBtn icon={Code} label="Copy as Markdown" onClick={() => runExportAction('markdown', () => copyAsMarkdown(note, exportOptions))} />
+                    <ExportBtn icon={Type} label="Copy as HTML" onClick={() => runExportAction('html', () => copyAsHTML(note, exportOptions))} />
+                    <ExportBtn icon={Mail} label="Share via email" onClick={() => runExportAction('email', () => shareViaEmail(note, exportOptions))} />
+                    <ExportBtn icon={FileText} label="Print note" onClick={() => runExportAction('print', () => printNote(note, exportOptions))} />
                   </div>
                 </div>
               )}
-              <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={() => { archiveNote(note.id); setShowMenu(false); }} />
               <div className="my-1 border-t theme-divider" />
-              <MenuBtn icon={Trash2} label="Move to trash" onClick={() => { trashNote(note.id); setShowMenu(false); }} danger />
+              <MenuSectionLabel label="Cleanup" />
+              <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={handleArchiveToggle} />
+              <MenuBtn icon={Trash2} label="Move to trash" onClick={handleTrashNote} danger />
               
               {/* Color picker submenu */}
               {showColorPicker && (
@@ -1231,19 +1410,44 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
               </div>
 
               <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
+                <ExportPanelSection title="Preset">
+                  <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    <div className="grid gap-2">
+                      <ExportOptionToggle
+                        label="Include title"
+                        checked={exportOptions.includeTitle}
+                        onChange={() => updateExportOption('includeTitle', !exportOptions.includeTitle)}
+                      />
+                      <ExportOptionToggle
+                        label="Include dates"
+                        checked={exportOptions.includeDates}
+                        onChange={() => updateExportOption('includeDates', !exportOptions.includeDates)}
+                      />
+                      <ExportOptionToggle
+                        label="Include tags"
+                        checked={exportOptions.includeTags}
+                        onChange={() => updateExportOption('includeTags', !exportOptions.includeTags)}
+                      />
+                    </div>
+                    {lastExportFormat && (
+                      <p className="mt-3 text-xs text-theme-tertiary">Last export: {exportFormatLabels[lastExportFormat]}</p>
+                    )}
+                  </div>
+                </ExportPanelSection>
+
                 <ExportPanelSection title="File">
-                  <ExportPanelBtn icon={Download} title="PDF" meta="Export note" onClick={() => runExportAction(() => exportToPDF(note))} />
-                  <ExportPanelBtn icon={FileText} title="Print" meta="Printer-ready view" onClick={() => runExportAction(() => printNote(note))} />
+                  <ExportPanelBtn icon={Download} title="PDF" meta="Export note" onClick={() => runExportAction('pdf', () => exportToPDF(note, exportOptions))} />
+                  <ExportPanelBtn icon={FileText} title="Print" meta="Printer-ready view" onClick={() => runExportAction('print', () => printNote(note, exportOptions))} />
                 </ExportPanelSection>
 
                 <ExportPanelSection title="Copy">
-                  <ExportPanelBtn icon={FileText} title="Plain text" meta="Clean text" onClick={() => runExportAction(() => copyAsPlainText(note))} />
-                  <ExportPanelBtn icon={Code} title="Markdown" meta="Portable source" onClick={() => runExportAction(() => copyAsMarkdown(note))} />
-                  <ExportPanelBtn icon={Type} title="HTML" meta="Formatted markup" onClick={() => runExportAction(() => copyAsHTML(note))} />
+                  <ExportPanelBtn icon={FileText} title="Plain text" meta="Clean text" onClick={() => runExportAction('plain', () => copyAsPlainText(note, exportOptions))} />
+                  <ExportPanelBtn icon={Code} title="Markdown" meta="Portable source" onClick={() => runExportAction('markdown', () => copyAsMarkdown(note, exportOptions))} />
+                  <ExportPanelBtn icon={Type} title="HTML" meta="Formatted markup" onClick={() => runExportAction('html', () => copyAsHTML(note, exportOptions))} />
                 </ExportPanelSection>
 
                 <ExportPanelSection title="Send">
-                  <ExportPanelBtn icon={Mail} title="Email" meta="Open mail draft" onClick={() => runExportAction(() => shareViaEmail(note))} />
+                  <ExportPanelBtn icon={Mail} title="Email" meta="Open mail draft" onClick={() => runExportAction('email', () => shareViaEmail(note, exportOptions))} />
                 </ExportPanelSection>
               </div>
             </div>
@@ -1350,7 +1554,16 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           {note.tags.map(tag => (
             <span key={tag} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'var(--badge-bg)', color: 'var(--badge-text)' }}>
               <Tag className="w-3 h-3" />{tag}
-              <button onClick={() => removeNoteTag(note.id, tag)} className="hover:text-red-500 ml-0.5"><X className="w-3 h-3" /></button>
+              <button
+                onClick={() => {
+                  void removeNoteTag(note.id, tag).then(() => {
+                    showActionToast(`Removed #${tag}.`, () => void addNoteTag(note.id, tag));
+                  });
+                }}
+                className="hover:text-red-500 ml-0.5"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </span>
           ))}
           <button
@@ -1811,8 +2024,10 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           noteId={note.id}
           onClose={() => setShowVersionHistory(false)}
           onRestore={handleRestoreVersion}
+          presentation={versionHistoryPresentation}
         />
       )}
+      <ActionToastView toast={actionToast} onClose={() => setActionToast(null)} />
     </div>
   );
 }
@@ -1833,6 +2048,14 @@ function MenuBtn({ icon: Icon, label, onClick, danger }: {
   );
 }
 
+function MenuSectionLabel({ label }: { label: string }) {
+  return (
+    <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-theme-tertiary">
+      {label}
+    </p>
+  );
+}
+
 function ExportBtn({ icon: Icon, label, onClick }: {
   icon: LucideIcon; label: string; onClick: () => void;
 }) {
@@ -1843,6 +2066,27 @@ function ExportBtn({ icon: Icon, label, onClick }: {
       style={{ color: 'var(--text-secondary)' }}
     >
       <Icon className="w-3.5 h-3.5 no-transition" /> {label}
+    </button>
+  );
+}
+
+function ExportOptionToggle({ label, checked, onChange }: {
+  label: string; checked: boolean; onChange: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onChange}
+      className="flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-left theme-hover"
+    >
+      <span className="text-sm font-medium text-theme-secondary">{label}</span>
+      <span
+        className="relative h-5 w-9 rounded-full transition-colors"
+        style={{ backgroundColor: checked ? 'var(--accent-primary)' : 'var(--card-border)' }}
+        aria-hidden="true"
+      >
+        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`} />
+      </span>
     </button>
   );
 }
@@ -1875,6 +2119,41 @@ function ExportPanelBtn({ icon: Icon, title, meta, onClick }: {
         <span className="block truncate text-xs text-theme-tertiary">{meta}</span>
       </span>
     </button>
+  );
+}
+
+function ActionToastView({ toast, onClose }: {
+  toast: ActionToast | null;
+  onClose: () => void;
+}) {
+  if (!toast) return null;
+
+  return (
+    <div className="pointer-events-none fixed bottom-6 left-1/2 z-[80] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2">
+      <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border theme-menu px-4 py-3 shadow-2xl">
+        <span className="min-w-0 flex-1 text-sm font-medium text-theme-primary">{toast.message}</span>
+        {toast.undo && (
+          <button
+            type="button"
+            onClick={() => {
+              toast.undo?.();
+              onClose();
+            }}
+            className="rounded-lg px-3 py-1.5 text-xs font-bold accent-button"
+          >
+            Undo
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg p-1.5 text-theme-tertiary theme-hover"
+          aria-label="Dismiss notification"
+        >
+          <X className="h-4 w-4 no-transition" />
+        </button>
+      </div>
+    </div>
   );
 }
 

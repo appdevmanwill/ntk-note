@@ -3,8 +3,11 @@ import { useStore } from '@/store';
 import {
   Search, FileText, Plus, Moon, Sun, Home, Star,
   Archive, Trash2, Settings, CheckSquare, Code,
-  LayoutTemplate, GitBranch, FolderSearch, Tag, Pin, FolderInput, BookOpen
+  LayoutTemplate, GitBranch, FolderSearch, Tag, Pin, FolderInput, BookOpen,
+  Download, History, Cloud, Clipboard, HardDrive
 } from 'lucide-react';
+import { copyAsMarkdown, copyAsPlainText, exportToPDF, loadNoteExportOptions } from '@/utils/export';
+import { saveCloudNoteCheckpoint, saveLocalNoteSnapshot } from './VersionHistory';
 
 interface Command {
   id: string;
@@ -22,7 +25,8 @@ export default function CommandPalette() {
     notes, notebooks, tags, savedSearches,
     selectedNoteId, selectNote, selectNotebook, selectTag,
     toggleZenMode, createNotebook, moveNote, addNoteTag,
-    archiveNote, pinNote, starNote, trashNote, applySavedSearch,
+    archiveNote, unarchiveNote, pinNote, starNote, trashNote, applySavedSearch,
+    uid,
   } = useStore();
 
   const [query, setQuery] = useState('');
@@ -55,9 +59,18 @@ export default function CommandPalette() {
   if (!commandPaletteOpen) return null;
 
   const close = () => setCommandPaletteOpen(false);
+  const openSettingsSection = (section: string) => {
+    setCurrentView('settings');
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('ntk-settings-section', { detail: section }));
+    }, 0);
+    close();
+  };
   const normalizedQuery = query.trim().toLowerCase();
-  const createNamedNotebook = query.trim().replace(/^new notebook\s*/i, '').trim();
-  const tagName = query.trim().replace(/^tag\s*/i, '').trim();
+  const createNotebookMatch = query.trim().match(/^new notebook\s+(.+)/i);
+  const createNamedNotebook = createNotebookMatch?.[1]?.trim() || '';
+  const tagMatch = query.trim().match(/^tag\s+(.+)/i);
+  const tagName = tagMatch?.[1]?.trim() || '';
 
   const commands: Command[] = [
     { id: 'new-note', icon: Plus, label: 'New Note', category: 'Actions', action: () => { void createNote({ type: 'note' }); close(); } },
@@ -75,11 +88,28 @@ export default function CommandPalette() {
     { id: 'graph', icon: GitBranch, label: 'Graph View', category: 'Navigation', action: () => { setCurrentView('graph'); close(); } },
     { id: 'templates', icon: LayoutTemplate, label: 'Templates', category: 'Navigation', action: () => { setCurrentView('templates'); close(); } },
     { id: 'settings', icon: Settings, label: 'Settings', category: 'Navigation', action: () => { setCurrentView('settings'); close(); } },
+    { id: 'storage-health', icon: HardDrive, label: 'Open storage health', category: 'Navigation', action: () => openSettingsSection('data') },
     ...(currentNote ? [
       { id: 'pin-current', icon: Pin, label: currentNote.pinned ? 'Unpin current note' : 'Pin current note', category: 'Current Note', action: () => { void pinNote(currentNote.id); close(); } },
       { id: 'star-current', icon: Star, label: currentNote.starred ? 'Unstar current note' : 'Star current note', category: 'Current Note', action: () => { void starNote(currentNote.id); close(); } },
-      { id: 'archive-current', icon: Archive, label: 'Archive current note', category: 'Current Note', action: () => { void archiveNote(currentNote.id); close(); } },
+      { id: 'archive-current', icon: Archive, label: currentNote.archived ? 'Unarchive current note' : 'Archive current note', category: 'Current Note', action: () => { void (currentNote.archived ? unarchiveNote(currentNote.id) : archiveNote(currentNote.id)); close(); } },
       { id: 'trash-current', icon: Trash2, label: 'Move current note to trash', category: 'Current Note', action: () => { void trashNote(currentNote.id); close(); } },
+      { id: 'snapshot-current', icon: History, label: 'Save local snapshot', description: 'Device recovery copy', category: 'Current Note', action: () => { saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'manual'); close(); } },
+      { id: 'checkpoint-current', icon: Cloud, label: 'Save cloud checkpoint', description: currentNote.encrypted ? 'Encrypted notes stay local' : 'Synced important version', category: 'Current Note', action: async () => {
+        if (currentNote.encrypted) {
+          saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'cloud-checkpoint');
+        } else {
+          try {
+            await saveCloudNoteCheckpoint(uid, currentNote.id, currentNote.title, currentNote.content);
+          } catch (error) {
+            alert(error instanceof Error ? error.message : 'Cloud checkpoint failed.');
+          }
+        }
+        close();
+      } },
+      { id: 'export-pdf-current', icon: Download, label: 'Export current note as PDF', category: 'Current Note', action: async () => { await exportToPDF(currentNote, loadNoteExportOptions()); close(); } },
+      { id: 'copy-markdown-current', icon: Code, label: 'Copy current note as Markdown', category: 'Current Note', action: () => { copyAsMarkdown(currentNote, loadNoteExportOptions()); close(); } },
+      { id: 'copy-text-current', icon: Clipboard, label: 'Copy current note as plain text', category: 'Current Note', action: () => { copyAsPlainText(currentNote, loadNoteExportOptions()); close(); } },
       ...(tagName ? [{ id: 'tag-current', icon: Tag, label: `Tag current note "${tagName}"`, category: 'Current Note', action: () => { void addNoteTag(currentNote.id, tagName); close(); } }] : []),
       ...notebooks.filter(nb => !nb.trashed).map(nb => ({
         id: `move-${nb.id}`,

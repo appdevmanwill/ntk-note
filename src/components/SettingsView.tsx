@@ -56,6 +56,16 @@ export default function SettingsView() {
   const imageHeavyNotes = notes.filter(note => !note.trashed && countInlineImages(note.content) > 0);
 
   useEffect(() => {
+    const handleOpenSettingsSection = (event: Event) => {
+      const section = (event as CustomEvent<string>).detail;
+      if (section) setActiveSection(section);
+    };
+
+    window.addEventListener('ntk-settings-section', handleOpenSettingsSection);
+    return () => window.removeEventListener('ntk-settings-section', handleOpenSettingsSection);
+  }, []);
+
+  useEffect(() => {
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event as BeforeInstallPromptEvent);

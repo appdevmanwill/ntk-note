@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '@/store';
+import { db } from '@/utils/firebase';
 import { History, X, RotateCcw, Clock, Eye, ChevronRight } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
 
 export interface NoteVersion {
   id: string;
@@ -16,6 +18,7 @@ interface Props {
   noteId: string;
   onClose: () => void;
   onRestore: (version: NoteVersion) => void;
+  presentation?: 'modal' | 'panel';
 }
 
 // Store versions in localStorage
@@ -60,6 +63,40 @@ export const saveLocalNoteSnapshot = (
   return version;
 };
 
+const cloudCheckpointPath = (uid: string) => `users/${uid}/note_checkpoints`;
+
+export const getCloudNoteCheckpoints = async (uid: string, noteId: string): Promise<NoteVersion[]> => {
+  const snapshot = await getDocs(query(collection(db, cloudCheckpointPath(uid)), where('noteId', '==', noteId)));
+  return snapshot.docs
+    .map(item => item.data() as NoteVersion)
+    .filter(item => item.noteId === noteId)
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+};
+
+export const saveCloudNoteCheckpoint = async (
+  uid: string | null,
+  noteId: string,
+  title: string,
+  content: string
+) => {
+  const version = saveLocalNoteSnapshot(noteId, title, content, 'cloud-checkpoint');
+  if (!uid) return version;
+
+  const checkpointBytes = new Blob([JSON.stringify(version)]).size;
+  if (checkpointBytes >= 900_000) {
+    throw new Error('This checkpoint is too large for safe cloud sync. Compress images or split the note first.');
+  }
+
+  await setDoc(doc(db, cloudCheckpointPath(uid), version.id), version);
+
+  const checkpoints = await getCloudNoteCheckpoints(uid, noteId);
+  await Promise.all(
+    checkpoints.slice(10).map(item => deleteDoc(doc(db, cloudCheckpointPath(uid), item.id)).catch(console.error))
+  );
+
+  return version;
+};
+
 // Hook to automatically save versions
 export const useVersionHistory = (noteId: string | null, title: string, content: string) => {
   useEffect(() => {
@@ -80,16 +117,35 @@ export const useVersionHistory = (noteId: string | null, title: string, content:
   }, [noteId, title, content]);
 };
 
-export default function VersionHistory({ noteId, onClose, onRestore }: Props) {
+export default function VersionHistory({ noteId, onClose, onRestore, presentation = 'modal' }: Props) {
   const [versions, setVersions] = useState<NoteVersion[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<NoteVersion | null>(null);
-  const { getNoteById } = useStore();
+  const { getNoteById, uid } = useStore();
   
   const currentNote = getNoteById(noteId);
 
   useEffect(() => {
-    setVersions(getVersions(noteId));
-  }, [noteId]);
+    let cancelled = false;
+    const localVersions = getVersions(noteId);
+    setVersions(localVersions);
+
+    if (uid) {
+      void getCloudNoteCheckpoints(uid, noteId)
+        .then(cloudVersions => {
+          if (cancelled) return;
+          const merged = new Map<string, NoteVersion>();
+          [...cloudVersions, ...localVersions].forEach(item => merged.set(item.id, item));
+          setVersions(
+            [...merged.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          );
+        })
+        .catch(console.error);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [noteId, uid]);
 
   const handleRestore = (version: NoteVersion) => {
     if (confirm('Restore this version? Current content will be saved as a new version.')) {
@@ -102,12 +158,10 @@ export default function VersionHistory({ noteId, onClose, onRestore }: Props) {
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-3xl max-h-[80vh] theme-card rounded-2xl border overflow-hidden animate-scale-in flex">
+  const content = (
+    <>
         {/* Versions list */}
-        <div className="w-72 border-r theme-divider flex flex-col">
+        <div className="w-full border-r theme-divider flex flex-col sm:w-72">
           <div className="flex items-center justify-between px-4 py-3 border-b theme-divider">
             <div className="flex items-center gap-2">
               <History className="w-4 h-4 text-indigo-500" />
@@ -200,6 +254,28 @@ export default function VersionHistory({ noteId, onClose, onRestore }: Props) {
             </div>
           </div>
         </div>
+
+    </>
+  );
+
+  if (presentation === 'panel') {
+    return (
+      <div
+        className="fixed right-4 top-20 bottom-4 z-50 hidden w-[680px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border theme-menu shadow-2xl xl:flex animate-slide-in-right"
+        role="dialog"
+        aria-modal="false"
+        aria-label="Version history"
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative flex w-full max-w-3xl max-h-[80vh] theme-card rounded-2xl border overflow-hidden animate-scale-in">
+        {content}
       </div>
     </div>
   );
