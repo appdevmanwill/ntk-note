@@ -201,6 +201,16 @@ export interface AppSettings {
   notebookSortBy: NotebookSortBy;
   notebookSortDir: SortDirection;
   offlineModeEnabled: boolean;
+  notificationsEnabled: boolean;
+  browserNotificationsEnabled: boolean;
+  reminderNotificationsEnabled: boolean;
+  celebrationNotificationsEnabled: boolean;
+  collaborationNotificationsEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  celebrationReminderTime: string;
+  defaultSnoozeMinutes: number;
   hasSeenTour: boolean;
   lastBackupAt?: string;
   backupReminderDays: number;
@@ -210,7 +220,42 @@ export type SidebarView =
   | 'home' | 'all-notes' | 'notebooks' | 'tags' 
   | 'reminders' | 'starred' | 'archived' | 'trash'
   | 'templates' | 'search' | 'settings' | 'shared'
-  | 'graph' | 'smart-folders';
+  | 'graph' | 'smart-folders' | 'notifications';
+
+export type AppNotificationType =
+  | 'note-reminder'
+  | 'celebration'
+  | 'shared-activity'
+  | 'backup'
+  | 'sync-conflict'
+  | 'system';
+
+export type AppNotificationPriority = 'low' | 'normal' | 'high';
+
+export type AppNotificationAction =
+  | 'open-note'
+  | 'open-calendar'
+  | 'open-share-center'
+  | 'open-settings';
+
+export interface AppNotification {
+  id: string;
+  type: AppNotificationType;
+  title: string;
+  message: string;
+  createdAt: string;
+  dueAt?: string;
+  readAt?: string;
+  dismissedAt?: string;
+  snoozedUntil?: string;
+  lastDeliveredAt?: string;
+  deliveryCount?: number;
+  noteId?: string;
+  entityId?: string;
+  action?: AppNotificationAction;
+  priority?: AppNotificationPriority;
+  metadata?: Record<string, string | number | boolean | null>;
+}
 
 export interface SearchFilters {
   query: string;
@@ -249,7 +294,7 @@ export interface SyncQueueItem {
   operation: 'upsert' | 'delete';
   createdAt: string;
   attempts: number;
-  entityType?: 'note' | 'notebook' | 'teamSpace';
+  entityType?: 'note' | 'notebook' | 'teamSpace' | 'notification';
 }
 
 export interface SyncConflict {

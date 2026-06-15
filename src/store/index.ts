@@ -17,7 +17,8 @@ import type {
   Note, Notebook, Tag, NoteColor, Priority,
   ChecklistItem, UserProfile, AppSettings, SidebarView,
   SearchFilters, ThemeMode, ThemeAccent, NoteTheme, Reminder, NoteTemplate, Section,
-  SavedSearch, SyncConflict, SyncQueueItem, ShareAccess, TeamSpace, ActivityItem
+  SavedSearch, SyncConflict, SyncQueueItem, ShareAccess, TeamSpace, ActivityItem,
+  AppNotification
 } from '@/types';
 
 // ── Helpers ──
@@ -48,6 +49,12 @@ const countChars = (text: string) => text.length;
 
 const syncTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 const activityThrottle: Record<string, number> = {};
+const NOTIFICATION_LIMIT = 300;
+
+const sortNotifications = (items: AppNotification[]) =>
+  [...items].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+const capNotifications = (items: AppNotification[]) => sortNotifications(items).slice(0, NOTIFICATION_LIMIT);
 
 // ── Default Data ──
 const defaultNotebook: Notebook = {
@@ -88,6 +95,16 @@ const defaultSettings: AppSettings = {
   notebookSortBy: 'manual',
   notebookSortDir: 'asc',
   offlineModeEnabled: false,
+  notificationsEnabled: true,
+  browserNotificationsEnabled: false,
+  reminderNotificationsEnabled: true,
+  celebrationNotificationsEnabled: true,
+  collaborationNotificationsEnabled: true,
+  quietHoursEnabled: false,
+  quietHoursStart: '22:00',
+  quietHoursEnd: '07:00',
+  celebrationReminderTime: '08:00',
+  defaultSnoozeMinutes: 10,
   hasSeenTour: false,
   backupReminderDays: 14,
 };
@@ -564,6 +581,7 @@ interface AppState {
   savedSearches: SavedSearch[];
   teamSpaces: TeamSpace[];
   activityItems: ActivityItem[];
+  notifications: AppNotification[];
   profile: UserProfile;
   settings: AppSettings;
   
@@ -592,6 +610,7 @@ interface AppState {
   unsubscribeSettings: (() => void) | null;
   unsubscribeTeamSpaces: (() => void) | null;
   unsubscribeActivity: (() => void) | null;
+  unsubscribeNotifications: (() => void) | null;
   unsubscribeSharedNotes: (() => void) | null;
   unsubscribeSharedNotebooks: (() => void) | null;
   initFirestore: (uid: string) => void;
@@ -610,6 +629,15 @@ interface AppState {
   flushSyncQueue: () => Promise<void>;
   resolveSyncConflict: (conflictId: string, strategy: 'local' | 'remote') => Promise<void>;
   setOnlineStatus: (online: boolean) => void;
+
+  // Actions — Notifications
+  addNotification: (notification: Omit<AppNotification, 'id' | 'createdAt'> & { id?: string; createdAt?: string }) => AppNotification;
+  markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
+  dismissNotification: (id: string) => void;
+  snoozeNotification: (id: string, minutes: number) => void;
+  recordNotificationDelivery: (id: string) => void;
+  clearDismissedNotifications: () => void;
   
   // Actions — Notes
   createNote: (partial: Partial<Note>) => Promise<Note>;
@@ -721,6 +749,7 @@ export const useStore = create<AppState>((set, get) => {
   const initialSavedSearches = loadJSON<SavedSearch[]>('ntk-saved-searches', []);
   const initialTeamSpaces = loadJSON<TeamSpace[]>('ntk-team-spaces', []);
   const initialActivityItems = loadJSON<ActivityItem[]>('ntk-activity-items', []);
+  const initialNotifications = capNotifications(loadJSON<AppNotification[]>('ntk-notifications', []));
   const initialSyncQueue = loadJSON<SyncQueueItem[]>('ntk-sync-queue', []);
   const initialSyncConflicts = loadJSON<SyncConflict[]>('ntk-sync-conflicts', []);
 
@@ -736,6 +765,7 @@ export const useStore = create<AppState>((set, get) => {
     saveJSON('ntk-saved-searches', state.savedSearches);
     saveJSON('ntk-team-spaces', state.teamSpaces);
     saveJSON('ntk-activity-items', state.activityItems.slice(0, 200));
+    saveJSON('ntk-notifications', capNotifications(state.notifications));
     saveJSON('ntk-sync-queue', state.syncQueue);
     saveJSON('ntk-sync-conflicts', state.syncConflicts);
   };
@@ -774,12 +804,20 @@ export const useStore = create<AppState>((set, get) => {
     for (const item of [...state.syncQueue]) {
       const isNotebook = item.entityType === 'notebook';
       const isTeamSpace = item.entityType === 'teamSpace';
-      if (!isNotebook && !isTeamSpace && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
+      const isNotification = item.entityType === 'notification';
+      if (!isNotebook && !isTeamSpace && !isNotification && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
         continue;
       }
 
       try {
-        if (isTeamSpace) {
+        if (isNotification) {
+          const notification = get().notifications.find(itemRecord => itemRecord.id === item.noteId);
+          if (item.operation === 'delete') {
+            await deleteDoc(doc(db, `users/${state.uid}/notifications`, item.noteId));
+          } else if (notification) {
+            await setDoc(doc(db, `users/${state.uid}/notifications`, item.noteId), stripUndefined(notification));
+          }
+        } else if (isTeamSpace) {
           const teamSpace = get().teamSpaces.find(space => space.id === item.noteId);
           if (item.operation === 'delete') {
             await deleteDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId));
@@ -878,6 +916,16 @@ export const useStore = create<AppState>((set, get) => {
     void flushQueuedSync();
   };
 
+  const syncNotificationToFirestore = (notificationId: string) => {
+    enqueueSync(notificationId, 'upsert', 'notification');
+    void flushQueuedSync();
+  };
+
+  const deleteNotificationFromFirestore = (notificationId: string) => {
+    enqueueSync(notificationId, 'delete', 'notification');
+    void flushQueuedSync();
+  };
+
   const syncSettingsToFirestore = (settings?: AppSettings) => {
     const { uid } = get();
     if (!uid) return;
@@ -914,6 +962,7 @@ export const useStore = create<AppState>((set, get) => {
     savedSearches: initialSavedSearches,
     teamSpaces: initialTeamSpaces,
     activityItems: initialActivityItems,
+    notifications: initialNotifications,
     profile: initialProfile,
     settings: initialSettings,
     currentView: 'home',
@@ -935,6 +984,7 @@ export const useStore = create<AppState>((set, get) => {
     unsubscribeSettings: null,
     unsubscribeTeamSpaces: null,
     unsubscribeActivity: null,
+    unsubscribeNotifications: null,
     unsubscribeSharedNotes: null,
     unsubscribeSharedNotebooks: null,
     
@@ -1106,6 +1156,40 @@ export const useStore = create<AppState>((set, get) => {
         console.error("Firestore team spaces sync error:", error);
       });
 
+      const notificationsRef = collection(db, `users/${uid}/notifications`);
+      let isFirstNotificationsSnapshot = true;
+      const unsubscribeNotifications = onSnapshot(notificationsRef, (snapshot) => {
+        const remoteNotifications = snapshot.docs.map(doc => doc.data() as AppNotification);
+        set(s => {
+          const merged = new Map<string, AppNotification>();
+          s.notifications.forEach(notification => merged.set(notification.id, notification));
+          const remoteIds = new Set(remoteNotifications.map(notification => notification.id));
+          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'notification').map(item => item.noteId));
+
+          if (isFirstNotificationsSnapshot) {
+            s.notifications.forEach(notification => {
+              if (!remoteIds.has(notification.id) && !pendingIds.has(notification.id)) {
+                void setDoc(doc(db, `users/${uid}/notifications`, notification.id), stripUndefined(notification)).catch(console.error);
+                remoteIds.add(notification.id);
+              }
+            });
+            isFirstNotificationsSnapshot = false;
+          }
+
+          remoteNotifications.forEach(remote => {
+            if (!pendingIds.has(remote.id)) {
+              merged.set(remote.id, remote);
+            }
+          });
+
+          return { notifications: capNotifications([...merged.values()]) };
+        });
+        saveJSON('ntk-notifications', get().notifications);
+        void flushQueuedSync();
+      }, (error) => {
+        console.error("Firestore notifications sync error:", error);
+      });
+
       // Synchronize shared notes & notebooks real-time
       const email = auth.currentUser?.email;
       let unsubscribeSharedNotes = () => {};
@@ -1188,6 +1272,7 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeSettings,
         unsubscribeTeamSpaces,
         unsubscribeActivity,
+        unsubscribeNotifications,
         unsubscribeSharedNotes,
         unsubscribeSharedNotebooks
       });
@@ -1195,12 +1280,13 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     clearAuth: () => {
-      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSettings, unsubscribeTeamSpaces, unsubscribeActivity, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
+      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSettings, unsubscribeTeamSpaces, unsubscribeActivity, unsubscribeNotifications, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
       if (unsubscribeNotes) unsubscribeNotes();
       if (unsubscribeNotebooks) unsubscribeNotebooks();
       if (unsubscribeSettings) unsubscribeSettings();
       if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
       if (unsubscribeActivity) unsubscribeActivity();
+      if (unsubscribeNotifications) unsubscribeNotifications();
       if (unsubscribeSharedNotes) unsubscribeSharedNotes();
       if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       // Clear persisted auth / onboarding state
@@ -1213,6 +1299,7 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeSettings: null,
         unsubscribeTeamSpaces: null,
         unsubscribeActivity: null,
+        unsubscribeNotifications: null,
         unsubscribeSharedNotes: null,
         unsubscribeSharedNotebooks: null,
         isOnboarded: false,
@@ -1307,6 +1394,148 @@ export const useStore = create<AppState>((set, get) => {
     setOnlineStatus: (online) => {
       set({ online });
       if (online) void flushQueuedSync();
+    },
+
+    // ── Notifications ──
+    addNotification: (input) => {
+      let result: AppNotification = {
+        ...input,
+        id: input.id || uuid(),
+        createdAt: input.createdAt || now(),
+        priority: input.priority || 'normal',
+        deliveryCount: input.deliveryCount || 0,
+      };
+
+      set(s => {
+        const existing = s.notifications.find(notification => notification.id === result.id);
+        const nextNotification = existing
+          ? {
+              ...existing,
+              ...result,
+              readAt: existing.readAt,
+              dismissedAt: existing.dismissedAt,
+              snoozedUntil: existing.snoozedUntil,
+              lastDeliveredAt: existing.lastDeliveredAt,
+              deliveryCount: existing.deliveryCount,
+            }
+          : result;
+
+        result = nextNotification;
+
+        return {
+          notifications: capNotifications(existing
+            ? s.notifications.map(notification => notification.id === nextNotification.id ? nextNotification : notification)
+            : [nextNotification, ...s.notifications]),
+        };
+      });
+      persist();
+      syncNotificationToFirestore(result.id);
+      return result;
+    },
+
+    markNotificationRead: (id) => {
+      let changed = false;
+      set(s => ({
+        notifications: s.notifications.map(notification => {
+          if (notification.id !== id || notification.readAt) return notification;
+          changed = true;
+          return { ...notification, readAt: now() };
+        }),
+      }));
+      if (changed) {
+        persist();
+        syncNotificationToFirestore(id);
+      }
+    },
+
+    markAllNotificationsRead: () => {
+      const timestamp = now();
+      const changedIds: string[] = [];
+      set(s => ({
+        notifications: s.notifications.map(notification => {
+          if (notification.readAt || notification.dismissedAt) return notification;
+          changedIds.push(notification.id);
+          return { ...notification, readAt: timestamp };
+        }),
+      }));
+      if (changedIds.length) {
+        persist();
+        changedIds.forEach(id => syncNotificationToFirestore(id));
+      }
+    },
+
+    dismissNotification: (id) => {
+      let changed = false;
+      set(s => ({
+        notifications: s.notifications.map(notification => {
+          if (notification.id !== id || notification.dismissedAt) return notification;
+          changed = true;
+          return {
+            ...notification,
+            readAt: notification.readAt || now(),
+            dismissedAt: now(),
+            snoozedUntil: undefined,
+          };
+        }),
+      }));
+      if (changed) {
+        persist();
+        syncNotificationToFirestore(id);
+      }
+    },
+
+    snoozeNotification: (id, minutes) => {
+      const timestamp = new Date(Date.now() + Math.max(minutes, 1) * 60 * 1000).toISOString();
+      let changed = false;
+      set(s => ({
+        notifications: s.notifications.map(notification => {
+          if (notification.id !== id) return notification;
+          changed = true;
+          return {
+            ...notification,
+            readAt: notification.readAt || now(),
+            dismissedAt: undefined,
+            snoozedUntil: timestamp,
+          };
+        }),
+      }));
+      if (changed) {
+        persist();
+        syncNotificationToFirestore(id);
+      }
+    },
+
+    recordNotificationDelivery: (id) => {
+      let changed = false;
+      set(s => ({
+        notifications: s.notifications.map(notification => {
+          if (notification.id !== id) return notification;
+          changed = true;
+          return {
+            ...notification,
+            lastDeliveredAt: now(),
+            deliveryCount: (notification.deliveryCount || 0) + 1,
+            snoozedUntil: undefined,
+          };
+        }),
+      }));
+      if (changed) {
+        persist();
+        syncNotificationToFirestore(id);
+      }
+    },
+
+    clearDismissedNotifications: () => {
+      const dismissedIds = get().notifications
+        .filter(notification => notification.dismissedAt)
+        .map(notification => notification.id);
+
+      if (!dismissedIds.length) return;
+      set(s => ({
+        notifications: s.notifications.filter(notification => !notification.dismissedAt),
+      }));
+      persist();
+      dismissedIds.forEach(id => deleteNotificationFromFirestore(id));
     },
 
     // ── Notes ──
@@ -2281,8 +2510,8 @@ export const useStore = create<AppState>((set, get) => {
 
     // ── Export/Import ──
     exportAllNotes: () => {
-      const { notes, notebooks, teamSpaces, activityItems, profile } = get();
-      return JSON.stringify({ notes, notebooks, teamSpaces, activityItems, profile, exportedAt: now() }, null, 2);
+      const { notes, notebooks, teamSpaces, activityItems, notifications, profile } = get();
+      return JSON.stringify({ notes, notebooks, teamSpaces, activityItems, notifications, profile, exportedAt: now() }, null, 2);
     },
 
     importNotes: (json) => {
@@ -2301,11 +2530,15 @@ export const useStore = create<AppState>((set, get) => {
             const importedActivity = Array.isArray(data.activityItems)
               ? data.activityItems.filter((item: ActivityItem) => !s.activityItems.some(existing => existing.id === item.id))
               : [];
+            const importedNotifications = Array.isArray(data.notifications)
+              ? data.notifications.filter((item: AppNotification) => !s.notifications.some(existing => existing.id === item.id))
+              : [];
             return {
               notes,
               tags: rebuildTags(notes),
               teamSpaces: [...s.teamSpaces, ...importedTeamSpaces],
               activityItems: [...importedActivity, ...s.activityItems].slice(0, 200),
+              notifications: capNotifications([...importedNotifications, ...s.notifications]),
             };
           });
           if (data.notebooks && Array.isArray(data.notebooks)) {
@@ -2319,6 +2552,9 @@ export const useStore = create<AppState>((set, get) => {
           importedNotes.forEach(note => syncNoteToFirestore(note.id));
           if (Array.isArray(data.teamSpaces)) {
             data.teamSpaces.forEach((space: TeamSpace) => syncTeamSpaceToFirestore(space.id));
+          }
+          if (Array.isArray(data.notifications)) {
+            data.notifications.forEach((notification: AppNotification) => syncNotificationToFirestore(notification.id));
           }
           return true;
         }
@@ -2337,6 +2573,7 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeSettings,
         unsubscribeTeamSpaces,
         unsubscribeActivity,
+        unsubscribeNotifications,
         unsubscribeSharedNotes,
         unsubscribeSharedNotebooks,
       } = get();
@@ -2345,6 +2582,7 @@ export const useStore = create<AppState>((set, get) => {
       if (unsubscribeSettings) unsubscribeSettings();
       if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
       if (unsubscribeActivity) unsubscribeActivity();
+      if (unsubscribeNotifications) unsubscribeNotifications();
       if (unsubscribeSharedNotes) unsubscribeSharedNotes();
       if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       if (uid) {
@@ -2362,6 +2600,7 @@ export const useStore = create<AppState>((set, get) => {
       localStorage.removeItem('ntk-saved-searches');
       localStorage.removeItem('ntk-team-spaces');
       localStorage.removeItem('ntk-activity-items');
+      localStorage.removeItem('ntk-notifications');
       localStorage.removeItem('ntk-sync-queue');
       localStorage.removeItem('ntk-sync-conflicts');
       set({
@@ -2370,6 +2609,7 @@ export const useStore = create<AppState>((set, get) => {
         tags: [],
         teamSpaces: [],
         activityItems: [],
+        notifications: [],
         profile: defaultProfile,
         settings: defaultSettings,
         isOnboarded: false,
@@ -2379,6 +2619,7 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeSettings: null,
         unsubscribeTeamSpaces: null,
         unsubscribeActivity: null,
+        unsubscribeNotifications: null,
         unsubscribeSharedNotes: null,
         unsubscribeSharedNotebooks: null,
         currentView: 'home',

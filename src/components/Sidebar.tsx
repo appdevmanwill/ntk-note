@@ -3,7 +3,7 @@ import type { CSSProperties, DragEvent } from 'react';
 import { useStore } from '@/store';
 import {
   Home, FileText, Tag, Star, Archive, Trash2,
-  Bell, Search, Settings, Plus, ChevronDown, ChevronRight,
+  Bell, BellRing, Search, Settings, Plus, ChevronDown, ChevronRight,
   Moon, Sun, LayoutTemplate, LogOut, X, Share2,
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
   Edit3, GripVertical, ArrowUpDown
@@ -48,7 +48,7 @@ export default function Sidebar() {
     currentView, setCurrentView, profile, settings, setTheme,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, getStats, updateSettings, clearAuth, reorderNotebook, moveNote,
+    notes, notifications, getStats, updateSettings, clearAuth, reorderNotebook, moveNote,
     selectedNotebookId, selectedTagId,
   } = useStore();
 
@@ -82,6 +82,7 @@ export default function Sidebar() {
   const archivedCount = notes.filter(n => n.archived && !n.trashed).length;
   const starredCount = notes.filter(n => n.starred && !n.trashed && !n.archived).length;
   const remindersCount = notes.filter(n => n.reminder && !n.trashed).length;
+  const unreadNotificationsCount = notifications.filter(notification => !notification.readAt && !notification.dismissedAt).length;
   const collapsed = settings.sidebarCollapsed;
   const activeNotebookSortValue = `${settings.notebookSortBy}:${settings.notebookSortDir}`;
   const visibleNotebooks = useMemo(() => notebooks.filter(nb => !nb.trashed), [notebooks]);
@@ -138,6 +139,7 @@ export default function Sidebar() {
     { view: 'search', icon: Search, label: 'Search' },
     { view: 'starred', icon: Star, label: 'Starred', badge: starredCount || undefined },
     { view: 'reminders', icon: Bell, label: 'Reminders', badge: remindersCount || undefined },
+    { view: 'notifications', icon: BellRing, label: 'Notifications', badge: unreadNotificationsCount || undefined },
     { view: 'shared', icon: Share2, label: 'Share Center' },
     { view: 'smart-folders', icon: FolderSearch, label: 'Smart Folders' },
     { view: 'graph', icon: GitBranch, label: 'Graph' },

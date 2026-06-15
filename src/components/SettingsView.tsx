@@ -6,7 +6,7 @@ import { noteThemes } from '@/utils/noteThemes';
 import { premiumFontFamilies } from '@/utils/fonts';
 import {
   User, Palette, Type, Download, Upload,
-  Trash2, Moon, Sun, Keyboard, Info,
+  Trash2, Moon, Sun, Keyboard, Info, BellRing,
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
   AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink
 } from 'lucide-react';
@@ -45,6 +45,11 @@ export default function SettingsView() {
   const [cloudSharing, setCloudSharing] = useState(false);
   const [cloudExportStatus, setCloudExportStatus] = useState('');
   const [cloudExportLink, setCloudExportLink] = useState('');
+  const [notificationStatus, setNotificationStatus] = useState('');
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
+    return Notification.permission;
+  });
   const [cleanupDays, setCleanupDays] = useState(30);
   const [cleanupStatus, setCleanupStatus] = useState('');
   const [compressingImages, setCompressingImages] = useState(false);
@@ -200,6 +205,34 @@ export default function SettingsView() {
     }
   };
 
+  const handleBrowserNotificationToggle = async () => {
+    if (settings.browserNotificationsEnabled) {
+      updateSettings({ browserNotificationsEnabled: false });
+      setNotificationStatus('Browser alerts are off. In-app notifications still sync.');
+      return;
+    }
+
+    if (!('Notification' in window)) {
+      updateSettings({ browserNotificationsEnabled: false });
+      setNotificationPermission('unsupported');
+      setNotificationStatus('This browser does not support browser notifications.');
+      return;
+    }
+
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
+
+    setNotificationPermission(permission);
+    if (permission === 'granted') {
+      updateSettings({ notificationsEnabled: true, browserNotificationsEnabled: true });
+      setNotificationStatus('Browser alerts are on for this device.');
+    } else {
+      updateSettings({ browserNotificationsEnabled: false });
+      setNotificationStatus('Browser alerts were blocked or dismissed. You can still use the synced notification inbox.');
+    }
+  };
+
   const handleCleanupOldTrash = async () => {
     const result = await cleanupTrashOlderThan(cleanupDays);
     setCleanupStatus(`Removed ${result.notes} note${result.notes === 1 ? '' : 's'} and ${result.notebooks} notebook${result.notebooks === 1 ? '' : 's'} from trash.`);
@@ -229,6 +262,7 @@ export default function SettingsView() {
     { id: 'tags', icon: Tag, label: 'Tag Manager' },
     { id: 'analytics', icon: TrendingUp, label: 'Analytics' },
     { id: 'shortcuts', icon: Keyboard, label: 'Shortcuts' },
+    { id: 'notifications', icon: BellRing, label: 'Notifications' },
     { id: 'sync', icon: ShieldCheck, label: 'Sync & Safety' },
     { id: 'data', icon: Download, label: 'Data & Backup' },
     { id: 'about', icon: Info, label: 'About' },
@@ -845,6 +879,145 @@ export default function SettingsView() {
                     </kbd>
                   </div>
                 ))}
+              </div>
+            </SettingCard>
+          </div>
+        )}
+
+        {/* Notifications Section */}
+        {activeSection === 'notifications' && (
+          <div className="space-y-6 animate-fade-in">
+            <SettingCard title="Notification Center">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Synced in-app notifications</p>
+                    <p className="text-xs text-theme-tertiary">Show reminders, celebrations, and collaboration updates in the app inbox.</p>
+                  </div>
+                  <Switch
+                    label="Synced in-app notifications"
+                    checked={settings.notificationsEnabled}
+                    onChange={() => updateSettings({ notificationsEnabled: !settings.notificationsEnabled })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Browser alerts on this device</p>
+                    <p className="text-xs text-theme-tertiary">
+                      Permission: {notificationPermission === 'unsupported' ? 'not supported' : notificationPermission}
+                    </p>
+                  </div>
+                  <Switch
+                    label="Browser alerts on this device"
+                    checked={settings.browserNotificationsEnabled}
+                    onChange={() => void handleBrowserNotificationToggle()}
+                  />
+                </div>
+
+                {notificationStatus && (
+                  <p className="rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }}>
+                    {notificationStatus}
+                  </p>
+                )}
+              </div>
+            </SettingCard>
+
+            <SettingCard title="Notify Me About">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Note reminders</p>
+                    <p className="text-xs text-theme-tertiary">Alerts from reminders set inside notes.</p>
+                  </div>
+                  <Switch
+                    label="Note reminders"
+                    checked={settings.reminderNotificationsEnabled}
+                    onChange={() => updateSettings({ reminderNotificationsEnabled: !settings.reminderNotificationsEnabled })}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Calendar celebrations</p>
+                    <p className="text-xs text-theme-tertiary">Daily celebration reminders from the calendar.</p>
+                  </div>
+                  <Switch
+                    label="Calendar celebrations"
+                    checked={settings.celebrationNotificationsEnabled}
+                    onChange={() => updateSettings({ celebrationNotificationsEnabled: !settings.celebrationNotificationsEnabled })}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Collaboration activity</p>
+                    <p className="text-xs text-theme-tertiary">Shared note and team-space activity notifications.</p>
+                  </div>
+                  <Switch
+                    label="Collaboration activity"
+                    checked={settings.collaborationNotificationsEnabled}
+                    onChange={() => updateSettings({ collaborationNotificationsEnabled: !settings.collaborationNotificationsEnabled })}
+                  />
+                </div>
+              </div>
+            </SettingCard>
+
+            <SettingCard title="Timing">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4 py-1">
+                  <div>
+                    <p className="text-sm font-medium text-theme-secondary">Quiet hours</p>
+                    <p className="text-xs text-theme-tertiary">Silence browser alerts while keeping items in the synced inbox.</p>
+                  </div>
+                  <Switch
+                    label="Quiet hours"
+                    checked={settings.quietHoursEnabled}
+                    onChange={() => updateSettings({ quietHoursEnabled: !settings.quietHoursEnabled })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="block text-sm font-medium text-theme-secondary mb-1">Quiet starts</span>
+                    <input
+                      type="time"
+                      value={settings.quietHoursStart}
+                      onChange={e => updateSettings({ quietHoursStart: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="block text-sm font-medium text-theme-secondary mb-1">Quiet ends</span>
+                    <input
+                      type="time"
+                      value={settings.quietHoursEnd}
+                      onChange={e => updateSettings({ quietHoursEnd: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="block text-sm font-medium text-theme-secondary mb-1">Celebration reminder time</span>
+                    <input
+                      type="time"
+                      value={settings.celebrationReminderTime}
+                      onChange={e => updateSettings({ celebrationReminderTime: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="block text-sm font-medium text-theme-secondary mb-1">Default snooze minutes</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={240}
+                      value={settings.defaultSnoozeMinutes}
+                      onChange={e => updateSettings({ defaultSnoozeMinutes: Math.max(1, Number(e.target.value) || 1) })}
+                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
+                    />
+                  </label>
+                </div>
               </div>
             </SettingCard>
           </div>

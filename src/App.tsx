@@ -10,6 +10,7 @@ import SettingsView from '@/components/SettingsView';
 import GraphView from '@/components/GraphView';
 import SmartFoldersView from '@/components/SmartFoldersView';
 import ShareCenterView from '@/components/ShareCenterView';
+import NotificationsView from '@/components/NotificationsView';
 import CommandPalette from '@/components/CommandPalette';
 import MobileNav from '@/components/MobileNav';
 import PublicNoteReader from '@/components/PublicNoteReader';
@@ -17,7 +18,8 @@ import OnboardingGuide from '@/components/OnboardingGuide';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/utils/firebase';
 import { accentPalette } from '@/utils/noteThemes';
-import type { SidebarView } from '@/types';
+import { getHolidaysForDate } from '@/utils/holidays';
+import type { AppNotification, AppSettings, SidebarView } from '@/types';
 import {
   FileText, PanelLeftOpen, PanelRightOpen,
 } from 'lucide-react';
@@ -36,6 +38,37 @@ const darkAccentPalette: typeof accentPalette = {
   violet: { primary: '#a78bfa', hover: '#c4b5fd', rgb: '167, 139, 250' },
   rose: { primary: '#fb7185', hover: '#fda4af', rgb: '251, 113, 133' },
 };
+
+const NOTIFICATION_ICON = '/ntk-icon-192.png';
+
+const parseClockMinutes = (value: string) => {
+  const [hours, minutes] = value.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+};
+
+const isQuietTime = (settings: AppSettings, date = new Date()) => {
+  if (!settings.quietHoursEnabled) return false;
+
+  const start = parseClockMinutes(settings.quietHoursStart);
+  const end = parseClockMinutes(settings.quietHoursEnd);
+  if (start === null || end === null || start === end) return false;
+
+  const current = date.getHours() * 60 + date.getMinutes();
+  return start < end
+    ? current >= start && current < end
+    : current >= start || current < end;
+};
+
+const localDateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const slugifyNotificationId = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 70);
 
 export default function App() {
   const {
@@ -61,28 +94,36 @@ export default function App() {
     });
   };
 
-  const notifyReminder = async (noteTitle: string, reminderTitle: string, tag: string) => {
-    const body = reminderTitle || noteTitle || 'You have a reminder';
-    const icon = '/ntk-icon-192.png';
+  const showBrowserNotification = async (notification: AppNotification) => {
+    const state = useStore.getState();
+    if (!state.settings.notificationsEnabled || !state.settings.browserNotificationsEnabled) return false;
+    if (isQuietTime(state.settings)) return false;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return false;
 
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const options: NotificationOptions = {
+      body: notification.message,
+      icon: NOTIFICATION_ICON,
+      badge: NOTIFICATION_ICON,
+      tag: notification.id,
+      data: {
+        notificationId: notification.id,
+        action: notification.action,
+        noteId: notification.noteId,
+      },
+    };
 
     if ('serviceWorker' in navigator) {
       const registration = await navigator.serviceWorker.getRegistration();
       if (registration) {
-        await registration.showNotification('NTK Note Reminder', {
-          body,
-          icon,
-          tag,
-        });
-        return;
+        await registration.showNotification(notification.title, options);
+        state.recordNotificationDelivery(notification.id);
+        return true;
       }
     }
 
-    new Notification('NTK Note Reminder', {
-      body,
-      icon,
-    });
+    new Notification(notification.title, options);
+    state.recordNotificationDelivery(notification.id);
+    return true;
   };
 
   // Auth listener
@@ -118,11 +159,11 @@ export default function App() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
-    if (settings.offlineModeEnabled) {
+    if (settings.offlineModeEnabled || settings.browserNotificationsEnabled) {
       navigator.serviceWorker.register('/sw.js')
         .then(registration => registration.update())
         .catch(error => {
-          console.warn('Offline mode registration failed:', error);
+          console.warn('Service worker registration failed:', error);
         });
       return;
     }
@@ -134,8 +175,8 @@ export default function App() {
           return scriptUrl.endsWith('/sw.js');
         })
         .forEach(registration => registration.unregister()))
-      .catch(error => console.warn('Offline mode cleanup failed:', error));
-  }, [settings.offlineModeEnabled]);
+      .catch(error => console.warn('Service worker cleanup failed:', error));
+  }, [settings.offlineModeEnabled, settings.browserNotificationsEnabled]);
 
   // Apply theme — belt-and-suspenders approach
   useEffect(() => {
@@ -229,13 +270,30 @@ export default function App() {
   useEffect(() => {
     const checkReminders = () => {
       const state = useStore.getState();
-      const now = new Date().getTime();
+      const currentTime = new Date().getTime();
       state.notes.forEach(note => {
         if (note.reminder && !note.reminder.triggered && !note.trashed) {
           const reminderTime = new Date(note.reminder.time).getTime();
-          if (now >= reminderTime) {
-            void notifyReminder(note.title, note.reminder?.title || '', `reminder-${note.id}`)
-              .catch(error => console.warn('Reminder notification failed:', error));
+          if (currentTime >= reminderTime) {
+            if (state.settings.notificationsEnabled && state.settings.reminderNotificationsEnabled) {
+              const notificationId = `note-reminder-${note.id}-${note.reminder.id || note.reminder.time}`;
+              const existing = state.notifications.find(notification => notification.id === notificationId);
+              const notification = existing || state.addNotification({
+                id: notificationId,
+                type: 'note-reminder',
+                title: note.reminder.title || 'Note reminder',
+                message: note.title ? `Reminder for "${note.title}"` : 'A note reminder is due.',
+                dueAt: note.reminder.time,
+                noteId: note.id,
+                action: 'open-note',
+                priority: 'high',
+              });
+
+              if (!notification.dismissedAt && !notification.lastDeliveredAt) {
+                void showBrowserNotification(notification)
+                  .catch(error => console.warn('Reminder notification failed:', error));
+              }
+            }
             state.setNoteReminder(note.id, { ...note.reminder, triggered: true });
           }
         }
@@ -245,6 +303,110 @@ export default function App() {
     const interval = setInterval(checkReminders, 30000);
     checkReminders();
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const checkCelebrations = () => {
+      const state = useStore.getState();
+      if (!state.settings.notificationsEnabled || !state.settings.celebrationNotificationsEnabled) return;
+
+      const currentDate = new Date();
+      const reminderMinutes = parseClockMinutes(state.settings.celebrationReminderTime) ?? 8 * 60;
+      const currentMinutes = currentDate.getHours() * 60 + currentDate.getMinutes();
+      if (currentMinutes < reminderMinutes) return;
+
+      const dateKey = localDateKey(currentDate);
+      getHolidaysForDate(currentDate).forEach((holiday, index) => {
+        const notificationId = `celebration-${dateKey}-${holiday.type}-${slugifyNotificationId(holiday.name)}-${index}`;
+        const existing = state.notifications.find(notification => notification.id === notificationId);
+        if (existing) return;
+
+        const notification = state.addNotification({
+          id: notificationId,
+          type: 'celebration',
+          title: `Today: ${holiday.name}`,
+          message: holiday.summary,
+          dueAt: currentDate.toISOString(),
+          action: 'open-calendar',
+          priority: holiday.type === 'BCG' ? 'high' : 'normal',
+          metadata: {
+            calendarType: holiday.type,
+            dateKey,
+          },
+        });
+
+        void showBrowserNotification(notification)
+          .catch(error => console.warn('Celebration notification failed:', error));
+      });
+    };
+
+    const interval = setInterval(checkCelebrations, 60000);
+    checkCelebrations();
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const checkSnoozedNotifications = () => {
+      const state = useStore.getState();
+      const currentTime = Date.now();
+
+      state.notifications.forEach(notification => {
+        if (notification.dismissedAt || !notification.snoozedUntil) return;
+        const snoozedUntil = new Date(notification.snoozedUntil).getTime();
+        if (!Number.isFinite(snoozedUntil) || snoozedUntil > currentTime) return;
+
+        const lastDeliveredAt = notification.lastDeliveredAt
+          ? new Date(notification.lastDeliveredAt).getTime()
+          : 0;
+        if (lastDeliveredAt >= snoozedUntil) return;
+
+        void showBrowserNotification(notification)
+          .catch(error => console.warn('Snoozed notification failed:', error));
+      });
+    };
+
+    const interval = setInterval(checkSnoozedNotifications, 30000);
+    checkSnoozedNotifications();
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const createCollaborationNotifications = () => {
+      const state = useStore.getState();
+      if (!state.settings.notificationsEnabled || !state.settings.collaborationNotificationsEnabled) return;
+
+      const currentUserEmail = auth.currentUser?.email?.toLowerCase() || '';
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+
+      state.activityItems.forEach(activity => {
+        const activityTime = new Date(activity.createdAt).getTime();
+        if (!Number.isFinite(activityTime) || activityTime < cutoff) return;
+        if (currentUserEmail && activity.actorEmail.toLowerCase() === currentUserEmail) return;
+
+        const notificationId = `activity-${activity.id}`;
+        if (state.notifications.some(notification => notification.id === notificationId)) return;
+
+        state.addNotification({
+          id: notificationId,
+          type: 'shared-activity',
+          title: activity.actorName || activity.actorEmail || 'Shared activity',
+          message: activity.message,
+          dueAt: activity.createdAt,
+          noteId: activity.noteId,
+          entityId: activity.entityId,
+          action: activity.noteId ? 'open-note' : 'open-share-center',
+          priority: 'normal',
+          metadata: {
+            entityType: activity.entityType,
+            action: activity.action,
+          },
+        });
+      });
+    };
+
+    const unsubscribe = useStore.subscribe(createCollaborationNotifications);
+    createCollaborationNotifications();
+    return () => unsubscribe();
   }, []);
 
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
@@ -282,6 +444,8 @@ export default function App() {
         return <SmartFoldersView />;
       case 'shared':
         return <ShareCenterView />;
+      case 'notifications':
+        return <NotificationsView />;
       case 'all-notes':
       case 'search':
       case 'starred':
