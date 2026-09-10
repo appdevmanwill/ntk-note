@@ -63,6 +63,7 @@ function getNotificationIcon(notification: AppNotification) {
 export default function NotificationsView() {
   const {
     notifications,
+    notes,
     settings,
     updateSettings,
     markNotificationRead,
@@ -73,6 +74,7 @@ export default function NotificationsView() {
     selectNote,
     setCurrentView,
     setEditingNote,
+    openSettings,
   } = useStore();
 
   const [filter, setFilter] = useState<NotificationFilter>('active');
@@ -114,19 +116,29 @@ export default function NotificationsView() {
   };
 
   const openNotificationSettings = () => {
-    setCurrentView('settings');
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('ntk-settings-section', { detail: 'notifications' }));
-    }, 0);
+    openSettings('notifications');
   };
 
   const openNotification = (notification: AppNotification) => {
     markNotificationRead(notification.id);
 
     if (notification.action === 'open-note' && notification.noteId) {
-      setCurrentView('all-notes');
+      const targetNote = notes.find(note => note.id === notification.noteId);
+      setCurrentView(targetNote?.isShared ? 'shared' : 'all-notes');
       selectNote(notification.noteId);
       setEditingNote(true);
+      return;
+    }
+
+    if (notification.action === 'open-reminder' || notification.type === 'note-reminder') {
+      if (notification.noteId) {
+        const targetNote = notes.find(note => note.id === notification.noteId);
+        setCurrentView(targetNote?.isShared ? 'shared' : 'all-notes');
+        selectNote(notification.noteId);
+        setEditingNote(true);
+        return;
+      }
+      setCurrentView('reminders');
       return;
     }
 

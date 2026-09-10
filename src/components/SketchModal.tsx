@@ -168,7 +168,7 @@ export default function SketchModal({ isOpen, onClose, onSave }: SketchModalProp
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-      <div className="bg-[var(--card-bg)] border theme-border rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden max-h-[90vh]">
+      <div className="bg-[var(--card-bg)] border theme-border rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden max-h-[90dvh]">
         
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b theme-divider">

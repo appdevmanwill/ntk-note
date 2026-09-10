@@ -1,4 +1,4 @@
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { GoogleAuthProvider, reauthenticateWithPopup, signInWithPopup } from 'firebase/auth';
 import JSZip from 'jszip';
 import { auth } from '@/utils/firebase';
 
@@ -65,18 +65,47 @@ export const createWorkspaceArchive = async (exportData: string) => {
   return zip.generateAsync({ type: 'blob' });
 };
 
-const getGoogleDriveAccessToken = async () => {
+const getGoogleDriveAccessToken = async (): Promise<string> => {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.isAnonymous) {
+    throw new Error('Google Drive backup requires signing in with a persistent Google account.');
+  }
+
   const provider = new GoogleAuthProvider();
   provider.addScope('https://www.googleapis.com/auth/drive.file');
-  provider.setCustomParameters({ prompt: 'consent select_account' });
+  if (currentUser.email) {
+    provider.setCustomParameters({ login_hint: currentUser.email, prompt: 'consent' });
+  } else {
+    provider.setCustomParameters({ prompt: 'consent select_account' });
+  }
 
-  const result = await signInWithPopup(auth, provider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (!credential?.accessToken) {
+  let accessToken: string | undefined;
+
+  try {
+    // Attempt reauthentication with the current user first to enforce account identity
+    const reauthResult = await reauthenticateWithPopup(currentUser, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(reauthResult);
+    accessToken = credential?.accessToken;
+  } catch (reauthErr: any) {
+    // Fallback to signInWithPopup with strict UID verification if reauth fails
+    if (reauthErr?.code === 'auth/popup-closed-by-user') {
+      throw new Error('Google Drive authorization was cancelled.');
+    }
+    const result = await signInWithPopup(auth, provider);
+    if (result.user.uid !== currentUser.uid) {
+      throw new Error(
+        `Account mismatch: The selected Google account does not match your active session (${currentUser.email || currentUser.uid}). Drive export aborted.`
+      );
+    }
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    accessToken = credential?.accessToken;
+  }
+
+  if (!accessToken) {
     throw new Error('Google Drive permission was not granted.');
   }
 
-  return credential.accessToken;
+  return accessToken;
 };
 
 const createMultipartBody = async (blob: Blob, fileName: string) => {
@@ -139,4 +168,47 @@ export const exportWorkspaceArchiveToGoogleDrive = async (exportData: string): P
     fileName: result.name || fileName,
     url: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
   };
+};
+
+/**
+ * Read an NTK Note backup exported by this app. The normal export is a ZIP
+ * containing backup.json, while older backups may be a plain JSON file.
+ */
+export const readWorkspaceBackupFile = async (file: File): Promise<string> => {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.zip')) {
+    const zip = await JSZip.loadAsync(file);
+    const backup = zip.file('backup.json');
+    if (!backup) throw new Error('This ZIP is not an NTK Note backup because backup.json is missing.');
+    return backup.async('string');
+  }
+  if (name.endsWith('.json') || file.type.includes('json')) return file.text();
+  throw new Error('Choose an NTK Note .zip or .json backup file.');
+};
+
+export const exportWorkspaceArchiveToConnectedStorage = async (
+  exportData: string,
+  retentionDays: number = 30,
+): Promise<{ objectId: string; fileName: string; size: number }> => {
+  const { uploadStorageFile, listStorageFiles, deleteStorageFile } = await import('@/utils/cloudStorage');
+  const blob = await createWorkspaceArchive(exportData);
+  const fileName = getWorkspaceArchiveFileName();
+  const result = await uploadStorageFile(blob, 'exports', fileName);
+
+  if (retentionDays > 0) {
+    try {
+      const list = await listStorageFiles('exports');
+      const maxAgeMs = retentionDays * 24 * 60 * 60 * 1000;
+      const cur = Date.now();
+      for (const item of list) {
+        if (cur - new Date(item.createdAt).getTime() > maxAgeMs) {
+          await deleteStorageFile('exports', item.id);
+        }
+      }
+    } catch {
+      // Non-critical pruning failure
+    }
+  }
+
+  return { objectId: result.objectId, fileName: result.fileName, size: result.size };
 };

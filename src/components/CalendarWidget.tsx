@@ -17,7 +17,7 @@ const holidayTypeLabels: Record<Holiday['type'], string> = {
 };
 
 export default function CalendarWidget() {
-  const { notes } = useStore();
+  const { reminders: storeReminders, notes } = useStore();
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [openHolidayKey, setOpenHolidayKey] = useState<string | null>(null);
@@ -27,9 +27,19 @@ export default function CalendarWidget() {
   const days = eachDayOfInterval({ start: monthStart, end: monthEnd });
   const startDayOfWeek = getDay(monthStart);
   
-  const reminders = notes
-    .filter(n => n.reminder && n.reminder.time && !n.trashed)
-    .map(n => ({ date: new Date(n.reminder!.time), title: n.title }))
+  const reminders = (storeReminders.length > 0
+    ? storeReminders.filter(r => r.status === 'active' && r.dueAt)
+    : notes.filter(n => n.reminder && n.reminder.time && !n.trashed).map(n => ({
+        id: n.reminder!.id || `reminder-note-${n.id}`,
+        title: n.reminder!.title || n.title || 'Note reminder',
+        dueAt: n.reminder!.time,
+        status: 'active' as const,
+        snoozedUntil: undefined,
+        createdAt: n.createdAt,
+        updatedAt: n.updatedAt,
+      }))
+  )
+    .map(r => ({ date: new Date(r.snoozedUntil || r.dueAt), title: r.title }))
     .filter(r => !isNaN(r.date.getTime()));
 
   const monthReminders = reminders.filter(r => 

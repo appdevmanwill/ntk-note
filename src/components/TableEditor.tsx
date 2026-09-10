@@ -70,7 +70,7 @@ export default function TableEditor({ onInsert, onClose }: Props) {
       <div className="relative w-full max-w-2xl theme-card rounded-2xl border overflow-hidden animate-scale-in">
         <div className="flex items-center justify-between px-4 py-3 border-b theme-divider">
           <h3 className="font-semibold text-theme-primary">Insert Table</h3>
-          <button onClick={onClose} className="p-1 rounded-lg theme-hover text-theme-tertiary">
+          <button onClick={onClose} aria-label="Close table editor" className="p-1 rounded-lg theme-hover text-theme-tertiary">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -90,6 +90,7 @@ export default function TableEditor({ onInsert, onClose }: Props) {
                     {cols > 1 && (
                       <button
                         onClick={() => removeColumn(i)}
+                        aria-label={`Remove table column ${i + 1}`}
                         className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
                       >
                         <X className="w-3 h-3" />
@@ -100,6 +101,7 @@ export default function TableEditor({ onInsert, onClose }: Props) {
                 <th className="w-10">
                   <button
                     onClick={addColumn}
+                    aria-label="Add table column"
                     className="p-1 rounded theme-hover text-theme-tertiary"
                   >
                     <Plus className="w-4 h-4" />
@@ -125,6 +127,7 @@ export default function TableEditor({ onInsert, onClose }: Props) {
                     {rows > 2 && (
                       <button
                         onClick={() => removeRow(ri)}
+                        aria-label={`Remove table row ${ri + 1}`}
                         className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                       >
                         <Trash2 className="w-3.5 h-3.5" />

@@ -1,0 +1,24 @@
+================================================================================
+NTK NOTE — MAIN R2 STORAGE LIVE PROOF & VERIFICATION
+================================================================================
+Timestamp: 2026-08-30T22:20:30Z
+Target: https://ntk-note.web.app
+Gateway: https://ntk-note-gateway.ntk-note.workers.dev
+Bucket: ntk-note-files
+
+Verification Step:
+1. Navigated to live production app at https://ntk-note.web.app
+2. Opened Settings -> NTK AI -> Owner connections -> File storage connections
+3. Inspected connection:
+   - ID: conn_r2_main
+   - Name: Main R2 Storage
+   - Provider: Cloudflare R2 (Worker Binding: true)
+   - Bucket: ntk-note-files
+   - Allowed Purposes: profilePhotos, images, voiceNotes, attachments, backups, exports
+4. Executed live write -> read -> delete test probe.
+5. Status verified: READY
+6. Probe message: "Storage connection verified."
+7. Screenshot captured: test-evidence/final-storage-proof/main-r2-ready.png
+
+Main R2 Ready: YES
+================================================================================

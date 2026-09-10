@@ -1,38 +1,9 @@
-import { useState } from 'react';
 import { useStore } from '@/store';
-import { AlertTriangle, CheckCircle2, Cloud, Database, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, Database, Eye, Wifi, WifiOff } from 'lucide-react';
+import ManualSyncButton from './ManualSyncButton';
 
 export default function QuotaDashboard() {
-  const { syncQueue, syncConflicts, online, uid, flushSyncQueue, resolveSyncConflict, selectNote, setCurrentView } = useStore();
-  const [syncing, setSyncing] = useState(false);
-  const [message, setMessage] = useState('');
-
-  const runSync = async () => {
-    if (!online) {
-      setMessage('You are offline. Changes will sync when the connection returns.');
-      return;
-    }
-    if (!uid) {
-      setMessage('Cloud sync needs a signed-in Firebase session. Local notes are still saved on this device.');
-      return;
-    }
-    if (syncConflicts.length > 0) {
-      setMessage('Resolve sync conflicts before syncing those notes.');
-      return;
-    }
-    if (syncQueue.length === 0) {
-      setMessage('No pending changes. Everything local is already queued cleanly.');
-      return;
-    }
-
-    const before = syncQueue.length;
-    setSyncing(true);
-    setMessage('Syncing pending changes...');
-    await flushSyncQueue();
-    const remaining = useStore.getState().syncQueue.length;
-    setSyncing(false);
-    setMessage(remaining === 0 ? `Synced ${before} pending change${before === 1 ? '' : 's'}.` : `${remaining} change${remaining === 1 ? '' : 's'} still waiting.`);
-  };
+  const { syncQueue, syncConflicts, syncMessage, online, uid, resolveSyncConflict, selectNote, setCurrentView } = useStore();
 
   return (
     <div className="space-y-4">
@@ -67,17 +38,10 @@ export default function QuotaDashboard() {
                 : `${syncQueue.length} local change${syncQueue.length === 1 ? '' : 's'} waiting to upload.`}
             </p>
           </div>
-          <button
-            onClick={() => void runSync()}
-            disabled={syncing}
-            className="px-3 py-2 rounded-lg accent-button text-sm font-medium disabled:opacity-60 disabled:cursor-wait inline-flex items-center justify-center gap-2"
-          >
-            <RefreshCw className={`w-4 h-4 no-transition ${syncing ? 'animate-spin' : ''}`} />
-            Sync Now
-          </button>
+          <ManualSyncButton />
         </div>
-        {message && (
-          <p className="mt-3 text-xs text-theme-tertiary">{message}</p>
+        {syncMessage && (
+          <p className="mt-3 text-xs text-theme-tertiary">{syncMessage}</p>
         )}
       </div>
 
@@ -107,9 +71,9 @@ export default function QuotaDashboard() {
               <div key={conflict.id} className="rounded-lg px-3 py-3 text-xs" style={{ backgroundColor: 'var(--card-bg)' }}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
-                    <p className="font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote.title || 'Untitled note'}</p>
+                    <p className="font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote?.title || 'Untitled note'}</p>
                     <p className="text-theme-tertiary">
-                      Local: {new Date(conflict.local.updatedAt).toLocaleString()} | Cloud: {new Date(conflict.remote.updatedAt).toLocaleString()}
+                      Local: {new Date(conflict.local.updatedAt).toLocaleString()} | Cloud: {conflict.deletedRemotely || !conflict.remote ? 'Deleted remotely' : new Date(conflict.remote.updatedAt).toLocaleString()}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -126,17 +90,10 @@ export default function QuotaDashboard() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void resolveSyncConflict(conflict.id, 'local')}
-                      className="rounded-lg bg-emerald-500/10 px-2.5 py-1.5 font-semibold text-emerald-500"
+                      onClick={() => void resolveSyncConflict(conflict.id, 'auto_safe')}
+                      className="rounded-lg bg-emerald-500/10 px-3 py-1.5 font-semibold text-emerald-500 hover:bg-emerald-500/20 cursor-pointer min-h-[36px]"
                     >
-                      Keep local
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void resolveSyncConflict(conflict.id, 'remote')}
-                      className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 font-semibold text-blue-500"
-                    >
-                      Keep cloud
+                      Safely preserve both
                     </button>
                   </div>
                 </div>

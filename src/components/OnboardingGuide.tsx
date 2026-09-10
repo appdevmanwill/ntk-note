@@ -10,21 +10,25 @@ export default function OnboardingGuide() {
 
   const steps = [
     {
-      title: 'Welcome to NTK Note!',
-      description: 'Your secure, fast, and feature-rich workspace. Let\'s take a quick tour.',
+      title: 'Welcome to NTK Note',
+      description: 'Start simple: write a note, make a checklist, or set a reminder. You can discover the more advanced tools later.',
     },
     {
-      title: 'Rich Text & Markdown',
-      description: 'Format easily using the toolbar, or type markdown directly. Use the new Insert Template button for quick structures.',
+      title: 'Use a template when you want a head start',
+      description: 'Templates now show you a preview first. Pick one, give the note a useful name, and NTK Note adds friendly prompts you can edit or delete.',
     },
     {
-      title: 'Collaborative Sharing',
-      description: 'Share notes with other registered users, or publish them to the web with a public link.',
+      title: 'Find things without memorizing where you put them',
+      description: 'Use search when you are unsure. Notebooks, tags, starred notes, and reminders are there when you want more organization.',
     },
     {
-      title: 'Offline & Secure',
-      description: 'Your notes sync automatically when online, but work perfectly offline. Use the ZIP Export in Settings to back up your workspace locally.',
-    }
+      title: 'Sync is automatic — and you also have a Sync button',
+      description: 'When you are signed in and online, changes sync automatically. If you go offline, safe changes stay on your device and can sync after you reconnect.',
+    },
+    {
+      title: 'Share only when you choose to',
+      description: 'Your normal notes start private. You can share a note with a registered user and choose whether they can view, comment, or edit it.',
+    },
   ];
 
   const handleNext = () => {
@@ -48,6 +52,7 @@ export default function OnboardingGuide() {
         <button 
           onClick={handleSkip}
           className="absolute top-4 right-4 p-2 rounded-full theme-hover text-theme-tertiary transition-colors"
+          aria-label="Close welcome guide"
         >
           <X className="w-5 h-5" />
         </button>

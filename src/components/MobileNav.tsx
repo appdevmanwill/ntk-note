@@ -1,46 +1,65 @@
+import { useState } from 'react';
 import { useStore } from '@/store';
-import { Home, FileText, Plus, Search, Menu } from 'lucide-react';
+import { FolderOpen, Home, MoreHorizontal, Plus, Search } from 'lucide-react';
+import CreateSheet from './CreateSheet';
+
+const navItems = [
+  { view: 'home', icon: Home, label: 'Home' },
+  { view: 'search', icon: Search, label: 'Search' },
+  { view: 'folders', icon: FolderOpen, label: 'Folders' },
+  { view: 'more', icon: MoreHorizontal, label: 'More' },
+] as const;
 
 export default function MobileNav() {
-  const { setCurrentView, currentView, createNote, setSidebarOpen, editingNote, selectedNotebookId } = useStore();
-  const activeNotebookId = currentView === 'notebooks' ? selectedNotebookId : null;
-  const isNotebookView = Boolean(activeNotebookId);
+  const { setCurrentView, currentView, editingNote, sidebarOpen } = useStore();
+  const [createOpen, setCreateOpen] = useState(false);
 
-  const handleCreateNote = () => {
-    void createNote({
-      notebookId: activeNotebookId || undefined,
-    });
-  };
-
+  // Keep the editor full-screen on phones: no bottom nav covering content.
   if (editingNote) return null;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-30 lg:hidden safe-bottom">
+    <>
       <div
-        className="mobile-nav-shell border-t theme-divider"
-        style={{
-          borderColor: 'var(--divider)',
-        }}
+        className="fixed bottom-0 left-0 right-0 z-30 lg:hidden safe-bottom"
+        style={{ backgroundColor: 'var(--sidebar-bg)' }}
+        inert={sidebarOpen || undefined}
       >
-        <div className="flex items-center justify-around px-2 py-1">
-          <NavBtn icon={Home} label="Home" active={currentView === 'home'} onClick={() => setCurrentView('home')} />
-          <NavBtn icon={FileText} label="Notes" active={currentView === 'all-notes'} onClick={() => setCurrentView('all-notes')} />
-          
-          {/* FAB */}
+        <div className="flex items-center justify-around border-t theme-divider px-2 py-1">
+          {navItems.slice(0, 2).map(item => (
+            <NavBtn
+              key={item.view}
+              icon={item.icon}
+              label={item.label}
+              active={currentView === item.view}
+              onClick={() => setCurrentView(item.view)}
+            />
+          ))}
+
+          {/* Central create control */}
           <button
-            onClick={handleCreateNote}
-            className="w-14 h-14 -mt-6 rounded-2xl accent-gradient text-white shadow-xl flex items-center justify-center active:scale-95 transition-all no-transition"
-            aria-label={isNotebookView ? 'Create note in this notebook' : 'Create note'}
-            title={isNotebookView ? 'Create note in this notebook' : 'Create note'}
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="flex h-14 w-14 -mt-6 items-center justify-center rounded-2xl accent-gradient text-white shadow-xl transition-all active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 no-transition"
+            aria-label="Create new note"
+            aria-haspopup="dialog"
           >
-            <Plus className="w-7 h-7 no-transition" />
+            <Plus className="h-7 w-7 no-transition" aria-hidden="true" />
           </button>
 
-          <NavBtn icon={Search} label="Search" active={currentView === 'search'} onClick={() => setCurrentView('search')} />
-          <NavBtn icon={Menu} label="Menu" active={false} onClick={() => setSidebarOpen(true)} />
+          {navItems.slice(2).map(item => (
+            <NavBtn
+              key={item.view}
+              icon={item.icon}
+              label={item.label}
+              active={currentView === item.view}
+              onClick={() => setCurrentView(item.view)}
+            />
+          ))}
         </div>
       </div>
-    </div>
+
+      <CreateSheet isOpen={createOpen} onClose={() => setCreateOpen(false)} />
+    </>
   );
 }
 
@@ -49,11 +68,13 @@ function NavBtn({ icon: Icon, label, active, onClick }: {
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl transition-colors"
+      aria-current={active ? 'page' : undefined}
+      className="flex min-w-16 flex-col items-center gap-0.5 rounded-xl px-3 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
       style={{ color: active ? 'var(--accent-primary)' : 'var(--text-tertiary)' }}
     >
-      <Icon className="w-5 h-5 no-transition" />
+      <Icon className="h-5 w-5 no-transition" aria-hidden="true" />
       <span className="text-[10px] font-medium">{label}</span>
     </button>
   );

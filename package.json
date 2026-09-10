@@ -1,12 +1,18 @@
 {
   "name": "react-vite-tailwind",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.8.2",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "npm run build && wrangler dev",
+    "test": "tsx --test tests/logic.test.ts",
+    "test:rules": "node scripts/test_rules_runner.mjs",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@types/uuid": "^10.0.0",
@@ -28,14 +34,19 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.54.5",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@tailwindcss/vite": "4.1.17",
     "@types/node": "22.19.17",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "fake-indexeddb": "^6.2.5",
     "tailwindcss": "4.1.17",
+    "tsx": "^4.19.0",
     "typescript": "5.9.3",
     "vite": "7.3.2",
-    "vite-plugin-singlefile": "2.3.0"
+    "vite-plugin-singlefile": "2.3.0",
+    "wrangler": "^4.129.1"
   }
 }

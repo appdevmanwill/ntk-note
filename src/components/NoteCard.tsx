@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useState, useRef, useEffect } from 'react';
+import RecycleBinConfirmModal from './RecycleBinConfirmModal';
 
 const typeIcons = {
   note: FileText,
@@ -21,6 +22,8 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
   } = useStore();
 
   const [showMenu, setShowMenu] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -143,7 +146,7 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
                     </MenuButton>
                     <div className="my-1 border-t theme-divider" />
                     <MenuButton onClick={() => { trashNote(note.id); setShowMenu(false); }} danger>
-                      <Trash2 className="w-4 h-4 no-transition" /> Move to Trash
+                      <Trash2 className="w-4 h-4 no-transition" /> Move to Recycle Bin
                     </MenuButton>
                   </>
                 ) : (
@@ -151,7 +154,17 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
                     <MenuButton onClick={() => { restoreNote(note.id); setShowMenu(false); }}>
                       <Undo2 className="w-4 h-4 no-transition" /> Restore
                     </MenuButton>
-                    <MenuButton onClick={() => { deleteNote(note.id); setShowMenu(false); }} danger>
+                    <MenuButton
+                      onClick={() => {
+                        setShowMenu(false);
+                        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+                          alert('Connect to the internet to permanently delete items. Your Recycle Bin is safe.');
+                          return;
+                        }
+                        setShowDeleteConfirm(true);
+                      }}
+                      danger
+                    >
                       <Trash2 className="w-4 h-4 no-transition" /> Delete Permanently
                     </MenuButton>
                   </>
@@ -200,6 +213,28 @@ export default function NoteCard({ note, compact = false }: { note: Note; compac
           {format(new Date(note.updatedAt), 'MMM d')}
         </div>
       </div>
+
+      <RecycleBinConfirmModal
+        isOpen={showDeleteConfirm}
+        onClose={() => {
+          if (!isDeleting) setShowDeleteConfirm(false);
+        }}
+        onConfirm={async () => {
+          setIsDeleting(true);
+          try {
+            await deleteNote(note.id);
+          } finally {
+            setIsDeleting(false);
+            setShowDeleteConfirm(false);
+          }
+        }}
+        title="Permanently delete this note?"
+        itemName={note.title || 'Untitled'}
+        notesCount={1}
+        isSharedNote={Boolean(note.isShared && note.sharedBy)}
+        isBusy={isDeleting}
+        progressText="Permanently deleting note…"
+      />
     </div>
   );
 }

@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import {
-  Activity, AlertTriangle, BookOpen, CalendarClock, DownloadCloud,
-  FileText, FolderPlus, Pin, Settings, Share2, ShieldCheck,
+  Activity, AlertTriangle, ArchiveRestore, BookOpen, CalendarClock, CheckCircle2,
+  CloudUpload, DownloadCloud, Loader2,
+  FileText, FolderPlus, Pin, Share2, ShieldCheck,
   Trash2, Users, X,
 } from 'lucide-react';
 import { useStore } from '@/store';
 import type { Notebook, Note, TeamSpace } from '@/types';
 import { getEntityRole, normalizeEmail, roleLabels } from '@/utils/collaboration';
 import ShareModal from './ShareModal';
+import BackupCenterModal from './BackupCenterModal';
 
 type ShareTarget = {
   type: 'note' | 'notebook';
@@ -31,9 +33,13 @@ export default function ShareCenterView() {
     updateNotebook,
     selectNote,
     setCurrentView,
+    createCloudBackup,
   } = useStore();
   const [newSpaceName, setNewSpaceName] = useState('');
   const [shareTarget, setShareTarget] = useState<ShareTarget>(null);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupStatus, setBackupStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const [showBackupCenter, setShowBackupCenter] = useState(false);
   const email = normalizeEmail(profile.email);
 
   const sharedNotes = notes.filter(note => note.isShared && !note.trashed);
@@ -56,6 +62,20 @@ export default function ShareCenterView() {
     const editorCount = [...sharedNotes, ...sharedNotebooks].reduce((total, item) => total + (item.editors?.length || 0), 0);
     return { legacy, published, editorCount };
   }, [sharedNotes, sharedNotebooks]);
+
+  const handleSnapshotBackup = async () => {
+    setBackupRunning(true);
+    setBackupStatus(null);
+    try {
+      const meta = await createCloudBackup('manual');
+      setBackupStatus({ tone: 'ok', text: `Snapshot saved — ${meta.noteCount} note${meta.noteCount === 1 ? '' : 's'} backed up.` });
+    } catch (err) {
+      console.error('Cloud snapshot backup failed', err);
+      setBackupStatus({ tone: 'error', text: err instanceof Error ? err.message : 'Cloud snapshot backup failed.' });
+    } finally {
+      setBackupRunning(false);
+    }
+  };
 
   const createSpace = () => {
     const name = newSpaceName.trim();
@@ -276,21 +296,46 @@ export default function ShareCenterView() {
             <Panel title="Backup reminder" icon={DownloadCloud}>
               <div className={`rounded-2xl border p-4 ${backupDue ? 'border-amber-400/30 bg-amber-500/10' : 'theme-border bg-[var(--input-bg)]'}`}>
                 <p className="text-sm font-bold text-theme-primary">
-                  {backupDue ? 'Manual cloud backup is due' : 'Backup is current'}
+                  {backupDue ? 'Cloud snapshot backup is due' : 'Backup is current'}
                 </p>
                 <p className="mt-2 text-xs leading-5 text-theme-tertiary">
                   {backupDays === null
                     ? 'No backup date is recorded yet.'
                     : `Last backup was ${backupDays} day${backupDays === 1 ? '' : 's'} ago.`}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setCurrentView('settings')}
-                  className="mt-3 inline-flex items-center gap-2 rounded-lg accent-button px-3 py-2 text-xs font-bold"
-                >
-                  <Settings className="h-3.5 w-3.5 no-transition" />
-                  Open backup tools
-                </button>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSnapshotBackup}
+                    disabled={backupRunning || !uid}
+                    title={uid ? undefined : 'Sign in to enable cloud backup'}
+                    aria-label={backupRunning ? 'Creating cloud backup' : 'Backup now'}
+                    className="inline-flex items-center gap-2 rounded-lg accent-button px-3 py-2 text-xs font-bold disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {backupRunning ? (
+                      <Loader2 className="h-3.5 w-3.5 no-transition animate-spin" />
+                    ) : (
+                      <CloudUpload className="h-3.5 w-3.5 no-transition" />
+                    )}
+                    {backupRunning ? 'Backing up...' : 'Backup now'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowBackupCenter(true)}
+                    disabled={!uid}
+                    aria-label="Open restore backup dialog"
+                    className="inline-flex items-center gap-2 rounded-lg border theme-border px-3 py-2 text-xs font-bold theme-hover disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <ArchiveRestore className="h-3.5 w-3.5 no-transition" />
+                    Restore
+                  </button>
+                </div>
+                {backupStatus && (
+                  <p className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${backupStatus.tone === 'ok' ? 'text-emerald-500' : 'text-red-500'}`} role="status">
+                    <CheckCircle2 className="h-3.5 w-3.5 no-transition" />
+                    {backupStatus.text}
+                  </p>
+                )}
               </div>
             </Panel>
 
@@ -328,6 +373,10 @@ export default function ShareCenterView() {
           </aside>
         </section>
       </div>
+
+      {showBackupCenter && (
+        <BackupCenterModal isOpen={showBackupCenter} onClose={() => setShowBackupCenter(false)} />
+      )}
 
       {shareTarget && (
         <ShareModal

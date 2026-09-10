@@ -35,7 +35,7 @@ export default function NoteLinkPicker({ onSelect, onClose, excludeId }: Props) 
             <Link2 className="w-4 h-4 text-indigo-500" />
             <h3 className="font-semibold text-theme-primary">Link to Note</h3>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg theme-hover text-theme-tertiary">
+          <button onClick={onClose} aria-label="Close linked note picker" className="p-1 rounded-lg theme-hover text-theme-tertiary">
             <X className="w-4 h-4" />
           </button>
         </div>

@@ -9,6 +9,12 @@ service cloud.firestore {
       return request.auth.token.email;
     }
 
+    function hasVerifiedEmail() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
     function isOwner() {
       return signedIn() && resource.data.ownerId == request.auth.uid;
     }
@@ -55,15 +61,238 @@ service cloud.firestore {
       ]);
     }
 
-    // Private user documents (notes, notebooks, settings)
+    // ── Helper: check if user can read comments on a shared note ──
+    function canReadNoteComments(noteId) {
+      let noteData = get(/databases/$(database)/documents/shared_notes/$(noteId)).data;
+      return noteData != null && (
+        noteData.isPublished == true
+        || noteData.ownerId == request.auth.uid
+        || signedInEmail() in noteData.get('sharedWith', [])
+      );
+    }
+
+    // ── Helper: check if user has comment-or-higher access on a shared note ──
+    function canCommentOnNote(noteId) {
+      let noteData = get(/databases/$(database)/documents/shared_notes/$(noteId)).data;
+      return noteData != null && (
+        noteData.ownerId == request.auth.uid
+        || signedInEmail() in noteData.get('editors', [])
+        || signedInEmail() in noteData.get('commenters', [])
+        // Legacy notes without role arrays — any sharedWith participant can comment
+        || (
+          !noteData.keys().hasAny(['editors', 'commenters', 'viewers'])
+          && signedInEmail() in noteData.get('sharedWith', [])
+        )
+      );
+    }
+
+    // ── Helper: check if user is a participant on a shared note ──
+    function isNoteParticipant(noteId) {
+      let noteData = get(/databases/$(database)/documents/shared_notes/$(noteId)).data;
+      return noteData != null && (
+        noteData.ownerId == request.auth.uid
+        || signedInEmail() in noteData.get('sharedWith', [])
+      );
+    }
+
+    // Private user documents (notes, notebooks, settings, reminders, etc.)
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Public registered user directory for lookups
+    // Minimal registered-user collaboration directory with safe discovery fields.
     match /users_directory/{email} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && (request.auth.token.email == email || request.auth.token.email.matches(email));
+      allow get: if hasVerifiedEmail() && (
+        resource.data.get('discoverable', true) == true
+        || (resource.data.keys().hasAny(['uid']) && resource.data.uid == request.auth.uid)
+        || email.lower() == signedInEmail().lower()
+      );
+      allow list: if hasVerifiedEmail()
+        && request.query.limit != null
+        && request.query.limit <= 10
+        && resource.data.get('discoverable', true) == true;
+      allow create, update: if hasVerifiedEmail()
+        && email.lower() == signedInEmail().lower()
+        && request.resource.data.keys().hasOnly([
+          'name', 'email', 'initials', 'uid', 'photoURL', 'discoverable', 'searchPrefixes', 'updatedAt'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.email is string
+        && request.resource.data.email.lower() == signedInEmail().lower()
+        && request.resource.data.initials is string
+        && request.resource.data.initials.size() <= 4
+        && (!request.resource.data.keys().hasAny(['uid']) || (request.resource.data.uid is string && request.resource.data.uid == request.auth.uid))
+        && (!request.resource.data.keys().hasAny(['photoURL']) || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 500))
+        && (!request.resource.data.keys().hasAny(['discoverable']) || request.resource.data.discoverable is bool)
+        && request.resource.data.searchPrefixes is list
+        && request.resource.data.searchPrefixes.size() <= 180;
+      allow delete: if false;
+    }
+
+    // Direct 1-to-1 Private Chats
+    match /direct_chats/{chatId} {
+      function otherParticipantUid() {
+        return resource.data.participantUids[0] == request.auth.uid
+          ? resource.data.participantUids[1]
+          : resource.data.participantUids[0];
+      }
+
+      function isReadStateIsolated() {
+        return request.resource.data.lastReadAtByUid is map
+          && request.resource.data.lastReadAtByUid.keys().hasOnly(resource.data.participantUids)
+          && request.resource.data.lastReadAtByUid[request.auth.uid] == request.time
+          && (
+            !resource.data.keys().hasAny(['lastReadAtByUid'])
+              ? request.resource.data.lastReadAtByUid.keys().hasOnly([request.auth.uid])
+              : (
+                request.resource.data.lastReadAtByUid.diff(resource.data.lastReadAtByUid).affectedKeys().hasOnly([request.auth.uid])
+                && request.resource.data.lastReadAtByUid.get(otherParticipantUid(), null) == resource.data.lastReadAtByUid.get(otherParticipantUid(), null)
+              )
+          );
+      }
+
+      allow get: if signedIn() && request.auth.uid in resource.data.participantUids;
+
+      allow list: if signedIn()
+        && request.auth.uid in resource.data.participantUids
+        && request.query.limit != null
+        && request.query.limit <= 25;
+
+      allow create: if signedIn()
+        && request.resource.data.participantUids is list
+        && request.resource.data.participantUids.size() == 2
+        && request.resource.data.participantUids[0] != request.resource.data.participantUids[1]
+        && request.auth.uid in request.resource.data.participantUids
+        && request.resource.data.requestedByUid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastMessageAt == request.time
+        && request.resource.data.keys().hasAll(['participantUids', 'createdAt', 'lastMessageAt', 'status', 'requestedByUid'])
+        && request.resource.data.keys().hasOnly([
+          'participantUids', 'participantEmails', 'participantData', 'createdAt',
+          'lastMessageAt', 'lastMessagePreview', 'lastMessageSenderUid', 'status',
+          'requestedByUid', 'lastReadAtByUid', 'blockedByUids', 'requestPreview'
+        ])
+        && (!request.resource.data.keys().hasAny(['requestPreview']) || (
+          request.resource.data.requestPreview is string
+          && request.resource.data.requestPreview.size() <= 240
+        ))
+        && (!request.resource.data.keys().hasAny(['participantEmails']) || (
+          request.resource.data.participantEmails is list
+          && (signedInEmail() == null || signedInEmail() in request.resource.data.participantEmails)
+        ))
+        && (!request.resource.data.keys().hasAny(['participantData']) || (
+          request.resource.data.participantData is map
+          && request.resource.data.participantData.keys().hasOnly(request.resource.data.participantUids)
+          && (!request.resource.data.participantData[request.auth.uid].keys().hasAny(['email'])
+              || signedInEmail() == null
+              || request.resource.data.participantData[request.auth.uid].email == signedInEmail())
+        ))
+        && (!request.resource.data.keys().hasAny(['lastReadAtByUid']) || (
+          request.resource.data.lastReadAtByUid is map
+          && request.resource.data.lastReadAtByUid.keys().hasOnly([request.auth.uid])
+          && request.resource.data.lastReadAtByUid[request.auth.uid] == request.time
+        ));
+
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.participantUids
+        // Protected immutable fields:
+        && request.resource.data.participantUids == resource.data.participantUids
+        && request.resource.data.requestedByUid == resource.data.requestedByUid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (!resource.data.keys().hasAny(['participantEmails']) || request.resource.data.participantEmails == resource.data.participantEmails)
+        && (!resource.data.keys().hasAny(['participantData']) || request.resource.data.participantData == resource.data.participantData)
+        && (!resource.data.keys().hasAny(['requestPreview']) || request.resource.data.get('requestPreview', null) == resource.data.requestPreview)
+        // Strict category validation:
+        && (
+          // Category A: message-summary update (on sending message)
+          (
+            resource.data.status == 'active'
+            && !(request.auth.uid in resource.data.get('blockedByUids', []))
+            && request.resource.data.status == 'active'
+            && request.resource.data.lastMessageSenderUid == request.auth.uid
+            && request.resource.data.lastMessageAt == request.time
+            && request.resource.data.lastMessagePreview is string
+            && request.resource.data.lastMessagePreview.size() <= 100
+            && (!request.resource.data.keys().hasAny(['lastMessageText'])
+                || (request.resource.data.lastMessageText is string && request.resource.data.lastMessageText.size() <= 4000))
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastReadAtByUid']) || isReadStateIsolated())
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'lastMessageText', 'lastMessagePreview', 'lastMessageAt', 'lastMessageSenderUid', 'lastReadAtByUid', 'updatedAt'
+            ])
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']) || request.resource.data.updatedAt == request.time)
+          )
+          ||
+          // Category B: mark-read update
+          (
+            request.resource.data.status == resource.data.status
+            && isReadStateIsolated()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastReadAtByUid', 'updatedAt'])
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']) || request.resource.data.updatedAt == request.time)
+          )
+          ||
+          // Category C: accept / decline message request (recipient only, never requester)
+          (
+            resource.data.status == 'pending'
+            && resource.data.requestedByUid != request.auth.uid
+            && (
+              (
+                request.resource.data.status == 'active'
+                && request.resource.data.acceptedAt == request.time
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt', 'updatedAt'])
+              )
+              ||
+              (
+                request.resource.data.status == 'declined'
+                && request.resource.data.declinedAt == request.time
+                && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'declinedAt', 'updatedAt'])
+              )
+            )
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']) || request.resource.data.updatedAt == request.time)
+          )
+          ||
+          // Category D: block action (either participant can initiate block)
+          (
+            request.resource.data.status == 'blocked'
+            && request.auth.uid in request.resource.data.blockedByUids
+            // Cannot remove existing blocks placed by other users:
+            && (!resource.data.keys().hasAny(['blockedByUids']) || request.resource.data.blockedByUids.hasAll(resource.data.blockedByUids))
+            && request.resource.data.blockedAt == request.time
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'blockedByUids', 'blockedAt', 'updatedAt'])
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']) || request.resource.data.updatedAt == request.time)
+          )
+        );
+
+      allow delete: if false;
+
+      // Direct Messages inside chat
+      match /messages/{messageId} {
+        allow get: if signedIn()
+          && exists(/databases/$(database)/documents/direct_chats/$(chatId))
+          && request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(chatId)).data.participantUids;
+
+        allow list: if signedIn()
+          && exists(/databases/$(database)/documents/direct_chats/$(chatId))
+          && request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(chatId)).data.participantUids
+          && request.query.limit != null
+          && request.query.limit <= 50;
+
+        allow create: if signedIn()
+          && exists(/databases/$(database)/documents/direct_chats/$(chatId))
+          && request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(chatId)).data.participantUids
+          && request.resource.data.keys().hasOnly(['senderUid', 'text', 'type', 'createdAt'])
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.type == 'text'
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 4000
+          && request.resource.data.createdAt == request.time
+          && get(/databases/$(database)/documents/direct_chats/$(chatId)).data.get('status', '') == 'active'
+          && !(request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(chatId)).data.get('blockedByUids', []));
+
+        allow update, delete: if false;
+      }
     }
 
     // Collaborative shared and publicly published notes
@@ -82,17 +311,49 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
-    // Lightweight shared comments.
+    // Lightweight shared comments — authorized against current shared_notes authority.
+    // Read: authenticated collaborators on the note or if the note is published.
+    // Create: authenticated users with comment-or-higher role on the note.
+    // Update: author can update body; immutable fields cannot be modified.
+    // Delete: author or note owner can delete comment.
     match /note_comments/{commentId} {
-      allow read: if hasResourceEmail('participants');
-      allow create: if signedIn() && request.resource.data.authorEmail == signedInEmail() && hasIncomingEmail('participants');
-      allow update, delete: if signedIn() && resource.data.authorEmail == signedInEmail();
+      allow read: if signedIn()
+        && exists(/databases/$(database)/documents/shared_notes/$(resource.data.noteId))
+        && canReadNoteComments(resource.data.noteId);
+      allow create: if signedIn()
+        && request.resource.data.authorEmail == signedInEmail()
+        && request.resource.data.keys().hasAll(['noteId', 'authorEmail', 'body', 'createdAt'])
+        && request.resource.data.noteId is string
+        && exists(/databases/$(database)/documents/shared_notes/$(request.resource.data.noteId))
+        && canCommentOnNote(request.resource.data.noteId);
+      allow update: if signedIn()
+        && resource.data.authorEmail == signedInEmail()
+        && request.resource.data.authorEmail == resource.data.authorEmail
+        && request.resource.data.noteId == resource.data.noteId
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && (
+        resource.data.authorEmail == signedInEmail()
+        || (
+          exists(/databases/$(database)/documents/shared_notes/$(resource.data.noteId))
+          && get(/databases/$(database)/documents/shared_notes/$(resource.data.noteId)).data.ownerId == request.auth.uid
+        )
+      );
     }
 
-    // Compact collaboration activity feed.
+    // Compact collaboration activity feed — authorized against current shared_notes authority.
     match /activity_feed/{activityId} {
-      allow read: if hasResourceEmail('participants');
-      allow create: if signedIn() && request.resource.data.actorEmail == signedInEmail() && hasIncomingEmail('participants');
+      allow read: if signedIn() && hasResourceEmail('participants');
+      allow create: if signedIn()
+        && request.resource.data.actorEmail == signedInEmail()
+        && hasIncomingEmail('participants')
+        && request.resource.data.keys().hasAll(['actorEmail', 'participants', 'action', 'createdAt'])
+        && (
+          request.resource.data.get('noteId', null) == null
+          || (
+            exists(/databases/$(database)/documents/shared_notes/$(request.resource.data.noteId))
+            && isNoteParticipant(request.resource.data.noteId)
+          )
+        );
       allow update, delete: if false;
     }
 

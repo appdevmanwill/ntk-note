@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useStore } from '@/store';
 import NoteCard from './NoteCard';
 import ShareModal from './ShareModal';
+import RecycleBinConfirmModal from './RecycleBinConfirmModal';
 import {
   Plus, FileText, Search, Grid3X3, List, SlidersHorizontal,
   X, CheckSquare, Code, Trash2, ArrowUpDown, Archive,
   FolderInput, Tag, MoreHorizontal, CheckCircle2, PanelLeftClose, Kanban, Share2,
-  GripVertical, Pencil, Check
+  GripVertical, Pencil, Check, Undo2
 } from 'lucide-react';
 import type { Note, NoteColor, NoteSortBy, NoteType, Priority, SortDirection } from '@/types';
 import { noteColors } from '@/utils/colors';
@@ -34,7 +35,7 @@ const noteSortOptions: NoteSortOption[] = [
 export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
     currentView, getFilteredNotes, searchFilters, setSearchFilters,
-    clearSearch, createNote, emptyTrash, settings, updateSettings,
+    clearSearch, createNote, emptyTrash, restoreAll, settings, updateSettings,
     selectedNotebookId, selectedTagId, notebooks, tags,
     archiveNote, moveNote, addNoteTag,
     updateNote, addSection, updateSection, deleteSection, notes,
@@ -53,9 +54,43 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
   const [editingSectionName, setEditingSectionName] = useState('');
+  const [visibleCount, setVisibleCount] = useState(50);
+
+  useEffect(() => {
+    setVisibleCount(50);
+  }, [currentView, searchFilters.query, selectedNotebookId, selectedTagId]);
+
+  // Recycle Bin safe state
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    mode: 'empty-trash' | 'notebook' | 'bulk-notes';
+    notebookId?: string;
+    notebookName?: string;
+    activeNotesCountInNotebook?: number;
+  }>({
+    isOpen: false,
+    mode: 'empty-trash',
+  });
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteProgress, setDeleteProgress] = useState<string | undefined>(undefined);
+  const [recycleBinMessage, setRecycleBinMessage] = useState<string | null>(null);
+  const [showRecycleBinMobileMenu, setShowRecycleBinMobileMenu] = useState(false);
+  const recycleBinMobileMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (recycleBinMobileMenuRef.current && !recycleBinMobileMenuRef.current.contains(e.target as Node)) {
+        setShowRecycleBinMobileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const filteredNotes = getFilteredNotes();
   const trashedNotebooks = notebooks.filter(nb => nb.trashed);
+  const trashedNotes = notes.filter(n => n.trashed);
+  const totalTrashItemsCount = trashedNotes.length + trashedNotebooks.length;
   
   const sharedByOptions = Array.from(new Set(notes.filter(n => n.sharedBy).map(n => n.sharedBy as string)));
   const gridGap = settings.density === 'compact' ? 'gap-2' : settings.density === 'spacious' ? 'gap-4' : 'gap-3';
@@ -66,7 +101,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
     'starred': 'Starred',
     'reminders': 'Reminders',
     'archived': 'Archived',
-    'trash': 'Trash',
+    'trash': 'Recycle Bin',
     'shared': 'Shared Notes',
     'search': 'Search',
     'notebooks': notebooks.find(nb => nb.id === selectedNotebookId)?.name || 'Notebook',
@@ -124,10 +159,78 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
   };
 
   const handleBulkDelete = () => {
-    if (confirm('Are you sure you want to permanently delete these notes? This cannot be undone.')) {
-      bulkDeleteNotes(Array.from(selectedIds));
-      setBulkMode(false);
-      setSelectedIds(new Set());
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      alert('Connect to the internet to permanently delete items. Your Recycle Bin is safe.');
+      return;
+    }
+    setShowBulkMenu(false);
+    setConfirmModal({
+      isOpen: true,
+      mode: 'bulk-notes',
+    });
+  };
+
+  const handleRestoreAll = async () => {
+    try {
+      await restoreAll();
+      setRecycleBinMessage('All items restored from Recycle Bin.');
+    } catch (err: any) {
+      setRecycleBinMessage(err?.message || 'Failed to restore all items.');
+    }
+  };
+
+  const handleEmptyRecycleBinClick = () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      alert('Connect to the internet to permanently delete items. Your Recycle Bin is safe.');
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      mode: 'empty-trash',
+    });
+  };
+
+  const handleExecuteModalDeletion = async () => {
+    setIsDeleting(true);
+    try {
+      if (confirmModal.mode === 'empty-trash') {
+        setDeleteProgress('Emptying Recycle Bin…');
+        const res = await emptyTrash();
+        const totalDeleted = res.deletedNoteIds.length + res.deletedNotebookIds.length;
+        const totalFailed = res.failedNoteIds.length + res.failedNotebookIds.length;
+        if (totalDeleted > 0 && totalFailed === 0) {
+          setRecycleBinMessage('Recycle Bin emptied.');
+        } else if (totalFailed > 0) {
+          setRecycleBinMessage(`${totalDeleted} items were permanently deleted. ${totalFailed} items could not be deleted and remain in your Recycle Bin.`);
+        } else if (res.staleSkippedNoteIds.length > 0) {
+          setRecycleBinMessage('Some items were restored on another device and were not deleted.');
+        }
+      } else if (confirmModal.mode === 'notebook' && confirmModal.notebookId) {
+        setDeleteProgress('Permanently deleting notebook…');
+        const res = await permanentlyDeleteNotebook(confirmModal.notebookId);
+        if (res.deletedNotebookIds.length > 0) {
+          setRecycleBinMessage('Notebook permanently deleted.');
+        } else {
+          setRecycleBinMessage('Could not permanently delete notebook. It remains in your Recycle Bin.');
+        }
+      } else if (confirmModal.mode === 'bulk-notes') {
+        const ids = Array.from(selectedIds);
+        setDeleteProgress(`Permanently deleting ${ids.length} notes…`);
+        const res = await bulkDeleteNotes(ids);
+        setBulkMode(false);
+        setSelectedIds(new Set());
+        if (res.failedNoteIds.length === 0) {
+          setRecycleBinMessage(`${res.deletedNoteIds.length} notes permanently deleted.`);
+        } else {
+          setRecycleBinMessage(`${res.deletedNoteIds.length} notes permanently deleted. ${res.failedNoteIds.length} notes could not be deleted and remain in your Recycle Bin.`);
+        }
+      }
+    } catch (err: any) {
+      setRecycleBinMessage(err?.message || 'Deletion failed.');
+    } finally {
+      setIsDeleting(false);
+      setDeleteProgress(undefined);
+      setConfirmModal({ isOpen: false, mode: 'empty-trash' });
     }
   };
 
@@ -238,7 +341,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             return (
               <div 
                 key={col.id} 
-                className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
+                className="w-72 shrink-0 flex flex-col h-[calc(100dvh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
                 onDragOver={e => e.preventDefault()}
                 onDrop={e => void dropNoteAt(e, null, { sectionId: col.sectionId })}
               >
@@ -386,7 +489,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             return (
               <div 
                 key={col.id} 
-                className="w-72 shrink-0 flex flex-col h-[calc(100vh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
+                className="w-72 shrink-0 flex flex-col h-[calc(100dvh-180px)] bg-[var(--app-bg-subtle)]/40 border theme-divider rounded-xl p-3"
                 onDragOver={e => e.preventDefault()}
                 onDrop={e => void dropNoteAt(e, null, { priority: col.priority })}
               >
@@ -441,7 +544,21 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
       <div className="px-4 md:px-6 pt-4 pb-3 shrink-0">
         <div className="mb-4 flex flex-col gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
+            {currentView === 'trash' ? (
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-bold text-theme-primary">Recycle Bin</h2>
+                  <span className="text-xs px-2.5 py-0.5 rounded-full accent-soft font-bold">
+                    {totalTrashItemsCount} {totalTrashItemsCount === 1 ? 'item' : 'items'}
+                  </span>
+                </div>
+                <p className="text-xs text-theme-tertiary mt-0.5">
+                  {trashedNotes.length} {trashedNotes.length === 1 ? 'note' : 'notes'} • {trashedNotebooks.length} {trashedNotebooks.length === 1 ? 'notebook' : 'notebooks'}
+                </p>
+              </div>
+            ) : (
+              <h2 className="text-xl font-bold text-theme-primary">{title}</h2>
+            )}
             {activeNotebook && (
               <div className="flex items-center gap-1">
                 <button
@@ -699,14 +816,66 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                   <SlidersHorizontal className="w-4 h-4 no-transition" />
                 </button>
 
-                {/* Empty trash */}
-                {currentView === 'trash' && filteredNotes.length > 0 && (
-                  <button
-                    onClick={emptyTrash}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4 no-transition" /> Empty Trash
-                  </button>
+                {/* Recycle Bin actions: Restore all & Empty Recycle Bin */}
+                {currentView === 'trash' && totalTrashItemsCount > 0 && (
+                  <>
+                    {/* Desktop actions */}
+                    <div className="hidden sm:flex items-center gap-2">
+                      <button
+                        onClick={handleRestoreAll}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg accent-soft accent-text text-sm font-medium hover:bg-[var(--accent-primary)] hover:text-white transition-colors cursor-pointer"
+                        title="Restore all items from Recycle Bin"
+                      >
+                        <Undo2 className="w-4 h-4 no-transition" />
+                        <span>Restore all</span>
+                      </button>
+
+                      <button
+                        onClick={handleEmptyRecycleBinClick}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors cursor-pointer shadow-sm"
+                        title="Permanently empty all items from Recycle Bin"
+                      >
+                        <Trash2 className="w-4 h-4 no-transition" />
+                        <span>Empty Recycle Bin</span>
+                      </button>
+                    </div>
+
+                    {/* Mobile actions via More dropdown (Section 43) */}
+                    <div className="relative sm:hidden" ref={recycleBinMobileMenuRef}>
+                      <button
+                        onClick={() => setShowRecycleBinMobileMenu(prev => !prev)}
+                        className="p-2 rounded-lg theme-hover text-theme-secondary border theme-border cursor-pointer"
+                        aria-label="Recycle Bin actions"
+                        title="More Recycle Bin actions"
+                      >
+                        <MoreHorizontal className="w-4 h-4 no-transition" />
+                      </button>
+
+                      {showRecycleBinMobileMenu && (
+                        <div className="absolute right-0 top-full mt-1 w-48 rounded-xl border py-1.5 z-30 animate-scale-in theme-menu shadow-xl">
+                          <button
+                            onClick={() => {
+                              setShowRecycleBinMobileMenu(false);
+                              void handleRestoreAll();
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm theme-hover text-theme-secondary text-left cursor-pointer"
+                          >
+                            <Undo2 className="w-4 h-4 no-transition" /> Restore all
+                          </button>
+                          <div className="my-1 border-t theme-divider" />
+                          <button
+                            onClick={() => {
+                              setShowRecycleBinMobileMenu(false);
+                              handleEmptyRecycleBinClick();
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-500/10 text-left cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4 no-transition" /> Empty Recycle Bin
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </>
                 )}
               </>
             )}
@@ -871,6 +1040,26 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         )}
       </div>
 
+      {/* Status banner for Recycle Bin */}
+      {recycleBinMessage && (
+        <div className="px-4 md:px-6 mb-3">
+          <div
+            role="status"
+            aria-live="polite"
+            className="px-4 py-2.5 rounded-xl border theme-card flex items-center justify-between text-xs font-medium text-theme-primary animate-fade-in"
+          >
+            <span>{recycleBinMessage}</span>
+            <button
+              onClick={() => setRecycleBinMessage(null)}
+              className="p-1 rounded theme-hover text-theme-tertiary cursor-pointer"
+              aria-label="Dismiss message"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Notes grid/list/kanban */}
       {settings.noteViewMode === 'kanban' ? (
         <div className="flex-1 overflow-x-auto flex gap-4 px-4 md:px-6 pb-24 lg:pb-6 items-start h-full">
@@ -880,25 +1069,44 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 pb-24 lg:pb-6">
           {currentView === 'trash' && trashedNotebooks.length > 0 && (
             <div className="mb-8">
-              <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mb-4">Trashed Notebooks</h3>
+              <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mb-4">
+                Trashed Notebooks ({trashedNotebooks.length})
+              </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {trashedNotebooks.map(nb => (
                   <div key={nb.id} className="p-4 rounded-xl border theme-divider bg-[var(--card-bg)] flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xl">{nb.icon}</span>
-                      <span className="font-medium text-theme-primary">{nb.name}</span>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-xl shrink-0">{nb.icon}</span>
+                      <span className="font-medium text-theme-primary truncate">{nb.name}</span>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 shrink-0">
                       <button
-                        onClick={() => restoreNotebook(nb.id)}
-                        className="px-3 py-1.5 rounded-lg text-sm font-medium accent-soft accent-text hover:bg-[var(--accent-primary)] hover:text-white transition-colors"
+                        onClick={() => {
+                          restoreNotebook(nb.id);
+                          setRecycleBinMessage(`Restored notebook "${nb.name}".`);
+                        }}
+                        className="px-3 py-1.5 rounded-lg text-sm font-medium accent-soft accent-text hover:bg-[var(--accent-primary)] hover:text-white transition-colors cursor-pointer"
                       >
                         Restore
                       </button>
                       <button
-                        onClick={() => permanentlyDeleteNotebook(nb.id)}
-                        className="p-1.5 rounded-lg theme-hover text-theme-tertiary hover:text-red-500 transition-colors"
+                        onClick={() => {
+                          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+                            alert('Connect to the internet to permanently delete items. Your Recycle Bin is safe.');
+                            return;
+                          }
+                          const activeCount = notes.filter(n => n.notebookId === nb.id && !n.trashed).length;
+                          setConfirmModal({
+                            isOpen: true,
+                            mode: 'notebook',
+                            notebookId: nb.id,
+                            notebookName: nb.name,
+                            activeNotesCountInNotebook: activeCount,
+                          });
+                        }}
+                        className="p-1.5 rounded-lg theme-hover text-theme-tertiary hover:text-red-500 transition-colors cursor-pointer"
                         title="Delete Permanently"
+                        aria-label={`Permanently delete notebook ${nb.name}`}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -908,7 +1116,9 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
               </div>
               
               {filteredNotes.length > 0 && (
-                <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mt-8 mb-4">Trashed Notes</h3>
+                <h3 className="text-sm font-bold uppercase tracking-wider text-theme-secondary mt-8 mb-4">
+                  Trashed Notes ({filteredNotes.length})
+                </h3>
               )}
             </div>
           )}
@@ -917,10 +1127,10 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
             <div className="text-center py-16">
               <FileText className="w-16 h-16 mx-auto mb-4 no-transition" style={{ color: 'var(--text-muted)' }} />
               <h3 className="text-lg font-medium text-theme-secondary">
-                {searchFilters.query ? 'No matching notes' : currentView === 'trash' ? 'Trash is empty' : 'No notes yet'}
+                {searchFilters.query ? 'No matching notes' : currentView === 'trash' ? 'Your Recycle Bin is empty.' : 'No notes yet'}
               </h3>
               <p className="text-sm text-theme-tertiary mt-1">
-                {searchFilters.query ? 'Try a different search term' : 'Create a note to get started'}
+                {searchFilters.query ? 'Try a different search term' : currentView === 'trash' ? 'Items you delete will appear here before they are permanently removed.' : 'Create a note to get started'}
               </p>
             </div>
           ) : (
@@ -936,7 +1146,7 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
                 if (!bulkMode && currentView !== 'trash') void dropNoteAt(e, null);
               }}
             >
-              {filteredNotes.map(note => (
+              {filteredNotes.slice(0, visibleCount).map(note => (
                 <div 
                   key={note.id} 
                   draggable={!bulkMode && currentView !== 'trash'}
@@ -982,6 +1192,18 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
               ))}
             </div>
           )}
+
+          {filteredNotes.length > visibleCount && (
+            <div className="flex justify-center my-6">
+              <button
+                type="button"
+                onClick={() => setVisibleCount(prev => prev + 50)}
+                className="px-5 py-2.5 rounded-xl border theme-border theme-card text-xs font-semibold text-theme-primary accent-hover transition-colors shadow-sm cursor-pointer"
+              >
+                Show more notes ({visibleCount} of {filteredNotes.length})
+              </button>
+            </div>
+          )}
         </div>
       )}
       {selectedNotebookId && (
@@ -992,6 +1214,29 @@ export default function NoteList({ onCollapsePanel }: { onCollapsePanel?: () => 
           entityId={selectedNotebookId}
         />
       )}
+
+      {/* Confirmation Dialog for Empty Recycle Bin, Notebooks, and Bulk Deletes */}
+      <RecycleBinConfirmModal
+        isOpen={confirmModal.isOpen}
+        onClose={() => {
+          if (!isDeleting) setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        }}
+        onConfirm={handleExecuteModalDeletion}
+        title={
+          confirmModal.mode === 'empty-trash'
+            ? 'Empty Recycle Bin?'
+            : confirmModal.mode === 'notebook'
+            ? 'Permanently delete this notebook?'
+            : `Permanently delete ${selectedIds.size} notes?`
+        }
+        notesCount={confirmModal.mode === 'empty-trash' ? trashedNotes.length : confirmModal.mode === 'bulk-notes' ? selectedIds.size : 0}
+        notebooksCount={confirmModal.mode === 'empty-trash' ? trashedNotebooks.length : confirmModal.mode === 'notebook' ? 1 : 0}
+        itemName={confirmModal.mode === 'notebook' ? confirmModal.notebookName : undefined}
+        isNotebook={confirmModal.mode === 'notebook'}
+        activeNotesCountInNotebook={confirmModal.activeNotesCountInNotebook}
+        isBusy={isDeleting}
+        progressText={deleteProgress}
+      />
     </div>
   );
 }

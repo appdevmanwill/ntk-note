@@ -167,7 +167,7 @@ export default function VersionHistory({ noteId, onClose, onRestore, presentatio
               <History className="w-4 h-4 text-indigo-500" />
               <h3 className="font-semibold text-theme-primary">Version History</h3>
             </div>
-            <button onClick={onClose} className="p-1 rounded-lg theme-hover text-theme-tertiary lg:hidden">
+            <button onClick={onClose} aria-label="Close version history" className="p-1 rounded-lg theme-hover text-theme-tertiary lg:hidden">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -243,7 +243,7 @@ export default function VersionHistory({ noteId, onClose, onRestore, presentatio
                 <RotateCcw className="w-3.5 h-3.5" /> Restore
               </button>
             )}
-            <button onClick={onClose} className="p-1 rounded-lg theme-hover text-theme-tertiary hidden lg:block">
+            <button onClick={onClose} aria-label="Close version history" className="p-1 rounded-lg theme-hover text-theme-tertiary hidden lg:block">
               <X className="w-4 h-4" />
             </button>
           </div>

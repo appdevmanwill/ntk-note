@@ -15,6 +15,32 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Crimson+Text:wght@400;600;700&family=DM+Sans:wght@400;500;600;700;800&family=Fira+Code:wght@400;500;600&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Lato:wght@400;700;900&family=Libre+Baskerville:wght@400;700&family=Lora:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=Merriweather:wght@400;700;900&family=Noto+Serif:wght@400;600;700&family=Nunito+Sans:wght@400;600;700;800&family=Open+Sans:wght@400;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Playfair+Display:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Roboto+Slab:wght@400;600;700&family=Sora:wght@400;500;600;700;800&family=Source+Code+Pro:wght@400;500;600&family=Source+Sans+3:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&family=Urbanist:wght@400;500;600;700;800&family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      // Pre-paint theme bootstrap: resolves the persisted Light/Dark/System
+      // preference before first paint so dark users never see a light flash.
+      // The React theme effect takes over cleanly after mount.
+      (function () {
+        try {
+          var theme = 'system';
+          var raw = localStorage.getItem('ntk-settings');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.theme === 'light' || parsed.theme === 'dark' || parsed.theme === 'system')) {
+              theme = parsed.theme;
+            }
+          }
+          var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.style.backgroundColor = '#071528';
+          } else {
+            document.documentElement.style.backgroundColor = '#f5f7fa';
+          }
+        } catch (error) {
+          /* Fall back to the light default. */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -48,6 +48,7 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
         <div className="flex flex-col p-6 pb-4 border-b theme-divider relative">
           <button
             onClick={onClose}
+            aria-label="Close notebook manager"
             className="absolute top-4 right-4 p-2 rounded-full theme-hover"
             style={{ color: 'var(--text-tertiary)' }}
           >
@@ -68,6 +69,7 @@ export default function ManageNotebooksModal({ isOpen, onClose }: ManageNotebook
             <div className="space-y-2">
               <button
                 onClick={selectAll}
+                aria-label={selectedIds.size === manageableNotebooks.length ? 'Deselect all notebooks' : 'Select all notebooks'}
                 className="w-full flex items-center gap-3 p-3 rounded-xl border transition-colors theme-hover"
                 style={{
                   backgroundColor: selectedIds.size === manageableNotebooks.length ? 'var(--active-bg)' : 'transparent',

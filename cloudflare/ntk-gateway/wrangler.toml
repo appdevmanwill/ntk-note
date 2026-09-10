@@ -1,0 +1,31 @@
+name = "ntk-note-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# One-time setup:
+#   npx wrangler kv namespace create NTK_CONFIG
+# Replace the placeholder below with the namespace ID Cloudflare returns.
+[[kv_namespaces]]
+binding = "NTK_CONFIG"
+id = "c3df08383eb744bbbd30be1ee4f3cf4c"
+
+# Bind Cloudflare R2 bucket directly to the Worker.
+[[r2_buckets]]
+binding = "NTK_FILES"
+bucket_name = "ntk-note-files"
+
+# Cloudflare Workers AI official binding for zero-cost TTS
+[ai]
+binding = "AI"
+
+[vars]
+FIREBASE_PROJECT_ID = "ntk-note"
+ALLOWED_ORIGINS = "https://ntk-note.web.app,https://ntk-note.firebaseapp.com,http://localhost:5173,http://127.0.0.1:5173"
+# WORKERS_AI_MODEL may be added here if Cloudflare AI is enabled and you want a deployment default.
+
+# Do NOT put owner identifiers or encryption keys in this file.
+# Configure them as Worker secrets instead:
+#   npx wrangler secret put CONFIG_ENCRYPTION_KEY
+#   npx wrangler secret put OWNER_UIDS
+# Optional alternative/addition:
+#   npx wrangler secret put OWNER_EMAILS

@@ -4,9 +4,10 @@ import {
   Search, FileText, Plus, Moon, Sun, Home, Star,
   Archive, Trash2, Settings, CheckSquare, Code,
   LayoutTemplate, GitBranch, FolderSearch, Tag, Pin, FolderInput, BookOpen,
-  Download, History, Cloud, Clipboard, HardDrive
+  Download, History, Cloud, Clipboard, HardDrive, Bell
 } from 'lucide-react';
 import { copyAsMarkdown, copyAsPlainText, exportToPDF, loadNoteExportOptions } from '@/utils/export';
+import { resolveThemeMode } from '@/utils/theme';
 import { saveCloudNoteCheckpoint, saveLocalNoteSnapshot } from './VersionHistory';
 
 interface Command {
@@ -21,7 +22,7 @@ interface Command {
 export default function CommandPalette() {
   const {
     commandPaletteOpen, setCommandPaletteOpen,
-    createNote, setCurrentView, setTheme, settings,
+    createNote, setCurrentView, setTheme, settings, openSettings,
     notes, notebooks, tags, savedSearches,
     selectedNoteId, selectNote, selectNotebook, selectTag,
     toggleZenMode, createNotebook, moveNote, addNoteTag,
@@ -60,10 +61,7 @@ export default function CommandPalette() {
 
   const close = () => setCommandPaletteOpen(false);
   const openSettingsSection = (section: string) => {
-    setCurrentView('settings');
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('ntk-settings-section', { detail: section }));
-    }, 0);
+    openSettings(section);
     close();
   };
   const normalizedQuery = query.trim().toLowerCase();
@@ -78,16 +76,17 @@ export default function CommandPalette() {
     { id: 'new-markdown', icon: Code, label: 'New Markdown Note', category: 'Actions', action: () => { void createNote({ type: 'markdown' }); close(); } },
     { id: 'new-notebook', icon: BookOpen, label: createNamedNotebook ? `Create notebook "${createNamedNotebook}"` : 'Create Notebook', description: 'Type: new notebook Work', category: 'Actions', action: () => { createNotebook(createNamedNotebook || 'New Notebook'); close(); } },
     { id: 'zen', icon: FileText, label: 'Toggle Zen Mode', category: 'Actions', action: () => { toggleZenMode(); close(); } },
-    { id: 'theme', icon: settings.theme === 'light' ? Moon : Sun, label: `Switch to ${settings.theme === 'light' ? 'Dark' : 'Light'} Mode`, category: 'Actions', action: () => { setTheme(settings.theme === 'light' ? 'dark' : 'light'); close(); } },
+    { id: 'theme', icon: resolveThemeMode(settings.theme) === 'light' ? Moon : Sun, label: `Switch to ${resolveThemeMode(settings.theme) === 'light' ? 'Dark' : 'Light'} Mode`, category: 'Actions', action: () => { setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light'); close(); } },
     { id: 'home', icon: Home, label: 'Go to Home', category: 'Navigation', action: () => { setCurrentView('home'); close(); } },
     { id: 'all-notes', icon: FileText, label: 'All Notes', category: 'Navigation', action: () => { setCurrentView('all-notes'); close(); } },
+    { id: 'reminders', icon: Bell, label: 'Reminder Center', category: 'Navigation', action: () => { setCurrentView('reminders'); close(); } },
     { id: 'starred', icon: Star, label: 'Starred Notes', category: 'Navigation', action: () => { setCurrentView('starred'); close(); } },
     { id: 'archived', icon: Archive, label: 'Archived Notes', category: 'Navigation', action: () => { setCurrentView('archived'); close(); } },
     { id: 'trash', icon: Trash2, label: 'Trash', category: 'Navigation', action: () => { setCurrentView('trash'); close(); } },
     { id: 'smart-folders', icon: FolderSearch, label: 'Smart Folders', category: 'Navigation', action: () => { setCurrentView('smart-folders'); close(); } },
     { id: 'graph', icon: GitBranch, label: 'Graph View', category: 'Navigation', action: () => { setCurrentView('graph'); close(); } },
     { id: 'templates', icon: LayoutTemplate, label: 'Templates', category: 'Navigation', action: () => { setCurrentView('templates'); close(); } },
-    { id: 'settings', icon: Settings, label: 'Settings', category: 'Navigation', action: () => { setCurrentView('settings'); close(); } },
+    { id: 'settings', icon: Settings, label: 'Settings', category: 'Navigation', action: () => { openSettings(); close(); } },
     { id: 'storage-health', icon: HardDrive, label: 'Open storage health', category: 'Navigation', action: () => openSettingsSection('data') },
     ...(currentNote ? [
       { id: 'pin-current', icon: Pin, label: currentNote.pinned ? 'Unpin current note' : 'Pin current note', category: 'Current Note', action: () => { void pinNote(currentNote.id); close(); } },

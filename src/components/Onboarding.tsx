@@ -1,46 +1,19 @@
 import { useState } from 'react';
 import { useStore } from '@/store';
+import { resolveThemeMode } from '@/utils/theme';
 import {
   FileText, CheckSquare, Palette, Tag, Search, Moon, Sun,
   FolderOpen, ArrowRight, Sparkles, Shield,
-  Globe, Brain, Layers, Star,
-  Bell, LogIn
+  Globe, Brain, Layers,
+  Bell
 } from 'lucide-react';
-import { signInWithPopup, signInAnonymously } from 'firebase/auth';
-import { auth, googleProvider } from '@/utils/firebase';
+import LoginScreen from './LoginScreen';
 import BrandMark from './BrandMark';
 
 export default function Onboarding() {
   const [step, setStep] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [guestLoading, setGuestLoading] = useState(false);
-  const { settings, setTheme, completeOnboarding } = useStore();
-
-  const handleSignIn = async () => {
-    setLoading(true);
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error('Error signing in:', error);
-      setLoading(false);
-    }
-  };
-
-  const handleGuestSignIn = async () => {
-    setGuestLoading(true);
-    try {
-      await Promise.race([
-        signInAnonymously(auth),
-        new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('Guest sign-in timed out')), 5000);
-        }),
-      ]);
-    } catch (error) {
-      console.warn('Anonymous sync is unavailable, continuing in local guest mode:', error);
-      completeOnboarding('Guest');
-      setGuestLoading(false);
-    }
-  };
+  const { settings, setTheme } = useStore();
+  const resolvedTheme = resolveThemeMode(settings.theme);
 
   return (
     <div className="min-h-dvh overflow-auto theme-bg text-theme-primary transition-colors duration-300">
@@ -54,11 +27,12 @@ export default function Onboarding() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setTheme(settings.theme === 'light' ? 'dark' : 'light')}
+                onClick={() => setTheme(resolvedTheme === 'light' ? 'dark' : 'light')}
                 className="p-2 rounded-full bg-surface-200 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-300 dark:hover:bg-surface-700 transition-colors"
-                title={`Switch to ${settings.theme === 'light' ? 'Dark' : 'Light'} Mode`}
+                title={`Switch to ${resolvedTheme === 'light' ? 'Dark' : 'Light'} Mode`}
+                aria-label={`Switch to ${resolvedTheme === 'light' ? 'Dark' : 'Light'} Mode`}
               >
-                {settings.theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+                {resolvedTheme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
               <button
                 onClick={() => setStep(1)}
@@ -77,7 +51,7 @@ export default function Onboarding() {
             <div className="relative max-w-4xl mx-auto">
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-indigo-500/10 dark:bg-indigo-500/20 border border-indigo-500/20 dark:border-indigo-500/30 text-indigo-600 dark:text-indigo-300 text-sm font-medium mb-6">
                 <Sparkles className="w-4 h-4" />
-                The Ultimate Note-Taking Experience
+                Notes, reminders, templates, and sync
               </div>
               
               <h1 className="text-4xl md:text-6xl lg:text-7xl font-black text-theme-primary tracking-tight leading-[1.1] mb-6">
@@ -162,9 +136,9 @@ export default function Onboarding() {
           <section className="px-6 md:px-12 py-20 relative">
             <div className="max-w-5xl mx-auto">
               <div className="text-center mb-12">
-                <h2 className="text-3xl md:text-4xl font-bold text-theme-primary mb-4">Everything you need, nothing you don't</h2>
+                <h2 className="text-3xl md:text-4xl font-bold text-theme-primary mb-4">Start simple. Grow into the tools you need.</h2>
                 <p className="text-surface-600 dark:text-surface-400 text-lg max-w-2xl mx-auto">
-                  Combining the best of Evernote, Google Keep, Simplenote, and OneNote into one powerful app.
+                  Write, organize, remember, and share without needing to learn every feature on day one.
                 </p>
               </div>
 
@@ -179,8 +153,8 @@ export default function Onboarding() {
                   { icon: Moon, title: 'Dark Mode', desc: 'Beautiful dark theme with 12 premium accent color options.', color: 'from-indigo-500 to-purple-500' },
                   { icon: Bell, title: 'Reminders', desc: 'Set time-based reminders with browser notifications.', color: 'from-orange-500 to-red-500' },
                   { icon: Globe, title: 'Cross-Device Sync', desc: 'Powered by Firebase. Your notes sync instantly across all your devices.', color: 'from-blue-400 to-cyan-500' },
-                  { icon: Brain, title: 'Markdown Support', desc: 'Full markdown with live preview for developers and writers.', color: 'from-violet-500 to-purple-500' },
-                  { icon: Layers, title: 'Templates', desc: 'Pre-built templates for meetings, journals, projects, and more.', color: 'from-rose-500 to-pink-500' },
+                  { icon: Brain, title: 'Easy Writing', desc: 'Write normally and preview your note. Advanced source views stay out of the way until you need them.', color: 'from-violet-500 to-purple-500' },
+                  { icon: Layers, title: 'Guided Templates', desc: 'Preview a template, name it, and start with friendly prompts you can change or remove.', color: 'from-rose-500 to-pink-500' },
                   { icon: Shield, title: 'Privacy First', desc: 'Secure authentication and offline-first capabilities for your peace of mind.', color: 'from-emerald-500 to-teal-500' },
                 ].map((feature, i) => (
                   <div
@@ -206,7 +180,7 @@ export default function Onboarding() {
                 Ready to organize your life?
               </h2>
               <p className="text-surface-600 dark:text-surface-400 text-lg mb-8">
-                Join thousands who've simplified their note-taking.
+                Start with one note and make NTK Note your own as you go.
               </p>
               <button
                 onClick={() => setStep(1)}
@@ -231,77 +205,8 @@ export default function Onboarding() {
       )}
 
       {step === 1 && (
-        <div className="min-h-full flex items-center justify-center p-6 animate-fade-in relative">
-          <div className="absolute top-4 right-6">
-             <button
-                onClick={() => setTheme(settings.theme === 'light' ? 'dark' : 'light')}
-                className="p-2 rounded-full bg-surface-200 dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-300 dark:hover:bg-surface-700 transition-colors"
-                title={`Switch to ${settings.theme === 'light' ? 'Dark' : 'Light'} Mode`}
-              >
-                {settings.theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-              </button>
-          </div>
-          <div className="w-full max-w-md">
-            <div className="text-center mb-8">
-              <BrandMark className="w-16 h-16 mx-auto mb-4 rounded-2xl" />
-              <h2 className="text-3xl font-bold text-theme-primary">Welcome to NTK Note</h2>
-              <p className="text-surface-600 dark:text-surface-400 mt-2">Sign in to sync your notes</p>
-            </div>
-
-            <div className="theme-card border rounded-2xl p-6 space-y-5">
-              <button
-                onClick={handleSignIn}
-                disabled={loading || guestLoading}
-                className="w-full py-4 rounded-xl bg-surface-900 dark:bg-white text-white dark:text-surface-900 font-semibold text-lg hover:bg-surface-800 dark:hover:bg-surface-100 transition-all shadow-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <span className="w-5 h-5 border-2 border-white dark:border-surface-900 border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
-                    Sign in with Google
-                  </>
-                )}
-              </button>
-
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t theme-divider"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 text-surface-500" style={{ backgroundColor: 'var(--card-bg)' }}>Or</span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleGuestSignIn}
-                disabled={loading || guestLoading}
-                className="w-full py-4 rounded-xl bg-surface-100 dark:bg-surface-700 text-surface-900 dark:text-white font-semibold text-lg hover:bg-surface-200 dark:hover:bg-surface-600 transition-all shadow-md flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed border border-surface-200 dark:border-surface-600"
-              >
-                {guestLoading ? (
-                  <span className="w-5 h-5 border-2 border-surface-900 dark:border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <LogIn className="w-5 h-5" />
-                    Continue as Guest
-                  </>
-                )}
-              </button>
-            </div>
-
-            <button
-              onClick={() => setStep(0)}
-              className="w-full mt-4 py-2 text-surface-500 hover:text-surface-900 dark:hover:text-white text-sm transition-colors"
-            >
-              ← Back to overview
-            </button>
-
-            <div className="flex items-center justify-center gap-4 mt-6 text-xs text-surface-500 dark:text-surface-600">
-              <span className="flex items-center gap-1"><Shield className="w-3 h-3" /> Secure</span>
-              <span className="flex items-center gap-1"><Globe className="w-3 h-3" /> Synced</span>
-              <span className="flex items-center gap-1"><Star className="w-3 h-3" /> Fast</span>
-            </div>
-          </div>
+        <div className="min-h-full animate-fade-in">
+          <LoginScreen onBackToOverview={() => setStep(0)} />
         </div>
       )}
     </div>

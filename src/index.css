@@ -2,6 +2,9 @@
 
 @custom-variant dark (&:is(.dark, .dark *));
 
+/* Landscape phones (and short landscape windows) — dedicated two-region layout */
+@custom-variant phone-landscape (@media (orientation: landscape) and (max-width: 1023px) and (max-height: 540px));
+
 /* ─── Premium Theme System via CSS Custom Properties ─── */
 /* These switch automatically when .dark class is on <html> */
 :root {
@@ -640,4 +643,75 @@ textarea::placeholder {
 /* Elements that shouldn't transition colors */
 .no-transition, img, svg, video {
   transition-property: none !important;
+}
+
+/* ─── Login screen ambient motion (respects reduced motion) ─── */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes loginFloat {
+    from { transform: translateY(0); }
+    to { transform: translateY(-10px); }
+  }
+  .login-float-slow { animation: loginFloat 6s ease-in-out infinite alternate; }
+  .login-float-fast { animation: loginFloat 4.5s ease-in-out infinite alternate; }
+}
+
+/* ─── Soft Canvas / delight layer ─── */
+:root {
+  --app-bg-gradient:
+    radial-gradient(circle at 10% 0%, rgba(99, 102, 241, 0.10), transparent 31%),
+    radial-gradient(circle at 92% 7%, rgba(14, 165, 233, 0.10), transparent 27%),
+    radial-gradient(circle at 76% 86%, rgba(16, 185, 129, 0.08), transparent 28%),
+    linear-gradient(180deg, #fbfcff 0%, #f6f8fc 42%, #f1f7f5 100%);
+  --card-bg: rgba(255, 255, 255, 0.88);
+  --card-border: rgba(100, 116, 139, 0.16);
+  --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 14px 34px rgba(71, 85, 105, 0.07);
+  --card-shadow-hover: 0 22px 46px rgba(71, 85, 105, 0.13), 0 3px 10px rgba(71, 85, 105, 0.06);
+  --sidebar-bg: rgba(252, 253, 255, 0.88);
+  --glass-bg: rgba(255, 255, 255, 0.70);
+}
+
+.dark {
+  --app-bg-gradient:
+    radial-gradient(circle at 12% -5%, rgba(37, 99, 235, 0.18), transparent 32%),
+    radial-gradient(circle at 96% 8%, rgba(14, 165, 233, 0.12), transparent 28%),
+    radial-gradient(circle at 75% 90%, rgba(20, 184, 166, 0.08), transparent 28%),
+    linear-gradient(180deg, #0b213a 0%, #071528 52%, #04101f 100%);
+}
+
+.theme-card {
+  backdrop-filter: blur(16px) saturate(145%);
+  transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+
+.delight-card:hover { transform: translateY(-2px); }
+
+.dashboard-welcome {
+  background:
+    radial-gradient(circle at 88% 18%, rgba(255,255,255,0.26), transparent 25%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-primary) 92%, #6366f1), color-mix(in srgb, var(--accent-primary-hover) 72%, #0ea5e9));
+  box-shadow: 0 24px 60px color-mix(in srgb, var(--accent-primary) 24%, transparent);
+}
+
+.ai-orb {
+  background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 45%, #0891b2 100%);
+  box-shadow: 0 14px 34px rgba(79, 70, 229, 0.30);
+}
+
+.ai-button {
+  background: linear-gradient(135deg, #7c3aed, #4f46e5 52%, #0891b2);
+  box-shadow: 0 10px 24px rgba(79, 70, 229, 0.24);
+  transition: transform 150ms ease, filter 150ms ease, box-shadow 150ms ease;
+}
+.ai-button:hover { filter: brightness(1.04); transform: translateY(-1px); box-shadow: 0 14px 28px rgba(79, 70, 229, 0.30); }
+.ai-soft { background: linear-gradient(135deg, rgba(124,58,237,0.12), rgba(8,145,178,0.12)); }
+.dark .ai-soft { background: linear-gradient(135deg, rgba(167,139,250,0.15), rgba(34,211,238,0.12)); }
+.ai-hero { background: linear-gradient(135deg, #312e81 0%, #4f46e5 46%, #0e7490 100%); }
+
+.soft-stat {
+  background: linear-gradient(145deg, rgba(255,255,255,0.86), rgba(248,250,252,0.64));
+}
+.dark .soft-stat { background: linear-gradient(145deg, rgba(15,42,72,0.82), rgba(9,31,54,0.70)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-card, .delight-card, .ai-button { transition: none !important; transform: none !important; }
 }

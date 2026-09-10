@@ -1,16 +1,22 @@
 import { useState } from 'react';
 import { useStore } from '@/store';
 import {
-  Plus, FileText, CheckSquare, Type, Sparkles, Pin,
-  Clock, TrendingUp, BarChart3, ListChecks, BookOpen,
-  ChevronRight, Star, Zap, Upload, BellRing, CalendarDays, PenLine, DownloadCloud
+  Plus, FileText, CheckSquare, Sparkles, Pin,
+  Clock, TrendingUp, BarChart3, BookOpen, BellRing,
+  CalendarDays, PenLine, DownloadCloud, Upload,
+  ArchiveRestore, CheckCircle2, Loader2, ChevronRight,
+  Star, Share2, TriangleAlert, FolderPlus,
 } from 'lucide-react';
 import ImportManager from './ImportManager';
-import { isThisWeek } from 'date-fns';
+import BackupCenterModal from './BackupCenterModal';
 import NoteCard from './NoteCard';
 import CalendarWidget from './CalendarWidget';
+import UserAvatar from './UserAvatar';
+import ScratchPad from './ScratchPad';
+import NewNotebookModal from './NewNotebookModal';
 import { formatDashboardDate } from '@/utils/date';
 import { getHolidaysForDate, type Holiday } from '@/utils/holidays';
+import { getRecentNotebooks } from '@/utils/recentNotebooks';
 
 const celebrationTypeLabels: Record<Holiday['type'], string> = {
   universal: 'Global observance',
@@ -44,70 +50,113 @@ function toTag(value: string): string {
     .slice(0, 36);
 }
 
+const typeMeta: Record<string, { label: string; tile: string }> = {
+  note: { label: 'Note', tile: 'bg-indigo-500/10 text-indigo-500' },
+  checklist: { label: 'Checklist', tile: 'bg-emerald-500/10 text-emerald-500' },
+  markdown: { label: 'Markdown', tile: 'bg-purple-500/10 text-purple-500' },
+};
+
+const previewFor = (content: string) =>
+  content
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/[#>*`~_[\]()|-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90);
+
+/** Compact relative age for tight list rows: now / 5m / 3h / 2d. */
+const compactAge = (isoDate: string) => {
+  const minutes = Math.floor((Date.now() - new Date(isoDate).getTime()) / 60_000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+  return `${Math.floor(days / 7)}w`;
+};
+
 export default function Dashboard() {
   const {
-    profile, createNote, setCurrentView,
-    getRecentNotes, getPinnedNotes, getStats, notes, scratchPad,
-    updateScratchPad, settings,
+    profile, createNote, setCurrentView, selectNote, setEditingNote,
+    getRecentNotes, getPinnedNotes, getStats, notes, settings,
+    notebooks, uid, reminders, selectNotebook,
   } = useStore();
 
-  const [scratchPadValue, setScratchPadValue] = useState(scratchPad);
   const [showImportManager, setShowImportManager] = useState(false);
+  const [showNewNotebookModal, setShowNewNotebookModal] = useState(false);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupJustDone, setBackupJustDone] = useState(false);
+  const [backupError, setBackupError] = useState('');
+  const [showBackupCenter, setShowBackupCenter] = useState(false);
 
   const stats = getStats();
-  const recent = getRecentNotes(6);
+  const recent = getRecentNotes(5);
+  const recentNotebooks = getRecentNotebooks(notebooks, notes, 6);
   const pinned = getPinnedNotes().slice(0, 4);
   const today = new Date();
   const todayLabel = formatDashboardDate(today);
   const todayCelebrations = getHolidaysForDate(today);
+  const remindersCount = reminders.length > 0
+    ? reminders.filter(r => r.status === 'active').length
+    : notes.filter(n => n.reminder && !n.trashed).length;
+  const sharedCount = notes.filter(n => n.isShared && !n.trashed).length;
   const backupDays = settings.lastBackupAt
     ? Math.floor((Date.now() - new Date(settings.lastBackupAt).getTime()) / (24 * 60 * 60 * 1000))
     : null;
   const backupDue = backupDays === null || backupDays >= settings.backupReminderDays;
 
-  const taskProgress = stats.tasks > 0 ? Math.round((stats.completedTasks / stats.tasks) * 100) : 0;
+  // 7-day note creation trend for the sparkline (real data, CSS/SVG only).
+  const creationTrend = Array.from({ length: 7 }, (_, i) => {
+    const day = new Date(today);
+    day.setDate(day.getDate() - (6 - i));
+    const key = day.toDateString();
+    return notes.filter(n => new Date(n.createdAt).toDateString() === key).length;
+  });
+  const trendMax = Math.max(1, ...creationTrend);
+  const sparkPoints = creationTrend
+    .map((value, i) => `${(i / 6) * 100},${30 - (value / trendMax) * 26}`)
+    .join(' ');
 
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 17) return 'Good afternoon';
-    return 'Good evening';
+  const handleBackupNow = async () => {
+    setBackupRunning(true);
+    setBackupError('');
+    try {
+      await useStore.getState().createCloudBackup('manual');
+      setBackupJustDone(true);
+      window.setTimeout(() => setBackupJustDone(false), 8_000);
+    } catch (err) {
+      console.error('Cloud backup failed', err);
+      setBackupError(err instanceof Error ? err.message : 'Cloud backup failed.');
+    } finally {
+      setBackupRunning(false);
+    }
   };
 
-  const getMotivation = () => {
-    const msgs = [
-      "What's on your mind today?",
-      "Ready to capture some ideas?",
-      "Let's make today productive!",
-      "Your thoughts deserve to be saved.",
-      "Great things start with a note.",
-    ];
-    return msgs[new Date().getDate() % msgs.length];
-  };
-
-  const handleScratchPadBlur = () => {
-    updateScratchPad(scratchPadValue);
+  const openNote = (noteId: string) => {
+    selectNote(noteId);
+    setEditingNote(true);
   };
 
   const captureCelebrationReflection = (holiday: Holiday) => {
     const content = [
-      `# ${holiday.name}`,
+      `Date: ${todayLabel}`,
+      `Calendar: ${celebrationTypeLabels[holiday.type]}`,
       '',
-      `**Date:** ${todayLabel}`,
-      `**Calendar:** ${celebrationTypeLabels[holiday.type]}`,
-      '',
-      '## Summary',
+      'SUMMARY',
       holiday.summary,
       '',
-      '## Reflection',
+      'REFLECTION',
+      'What does this day mean to you, your family, or your community?',
       '',
-      '- ',
+      'NOTES',
+      'Write anything you want to remember…',
     ].join('\n');
 
     void createNote({
       title: `${holiday.name} - ${todayLabel}`,
       content,
-      type: 'markdown',
+      type: 'note',
       color: celebrationNoteColors[holiday.type],
       tags: ['celebration', `calendar-${holiday.type.toLowerCase()}`, toTag(holiday.name)].filter(Boolean),
       priority: holiday.type === 'BCG' ? 'high' : 'medium',
@@ -115,278 +164,465 @@ export default function Dashboard() {
   };
 
   const quickActions = [
-    { icon: FileText, label: 'New Note', color: 'from-indigo-500 to-blue-500', action: () => { createNote({ type: 'note' }); } },
-    { icon: CheckSquare, label: 'Checklist', color: 'from-green-500 to-emerald-500', action: () => { createNote({ type: 'checklist' }); } },
-    { icon: Type, label: 'Markdown', color: 'from-purple-500 to-pink-500', action: () => { createNote({ type: 'markdown' }); } },
-    { icon: Sparkles, label: 'Template', color: 'from-amber-500 to-orange-500', action: () => { setCurrentView('templates'); } },
-    { icon: Upload, label: 'Import', color: 'from-cyan-500 to-blue-500', action: () => { setShowImportManager(true); } },
+    { icon: FileText, label: 'New Note', tile: 'bg-indigo-500/10 text-indigo-500 dark:text-indigo-300', action: () => { createNote({ type: 'note' }); } },
+    { icon: FolderPlus, label: 'New Notebook', tile: 'bg-blue-500/10 text-blue-500 dark:text-blue-300', action: () => { setShowNewNotebookModal(true); } },
+    { icon: CheckSquare, label: 'Checklist', tile: 'bg-emerald-500/10 text-emerald-500 dark:text-emerald-300', action: () => { createNote({ type: 'checklist' }); } },
+    { icon: BellRing, label: 'Reminders', tile: 'bg-purple-500/10 text-purple-500 dark:text-purple-300', action: () => { setCurrentView('reminders'); } },
+    { icon: Sparkles, label: 'Templates', tile: 'bg-amber-500/10 text-amber-500 dark:text-amber-300', action: () => { setCurrentView('templates'); } },
+    { icon: Sparkles, label: 'NTK AI', tile: 'ai-soft text-violet-600 dark:text-violet-200', action: () => { setCurrentView('ai'); } },
   ];
 
-  return (
-    <div className="flex-1 overflow-y-auto" style={{ backgroundColor: 'var(--app-bg)' }}>
-      <div className="max-w-5xl mx-auto p-4 md:p-8 space-y-8">
-        {/* Hero Greeting */}
-        <div className="relative overflow-hidden rounded-2xl accent-gradient p-6 md:p-8 text-white shadow-xl">
-          <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'linear-gradient(135deg, rgba(255,255,255,0.18) 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
-          <div className="relative">
-            <div className="flex items-center gap-2 text-white/75 text-sm font-medium mb-2">
-              <Zap className="w-4 h-4 no-transition" />
-              {todayLabel}
-            </div>
-            <h1 className="text-3xl md:text-4xl font-bold mb-2">
-              {getGreeting()}, {profile.name.split(' ')[0]} 👋
-            </h1>
-            <p className="text-white/75 text-lg">{getMotivation()}</p>
+  const greeting = (() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  })();
 
-            {todayCelebrations.length > 0 && (
-              <section
-                aria-live="polite"
-                aria-label="Today's celebration reminder"
-                className="mt-6 rounded-2xl border border-white/50 bg-white/95 p-4 text-surface-900 shadow-[0_22px_60px_rgba(30,41,59,0.18)] md:p-5 dark:border-blue-200/15 dark:bg-[#081d35]/95 dark:text-blue-50 dark:shadow-[0_22px_60px_rgba(1,8,20,0.38)]"
-              >
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100 dark:bg-blue-500/15 dark:text-blue-100 dark:ring-blue-200/20">
-                      <BellRing className="h-5 w-5 no-transition" />
-                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-sky-300 shadow-[0_0_0_4px_rgba(125,211,252,0.22)]" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold uppercase tracking-wide text-surface-500 dark:text-blue-200/70">Today&apos;s celebration reminder</p>
-                      <p className="text-base font-bold text-surface-950 md:text-lg dark:text-blue-50">
-                        {todayCelebrations.length} celebration{todayCelebrations.length === 1 ? '' : 's'} on your calendar today
-                      </p>
-                    </div>
-                  </div>
-                  <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:ring-cyan-300/20">
-                    <CalendarDays className="h-3.5 w-3.5 no-transition" />
-                    Reminder active
-                  </div>
-                </div>
-
-                <div className="mt-4 grid max-h-72 grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
-                  {todayCelebrations.map((holiday, i) => (
-                    <article
-                      key={`${holiday.type}-${holiday.name}-${i}`}
-                      className={`rounded-xl border border-surface-200 bg-surface-50 p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.05)] dark:border-blue-200/15 dark:bg-[#0b2745] ${todayCelebrations.length === 1 ? 'md:col-span-2' : ''}`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ring-1 ${celebrationToneClasses[holiday.type]}`}>
-                              {celebrationTypeLabels[holiday.type]}
-                            </span>
-                            <span className="text-xs font-bold text-surface-500 dark:text-blue-200/60">{holiday.flag}</span>
-                          </div>
-                          <h2 className="mt-3 text-base font-bold leading-snug text-surface-950 dark:text-blue-50">{holiday.name}</h2>
-                        </div>
-                      </div>
-                      <p className="mt-2 max-w-2xl text-sm font-medium leading-6 text-surface-700 dark:text-blue-100/80">{holiday.summary}</p>
-                      <button
-                        type="button"
-                        onClick={() => captureCelebrationReflection(holiday)}
-                        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-surface-900 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-surface-800 dark:bg-blue-500 dark:hover:bg-blue-400"
-                        aria-label={`Capture a reflection for ${holiday.name}`}
-                      >
-                        <PenLine className="h-3.5 w-3.5 no-transition" />
-                        Capture reflection
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
+  const renderHero = () => (
+    <section className="dashboard-welcome relative overflow-hidden rounded-[28px] p-5 text-white shadow-xl md:p-7 phone-landscape:p-4">
+      <div className="absolute inset-0 opacity-15" style={{ backgroundImage: 'linear-gradient(135deg, rgba(255,255,255,0.25) 1px, transparent 1px)', backgroundSize: '26px 26px' }} aria-hidden="true" />
+      <div className="relative flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-white/75">
+            <Clock className="h-3.5 w-3.5 no-transition" aria-hidden="true" />
+            {todayLabel}
+          </p>
+          <h1 className="mt-1.5 truncate text-2xl font-extrabold tracking-tight md:text-3xl phone-landscape:text-xl">
+            {greeting}, {profile.name.split(' ')[0] || 'there'} 👋
+          </h1>
+          <p className="mt-1 text-sm text-white/78 md:text-base phone-landscape:text-xs">Capture what matters. NTK Note keeps the rest within reach.</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-bold text-white/90 backdrop-blur">{stats.notes} notes</span>
+            <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-bold text-white/90 backdrop-blur">{remindersCount} reminders</span>
+            <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-bold text-white/90 backdrop-blur">{sharedCount} shared</span>
           </div>
         </div>
+        <div className="hidden shrink-0 rounded-full bg-white/10 p-1.5 ring-1 ring-white/15 sm:block">
+          <UserAvatar profile={profile} size="lg" />
+        </div>
+      </div>
+    </section>
+  );
 
-        {backupDue && (
-          <section className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500">
-                  <DownloadCloud className="h-5 w-5 no-transition" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-bold text-theme-primary">Cloud backup reminder</p>
-                  <p className="mt-1 text-sm leading-6 text-theme-tertiary">
-                    {backupDays === null
-                      ? 'Create your first portable backup to Google Drive or another cloud app.'
+  const renderBackupCard = () => {
+    if (!(backupDue || backupJustDone || backupError)) return null;
+    return (
+      <section
+        className={`flex flex-col gap-3 rounded-2xl border p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between ${
+          backupJustDone && !backupError
+            ? 'border-emerald-400/30 bg-emerald-500/10'
+            : backupError
+              ? 'border-red-400/30 bg-red-500/10'
+              : 'theme-card'
+        }`}
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+            backupJustDone && !backupError
+              ? 'bg-emerald-500/15 text-emerald-500'
+              : backupError
+                ? 'bg-red-500/15 text-red-500'
+                : 'bg-amber-500/15 text-amber-500'
+          }`}>
+            {backupRunning ? (
+              <Loader2 className="h-5 w-5 animate-spin no-transition" aria-hidden="true" />
+            ) : backupJustDone && !backupError ? (
+              <CheckCircle2 className="h-5 w-5 no-transition" aria-hidden="true" />
+            ) : backupError ? (
+              <TriangleAlert className="h-5 w-5 no-transition" aria-hidden="true" />
+            ) : (
+              <DownloadCloud className="h-5 w-5 no-transition" aria-hidden="true" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-theme-primary">
+              {backupRunning
+                ? 'Backing up your notes...'
+                : backupJustDone && !backupError
+                  ? 'Backup complete — snapshot saved'
+                  : backupError
+                    ? 'Backup failed'
+                    : 'Cloud backup reminder'}
+            </p>
+            <p className="mt-0.5 text-xs leading-5 text-theme-tertiary">
+              {backupRunning
+                ? 'Creating a secure snapshot in your account.'
+                : backupJustDone && !backupError
+                  ? 'Restore this snapshot anytime from any device.'
+                  : backupError
+                    ? backupError
+                    : backupDays === null
+                      ? 'No backup yet — create your first snapshot.'
                       : `Your last backup was ${backupDays} day${backupDays === 1 ? '' : 's'} ago.`}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCurrentView('settings')}
-                className="inline-flex w-fit items-center gap-2 rounded-xl accent-button px-4 py-2.5 text-sm font-bold"
-              >
-                Backup now
-                <ChevronRight className="h-4 w-4 no-transition" />
-              </button>
-            </div>
-          </section>
-        )}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowBackupCenter(true)}
+            aria-label="Restore a backup"
+            title="Restore a backup"
+            className="flex h-10 w-10 items-center justify-center rounded-xl border theme-border theme-hover text-theme-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+          >
+            <ArchiveRestore className="h-4 w-4 no-transition" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={handleBackupNow}
+            disabled={backupRunning || !uid}
+            className="inline-flex items-center gap-1.5 rounded-xl accent-button px-4 py-2.5 text-sm font-bold disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+          >
+            Backup now
+            <ChevronRight className="h-4 w-4 no-transition" aria-hidden="true" />
+          </button>
+        </div>
+      </section>
+    );
+  };
 
-        {/* Quick Actions */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {quickActions.map((action, i) => (
+  const renderQuickActions = () => (
+    <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6 sm:gap-3 phone-landscape:gap-2">
+      {quickActions.map(action => (
+        <button
+          key={action.label}
+          type="button"
+          onClick={action.action}
+          className="delight-card group flex flex-col items-center gap-2 rounded-2xl border theme-border theme-card p-3 transition-all hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70 sm:gap-2.5 sm:p-4 phone-landscape:gap-1 phone-landscape:p-2.5"
+        >
+          <span className={`flex h-10 w-10 items-center justify-center rounded-xl transition-transform group-hover:scale-110 sm:h-11 sm:w-11 phone-landscape:h-9 phone-landscape:w-9 ${action.tile}`}>
+            <action.icon className="h-5 w-5 no-transition" aria-hidden="true" />
+          </span>
+          <span className="text-xs font-semibold text-theme-secondary sm:text-sm phone-landscape:text-[11px]">{action.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+
+  const renderRecentNotebooks = () => (
+    <section className="rounded-2xl border theme-border theme-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-indigo-500 no-transition" aria-hidden="true" />
+          <h2 className="text-sm font-bold text-theme-primary">Recent Notebooks</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowNewNotebookModal(true)}
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold accent-button"
+          >
+            <Plus className="h-3 w-3 no-transition" />
+            New
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentView('notebooks')}
+            className="flex items-center gap-0.5 rounded-lg px-2 py-1 text-xs font-semibold accent-text theme-hover focus-visible:outline-none"
+          >
+            View all <ChevronRight className="h-3.5 w-3.5 no-transition" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {recentNotebooks.length === 0 ? (
+        <div className="rounded-xl border theme-border p-5 text-center" style={{ backgroundColor: 'var(--input-bg)' }}>
+          <p className="text-xs text-theme-tertiary">No notebooks yet. Click &ldquo;New&rdquo; to create your first notebook.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+          {recentNotebooks.map(({ notebook: nb, noteCount, lastActivityIso }) => (
             <button
-              key={i}
-              onClick={action.action}
-              className="group flex flex-col items-center gap-3 p-4 rounded-xl theme-card border hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200"
+              key={nb.id}
+              type="button"
+              onClick={() => {
+                selectNotebook(nb.id);
+                setCurrentView('all-notes');
+              }}
+              className="group flex flex-col justify-between rounded-xl border theme-border theme-card p-3 text-left transition-all hover:shadow-md hover:scale-[1.01] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              style={{ backgroundColor: 'var(--card-bg)' }}
             >
-              <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${action.color} flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform`}>
-                <action.icon className="w-6 h-6 text-white no-transition" />
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-lg">{nb.icon || '📓'}</span>
+                <span className="rounded-full px-1.5 py-0.5 text-[10px] font-bold text-theme-secondary" style={{ backgroundColor: 'var(--input-bg)' }}>
+                  {noteCount} note{noteCount === 1 ? '' : 's'}
+                </span>
               </div>
-              <span className="text-sm font-semibold text-theme-secondary">{action.label}</span>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-bold text-theme-primary group-hover:text-indigo-600 dark:group-hover:text-indigo-400">{nb.name}</p>
+                <p className="mt-0.5 text-[10px] text-theme-tertiary">{compactAge(lastActivityIso)}</p>
+              </div>
             </button>
           ))}
         </div>
+      )}
+    </section>
+  );
 
-        {/* Stats Row */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { icon: FileText, label: 'Notes', value: stats.notes, color: 'text-indigo-500', bg: 'rgba(99, 102, 241, 0.1)' },
-            { icon: BarChart3, label: 'Words', value: stats.words.toLocaleString(), color: 'text-blue-500', bg: 'rgba(59, 130, 246, 0.1)' },
-            { icon: BookOpen, label: 'Notebooks', value: stats.notebooks, color: 'text-purple-500', bg: 'rgba(168, 85, 247, 0.1)' },
-            { icon: ListChecks, label: 'Tasks Done', value: `${stats.completedTasks}/${stats.tasks}`, color: 'text-emerald-500', bg: 'rgba(16, 185, 129, 0.1)' },
-          ].map((stat, i) => (
-            <div key={i} className="flex items-center gap-3 p-4 rounded-xl theme-card border">
-              <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ backgroundColor: stat.bg }}>
-                <stat.icon className={`w-5 h-5 ${stat.color} no-transition`} />
-              </div>
-              <div>
-                <p className="text-xl font-bold text-theme-primary">{stat.value}</p>
-                <p className="text-xs text-theme-tertiary">{stat.label}</p>
-              </div>
-            </div>
-          ))}
+  const renderRecentNotes = () => (
+    <section className="rounded-2xl border theme-border theme-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-bold text-theme-primary">Recent Notes</h2>
+        <button
+          type="button"
+          onClick={() => setCurrentView('all-notes')}
+          className="flex items-center gap-0.5 rounded-lg px-2 py-1 text-xs font-semibold accent-text theme-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+        >
+          View all <ChevronRight className="h-3.5 w-3.5 no-transition" aria-hidden="true" />
+        </button>
+      </div>
+
+      {recent.length === 0 ? (
+        <div className="rounded-xl border theme-border p-6 text-center" style={{ backgroundColor: 'var(--input-bg)' }}>
+          <FileText className="mx-auto mb-2 h-8 w-8 text-theme-muted no-transition" aria-hidden="true" />
+          <p className="text-sm font-medium text-theme-secondary">No notes yet</p>
+          <p className="mt-0.5 text-xs text-theme-tertiary">Create your first note to get started.</p>
+          <button
+            type="button"
+            onClick={() => createNote({})}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-lg accent-button px-3 py-1.5 text-xs font-semibold"
+          >
+            <Plus className="h-3.5 w-3.5 no-transition" aria-hidden="true" /> Create note
+          </button>
+        </div>
+      ) : (
+        <ul className="space-y-1">
+          {recent.map(note => {
+            const meta = typeMeta[note.type] || typeMeta.note;
+            return (
+              <li key={note.id}>
+                <button
+                  type="button"
+                  onClick={() => openNote(note.id)}
+                  className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition-colors theme-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+                >
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${meta.tile}`}>
+                    {note.type === 'checklist'
+                      ? <CheckSquare className="h-4 w-4 no-transition" aria-hidden="true" />
+                      : <FileText className="h-4 w-4 no-transition" aria-hidden="true" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="min-w-0 truncate text-sm font-semibold text-theme-primary">{note.title || 'Untitled'}</span>
+                      <span className="hidden shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-theme-tertiary sm:inline" style={{ backgroundColor: 'var(--input-bg)' }}>
+                        {meta.label}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-theme-tertiary">
+                      {previewFor(note.content) || 'Empty note'}
+                    </span>
+                  </span>
+                  <span className="flex w-10 shrink-0 flex-col items-end gap-1">
+                    <span className="text-[11px] text-theme-muted">
+                      {compactAge(note.updatedAt)}
+                    </span>
+                    {note.starred && <Star className="h-3.5 w-3.5 text-amber-400 no-transition" aria-label="Starred" />}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+
+  const renderQuickStats = () => (
+    <section className="rounded-2xl border theme-border theme-card p-4">
+      <h2 className="mb-3 text-sm font-bold text-theme-primary">At a glance</h2>
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { icon: FileText, label: 'Notes', value: stats.notes },
+          { icon: BookOpen, label: 'Notebooks', value: notebooks.filter(nb => !nb.trashed).length },
+          { icon: TrendingUp, label: 'Reminders', value: remindersCount },
+          { icon: Share2, label: 'Shared', value: sharedCount },
+        ].map(item => (
+          <div key={item.label} className="flex items-center gap-2.5 rounded-xl border theme-border p-2.5" style={{ backgroundColor: 'var(--input-bg)' }}>
+            <item.icon className="h-4 w-4 shrink-0 accent-text no-transition" aria-hidden="true" />
+            <span className="min-w-0">
+              <span className="block text-base font-bold leading-tight text-theme-primary">{item.value}</span>
+              <span className="block truncate text-[11px] text-theme-tertiary">{item.label}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 rounded-xl border theme-border p-2.5" style={{ backgroundColor: 'var(--input-bg)' }}>
+        <p className="mb-1 text-[11px] font-medium text-theme-tertiary">Notes created — last 7 days</p>
+        <svg viewBox="0 0 100 32" className="h-10 w-full" aria-hidden="true" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="ntk-spark-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent-primary)" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="var(--accent-primary)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <polygon points={`0,32 ${sparkPoints} 100,32`} fill="url(#ntk-spark-fill)" />
+          <polyline points={sparkPoints} fill="none" stroke="var(--accent-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+    </section>
+  );
+
+  const renderImportCard = () => (
+    <button
+      type="button"
+      onClick={() => setShowImportManager(true)}
+      className="flex w-full items-center gap-3 rounded-2xl border theme-border theme-card p-4 text-left transition-all hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+    >
+      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-600 dark:text-cyan-300">
+        <Upload className="h-5 w-5 no-transition" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-bold text-theme-primary">Import</span>
+        <span className="block truncate text-xs text-theme-tertiary">Bring your notes from other apps — Evernote, Keep, Notion and more</span>
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-theme-muted no-transition" aria-hidden="true" />
+    </button>
+  );
+
+  return (
+    <div className="flex-1 overflow-y-auto" style={{ backgroundColor: 'var(--app-bg)' }}>
+      <div className="mx-auto max-w-6xl p-4 pb-28 md:p-6 lg:p-8 lg:pb-8 phone-landscape:p-3 phone-landscape:pb-32">
+        {/* Landscape phones — dedicated two-region composition */}
+        <div className="hidden phone-landscape:grid phone-landscape:grid-cols-2 phone-landscape:items-start phone-landscape:gap-4 [&>*]:min-w-0">
+          <div className="space-y-3 min-w-0">
+            {renderHero()}
+            {renderBackupCard()}
+            {renderQuickActions()}
+            {renderRecentNotebooks()}
+            {renderImportCard()}
+          </div>
+          <div className="space-y-3 min-w-0">
+            {renderRecentNotes()}
+            {renderQuickStats()}
+          </div>
         </div>
 
-        {/* Task Progress */}
-        {stats.tasks > 0 && (
-          <div className="rounded-xl theme-card border p-5">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5 text-emerald-500 no-transition" />
-                <h3 className="font-semibold text-theme-primary">Task Progress</h3>
-              </div>
-              <span className="text-sm font-bold text-emerald-500">{taskProgress}%</span>
-            </div>
-            <div className="w-full h-3 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--input-bg)' }}>
-              <div
-                className="h-full bg-gradient-to-r from-emerald-400 to-emerald-600 rounded-full transition-all duration-500"
-                style={{ width: `${taskProgress}%` }}
-              />
-            </div>
-            <p className="text-xs text-theme-tertiary mt-2">{stats.completedTasks} of {stats.tasks} tasks completed</p>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Scratch Pad */}
-          <div className="lg:col-span-1">
-            <div className="rounded-xl theme-card border overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 border-b theme-divider">
-                <Zap className="w-4 h-4 text-amber-500 no-transition" />
-                <h3 className="font-semibold text-theme-primary text-sm">Scratch Pad</h3>
-              </div>
-              <textarea
-                value={scratchPadValue}
-                onChange={e => setScratchPadValue(e.target.value)}
-                onBlur={handleScratchPadBlur}
-                placeholder="Quick capture — jot down anything..."
-                className="w-full h-40 px-4 py-3 text-sm bg-transparent text-theme-primary resize-none focus:outline-none"
-                spellCheck={settings.spellCheck}
-                style={{ color: 'var(--text-primary)' }}
-              />
-            </div>
-
-            {/* Calendar Widget */}
-            <div className="mt-4">
-              <CalendarWidget />
-            </div>
+        {/* Default, tablet and desktop composition */}
+        <div className="phone-landscape:hidden">
+          <div className="space-y-4">
+            {renderHero()}
+            {renderBackupCard()}
+            {renderQuickActions()}
+            {renderRecentNotebooks()}
           </div>
 
-          {/* Pinned & Recent */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Pinned Notes */}
-            {pinned.length > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <Pin className="w-4 h-4 accent-text no-transition" />
-                    <h3 className="font-semibold text-theme-primary">Pinned</h3>
+          <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_340px] lg:items-start [&>*]:min-w-0">
+            <div className="space-y-4 min-w-0">
+              {renderRecentNotes()}
+              {renderImportCard()}
+            </div>
+            {renderQuickStats()}
+          </div>
+        </div>
+
+        {/* Dashboard Extras: Celebrations, Pinned, ScratchPad, Calendar, Weekly */}
+        <div className="mt-6 space-y-6 phone-landscape:hidden">
+          {/* Celebrations */}
+          {todayCelebrations.length > 0 && (
+            <section
+              aria-live="polite"
+              aria-label="Today's celebration reminder"
+              className="rounded-2xl border border-white/50 bg-white/95 p-4 shadow-[0_18px_50px_rgba(30,41,59,0.14)] dark:border-blue-200/15 dark:bg-[#081d35]/95 dark:text-blue-50 dark:shadow-[0_18px_50px_rgba(1,8,20,0.32)]"
+            >
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100 dark:bg-blue-500/15 dark:text-blue-100 dark:ring-blue-200/20">
+                    <BellRing className="h-5 w-5 no-transition" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-wide text-surface-500 dark:text-blue-200/70">Today&apos;s celebrations</p>
+                    <p className="text-sm font-bold text-surface-950 dark:text-blue-50">
+                      {todayCelebrations.length} celebration{todayCelebrations.length === 1 ? '' : 's'} on your calendar today
+                    </p>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {pinned.map(note => (
-                    <NoteCard key={note.id} note={note} compact />
-                  ))}
+                <div className="inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-800 ring-1 ring-emerald-100 dark:bg-cyan-400/10 dark:text-cyan-100 dark:ring-cyan-300/20">
+                  <CalendarDays className="h-3.5 w-3.5 no-transition" />
+                  Reminder active
                 </div>
               </div>
-            )}
 
-            {/* Recently Modified */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-theme-tertiary no-transition" />
-                  <h3 className="font-semibold text-theme-primary">Recently Modified</h3>
-                </div>
-                <button
-                  onClick={() => setCurrentView('all-notes')}
-                  className="flex items-center gap-1 text-sm accent-text font-medium"
-                >
-                  View all <ChevronRight className="w-4 h-4 no-transition" />
-                </button>
-              </div>
-              {recent.length === 0 ? (
-                <div className="text-center py-12 rounded-xl theme-card border">
-                  <FileText className="w-12 h-12 text-theme-muted mx-auto mb-3 no-transition" />
-                  <p className="text-theme-secondary font-medium">No notes yet</p>
-                  <p className="text-theme-tertiary text-sm mt-1">Create your first note to get started!</p>
-                  <button
-                    onClick={() => createNote({})}
-                    className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg accent-button text-sm font-medium transition-colors"
+              <div className="mt-3 grid max-h-64 grid-cols-1 gap-3 overflow-y-auto pr-1 md:grid-cols-2">
+                {todayCelebrations.map((holiday, i) => (
+                  <article
+                    key={`${holiday.type}-${holiday.name}-${i}`}
+                    className={`rounded-xl border border-surface-200 bg-surface-50 p-4 text-left shadow-[0_1px_2px_rgba(15,23,42,0.05)] dark:border-blue-200/15 dark:bg-[#0b2745] ${todayCelebrations.length === 1 ? 'md:col-span-2' : ''}`}
                   >
-                    <Plus className="w-4 h-4 no-transition" /> New Note
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {recent.map(note => (
-                    <NoteCard key={note.id} note={note} compact />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Weekly Summary */}
-            <div className="rounded-xl theme-card border p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <Star className="w-4 h-4 text-amber-500 no-transition" />
-                <h3 className="font-semibold text-theme-primary">This Week</h3>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                {[
-                  { label: 'Notes Created', value: notes.filter(n => isThisWeek(new Date(n.createdAt))).length },
-                  { label: 'Notes Modified', value: notes.filter(n => isThisWeek(new Date(n.updatedAt))).length },
-                  { label: 'Tasks Done', value: notes.filter(n => isThisWeek(new Date(n.updatedAt))).flatMap(n => n.checklist).filter(c => c.checked).length },
-                ].map((s, i) => (
-                  <div key={i} className="text-center">
-                    <p className="text-2xl font-bold text-theme-primary">{s.value}</p>
-                    <p className="text-xs text-theme-tertiary mt-1">{s.label}</p>
-                  </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ring-1 ${celebrationToneClasses[holiday.type]}`}>
+                        {celebrationTypeLabels[holiday.type]}
+                      </span>
+                      <span className="text-xs font-bold text-surface-500 dark:text-blue-200/60">{holiday.flag}</span>
+                    </div>
+                    <h3 className="mt-2 text-base font-bold leading-snug text-surface-950 dark:text-blue-50">{holiday.name}</h3>
+                    <p className="mt-1.5 max-w-2xl text-sm font-medium leading-6 text-surface-700 dark:text-blue-100/80">{holiday.summary}</p>
+                    <button
+                      type="button"
+                      onClick={() => captureCelebrationReflection(holiday)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-surface-900 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-surface-800 dark:bg-blue-500 dark:hover:bg-blue-400"
+                      aria-label={`Capture a reflection for ${holiday.name}`}
+                    >
+                      <PenLine className="h-3.5 w-3.5 no-transition" />
+                      Capture reflection
+                    </button>
+                  </article>
                 ))}
               </div>
+            </section>
+          )}
+
+          {/* Pinned */}
+          {pinned.length > 0 && (
+            <section>
+              <div className="mb-3 flex items-center gap-2">
+                <Pin className="h-4 w-4 accent-text no-transition" aria-hidden="true" />
+                <h2 className="font-semibold text-theme-primary">Pinned</h2>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {pinned.map(note => (
+                  <NoteCard key={note.id} note={note} compact />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Scratch pad + calendar (isolated focus-safe ScratchPad) */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <ScratchPad />
+            <CalendarWidget />
+          </div>
+
+          {/* Weekly summary */}
+          <div className="rounded-2xl border theme-border theme-card p-5">
+            <div className="mb-3 flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-emerald-500 no-transition" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-theme-primary">This Week</h2>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: 'Notes Created', value: notes.filter(n => new Date(n.createdAt) >= new Date(Date.now() - 7 * 864e5)).length },
+                { label: 'Notes Modified', value: notes.filter(n => new Date(n.updatedAt) >= new Date(Date.now() - 7 * 864e5)).length },
+                { label: 'Tasks Done', value: notes.filter(n => new Date(n.updatedAt) >= new Date(Date.now() - 7 * 864e5)).flatMap(n => n.checklist || []).filter(c => Boolean(c?.checked)).length },
+              ].map((s, i) => (
+                <div key={i} className="text-center">
+                  <p className="text-2xl font-bold text-theme-primary">{s.value}</p>
+                  <p className="mt-1 text-xs text-theme-tertiary">{s.label}</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Import Manager Modal */}
+      {showBackupCenter && (
+        <BackupCenterModal isOpen={showBackupCenter} onClose={() => setShowBackupCenter(false)} />
+      )}
       {showImportManager && (
         <ImportManager onClose={() => setShowImportManager(false)} />
+      )}
+      {showNewNotebookModal && (
+        <NewNotebookModal isOpen={showNewNotebookModal} onClose={() => setShowNewNotebookModal(false)} />
       )}
     </div>
   );

@@ -2,24 +2,57 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import { db } from '@/utils/firebase';
 import { auth } from '@/utils/firebase';
-import { collection, doc, setDoc, deleteDoc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, setDoc, deleteDoc, limit, onSnapshot, orderBy, query, waitForPendingWrites, where } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { premiumFontFamilies } from '@/utils/fonts';
 import { encryptNoteData, decryptNoteData } from '@/utils/crypto';
 import {
+  buildDirectorySearchPrefixes,
   getEntityParticipants,
   legacyEmailsToShareAccess,
   normalizeEmail,
   normalizeShareAccess,
   shareAccessToRoleArrays,
 } from '@/utils/collaboration';
+import {
+  listCloudBackups,
+  loadCloudBackupPayload,
+  removeCloudBackup,
+  saveCloudBackup,
+  type CloudBackupMeta,
+} from '@/utils/cloudBackup';
 import type {
   Note, Notebook, Tag, NoteColor, Priority,
   ChecklistItem, UserProfile, AppSettings, SidebarView,
   SearchFilters, ThemeMode, ThemeAccent, NoteTheme, Reminder, NoteTemplate, Section,
   SavedSearch, SyncConflict, SyncQueueItem, ShareAccess, TeamSpace, ActivityItem,
-  AppNotification
+  AppNotification, ManualSyncResult, SyncStatus, AppReminder, ReminderStatus,
+  SyncConflictStrategy, ConflictRecoveryNotice
 } from '@/types';
+import { calculateSnoozeTime } from '@/utils/reminders';
+import { buildTemplateDraft } from '@/utils/templateExperience';
+import { buildDeletionPlan, executePermanentDeletion, retryPendingReminderCleanups, type DeletionResult } from '@/utils/recycleBinService';
+import { retryPendingMediaCleanups } from '@/utils/pendingMediaCleanupQueue';
+import { unsubscribeActiveMessages, clearChatCache } from '@/utils/chatService';
+import { setCurrentSpeechUser } from '@/utils/ntkAi';
+import { getTabCoordinator } from '@/utils/tabCoordinator';
+import { recordManualSyncMetrics, setActiveListenersCount } from '@/utils/performanceMetrics';
+import { commitQueuedNoteSafely } from '@/utils/noteSyncTransaction';
+import { getOfflineMediaSyncService, summarizePendingMedia } from '@/utils/offlineMediaSyncService';
+import { reconcileRemoteNotesSnapshot, hasMeaningfulNoteDifference, getConflictIdentity } from '@/utils/noteReconciliation';
+import { getPendingMediaForUser } from '@/utils/offlineMediaQueue';
+
+const resolvedConflictIdentities = new Set<string>();
+import {
+  saveJSONSafe,
+  persistDurableNotes,
+  persistDurableSyncQueue,
+  loadDurableRecord,
+  peekCrashJournal,
+  acknowledgeCrashJournal,
+  markDurableMigrationComplete,
+  isDurableMigrationComplete,
+} from '@/utils/durableOutbox';
 
 // ── Helpers ──
 const now = () => new Date().toISOString();
@@ -30,7 +63,119 @@ const loadJSON = <T>(key: string, fallback: T): T => {
   } catch { return fallback; }
 };
 const saveJSON = (key: string, data: unknown) => {
-  localStorage.setItem(key, JSON.stringify(data));
+  saveJSONSafe(key, data);
+};
+
+// ── Account-scoped workspace management ──
+// Each authenticated user gets their own localStorage namespace keyed by
+// Firebase UID. Guests (unauthenticated) use a separate namespace.
+// This prevents User A's private data from leaking to User B when they
+// sign in on the same browser/profile.
+let activeWorkspacePrefix = 'ntk:guest';
+
+/** All short keys that belong to a workspace namespace. */
+const WORKSPACE_SHORT_KEYS = [
+  'notes', 'notebooks', 'profile', 'settings', 'onboarded', 'scratchpad',
+  'saved-searches', 'team-spaces', 'activity-items', 'notifications',
+  'reminders', 'sync-queue', 'sync-conflicts', 'triggered-reminders',
+] as const;
+
+/** Legacy global keys from Round 1 (un-namespaced). */
+const LEGACY_GLOBAL_KEYS = WORKSPACE_SHORT_KEYS.map(k => `ntk-${k}`);
+
+/** Build a fully-qualified localStorage key for the active workspace. */
+const wsKey = (shortKey: string) => `${activeWorkspacePrefix}:${shortKey}`;
+
+/** Read from the active workspace namespace. */
+const loadWS = <T>(shortKey: string, fallback: T): T => loadJSON(wsKey(shortKey), fallback);
+
+/** Write to the active workspace namespace. */
+const saveWS = (shortKey: string, data: unknown) => saveJSON(wsKey(shortKey), data);
+
+/** Switch the active workspace prefix. Does NOT load/save data — callers handle that. */
+const setWorkspacePrefix = (uid: string | null) => {
+  activeWorkspacePrefix = uid ? `ntk:user:${uid}` : 'ntk:guest';
+};
+
+let authSessionGeneration = 0;
+
+/** Namespace prefix for quarantined legacy data requiring manual inspection. */
+export const LEGACY_RECOVERY_PREFIX = 'ntk:legacy-recovery';
+
+/**
+ * Migrate legacy un-namespaced global keys to a specific user's workspace.
+ * STRICT SAFETY RULE (Round 3):
+ * - Auto-migration occurs ONLY if:
+ *   1. Legacy data contains explicit ownership metadata (withOwner > 0).
+ *   2. 100% of owner-tagged legacy notes belong to the target UID (ownedByTarget === withOwner).
+ *   3. Target user does not already have namespaced data.
+ * - In ALL other cases (missing metadata, zero notes with other legacy artifacts, mixed accounts, or target has existing data),
+ *   legacy data is QUARANTINED safely to `ntk:legacy-recovery:*` and never assigned automatically.
+ * - Quarantined data is never initialized into Firestore or queued for sync.
+ * - Users can explicitly recover quarantined data via `recoverQuarantinedData(uid)`.
+ */
+const migrateLegacyData = (targetUid: string): { migrated: boolean; quarantined: boolean } => {
+  const hasLegacy = LEGACY_GLOBAL_KEYS.some(k => localStorage.getItem(k) !== null);
+  if (!hasLegacy) return { migrated: false, quarantined: false };
+
+  const targetPrefix = `ntk:user:${targetUid}`;
+  const hasExistingData = localStorage.getItem(`${targetPrefix}:notes`) !== null;
+
+  // Inspect legacy notes for ownership metadata
+  const legacyNotes = loadJSON<Array<{ ownerId?: string }>>('ntk-notes', []);
+  const withOwner = legacyNotes.filter(n => typeof n.ownerId === 'string' && n.ownerId.length > 0).length;
+  const ownedByTarget = legacyNotes.filter(n => n.ownerId === targetUid).length;
+
+  // Strict ownership proof:
+  // Must NOT already have target data, MUST have owner metadata, and 100% of owner-tagged notes must belong to targetUid
+  const canSafelyAutoMigrate = !hasExistingData && withOwner > 0 && ownedByTarget === withOwner;
+
+  if (canSafelyAutoMigrate) {
+    WORKSPACE_SHORT_KEYS.forEach(shortKey => {
+      const legacyKey = `ntk-${shortKey}`;
+      const raw = localStorage.getItem(legacyKey);
+      if (raw !== null) {
+        localStorage.setItem(`${targetPrefix}:${shortKey}`, raw);
+      }
+    });
+    LEGACY_GLOBAL_KEYS.forEach(k => localStorage.removeItem(k));
+    console.info(`[NTK] Safely migrated 100% verified legacy data to user ${targetUid.slice(0, 8)}…`);
+    return { migrated: true, quarantined: false };
+  } else {
+    // Quarantine legacy data safely under ntk:legacy-recovery:*
+    WORKSPACE_SHORT_KEYS.forEach(shortKey => {
+      const legacyKey = `ntk-${shortKey}`;
+      const raw = localStorage.getItem(legacyKey);
+      if (raw !== null) {
+        const recoveryKey = `${LEGACY_RECOVERY_PREFIX}:${shortKey}`;
+        if (localStorage.getItem(recoveryKey) === null) {
+          localStorage.setItem(recoveryKey, raw);
+        }
+      }
+    });
+    LEGACY_GLOBAL_KEYS.forEach(k => localStorage.removeItem(k));
+    console.warn(`[NTK] Legacy data quarantined to '${LEGACY_RECOVERY_PREFIX}' — ownership cannot be assumed automatically for user ${targetUid.slice(0, 8)}…`);
+    return { migrated: false, quarantined: true };
+  }
+};
+
+/**
+ * Explicit recovery helper: imports quarantined legacy data into the current user's workspace
+ * only when explicitly initiated by the user.
+ */
+export const recoverQuarantinedData = (targetUid: string): boolean => {
+  const targetPrefix = `ntk:user:${targetUid}`;
+  let count = 0;
+  WORKSPACE_SHORT_KEYS.forEach(shortKey => {
+    const recoveryKey = `${LEGACY_RECOVERY_PREFIX}:${shortKey}`;
+    const raw = localStorage.getItem(recoveryKey);
+    if (raw !== null) {
+      localStorage.setItem(`${targetPrefix}:${shortKey}`, raw);
+      localStorage.removeItem(recoveryKey);
+      count++;
+    }
+  });
+  return count > 0;
 };
 
 const stripUndefined = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -47,14 +192,54 @@ const fontValue = (label: string): string => {
 const countWords = (text: string) => text.trim() ? text.trim().split(/\s+/).length : 0;
 const countChars = (text: string) => text.length;
 
-const syncTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+const syncTimers: Record<string, { timer: ReturnType<typeof setTimeout>; baseUpdatedAt?: string }> = {};
+let syncFlushPromise: Promise<void> | null = null;
+let manualSyncInFlight: { uid: string; promise: Promise<ManualSyncResult> } | null = null;
+let syncFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+let directorySyncTimer: ReturnType<typeof setTimeout> | null = null;
 const activityThrottle: Record<string, number> = {};
 const NOTIFICATION_LIMIT = 300;
+const MANUAL_SYNC_TIMEOUT_MS = 20_000;
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
 
 const sortNotifications = (items: AppNotification[]) =>
   [...items].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
 const capNotifications = (items: AppNotification[]) => sortNotifications(items).slice(0, NOTIFICATION_LIMIT);
+
+const directoryRecord = (profile: Pick<UserProfile, 'name' | 'email' | 'initials' | 'avatar' | 'discoverable'>, uid?: string | null) => {
+  const name = profile.name.trim().slice(0, 120);
+  const email = normalizeEmail(profile.email);
+  const initials = profile.initials.slice(0, 4);
+  const record: Record<string, unknown> = {
+    name,
+    email,
+    initials,
+    searchPrefixes: buildDirectorySearchPrefixes(name, email),
+    discoverable: profile.discoverable !== false,
+    updatedAt: now(),
+  };
+  if (uid) {
+    record.uid = uid;
+  }
+  if (profile.avatar && (profile.avatar.startsWith('http://') || profile.avatar.startsWith('https://'))) {
+    record.photoURL = profile.avatar.slice(0, 500);
+  }
+  return record;
+};
 
 // ── Default Data ──
 const defaultNotebook: Notebook = {
@@ -72,6 +257,8 @@ const defaultProfile: UserProfile = {
   name: '',
   email: '',
   initials: '',
+  avatar: 'builtin:aurora',
+  avatarSource: undefined,
   createdAt: now(),
 };
 
@@ -107,6 +294,14 @@ const defaultSettings: AppSettings = {
   defaultSnoozeMinutes: 10,
   hasSeenTour: false,
   backupReminderDays: 14,
+  aiEnabled: true,
+  aiDefaultScope: 'selection',
+  aiWritingStyle: 'natural',
+  aiConfirmWholeNote: true,
+  storageGuardEnabled: true,
+  storageGuardTargetGb: 8,
+  voiceNoteQuality: 'standard',
+  voiceNoteMaxDurationMinutes: 15,
 };
 
 const defaultSearchFilters: SearchFilters = {
@@ -187,6 +382,28 @@ const defaultTemplates: NoteTemplate[] = [
     content: '# Brainstorm: [Topic]\n\n## Core Idea\n\n\n\n## Related Ideas\n\n- \n- \n- \n\n## Pros & Cons\n\n| Pros | Cons |\n|------|------|\n|  |  |\n\n## Next Steps\n\n',
     type: 'note',
     tags: ['brainstorm', 'ideas'],
+    checklist: [],
+  },
+  {
+    id: 'tpl-cv',
+    name: 'CV / Resume',
+    description: 'Professional CV starter with sample wording you can replace with your real experience',
+    icon: '📄',
+    content: '# CV / Resume\n\n## Professional Summary\n\n## Core Skills\n\n## Work Experience\n\n## Education\n\n## Certifications & Training\n\n## Additional Information\n',
+    type: 'note',
+    theme: 'graphite',
+    tags: ['career', 'cv', 'resume', 'job'],
+    checklist: [],
+  },
+  {
+    id: 'tpl-cover-letter',
+    name: 'Cover Letter',
+    description: 'Professional job application letter with an editable example',
+    icon: '✉️',
+    content: '# Cover Letter\n\n## Opening\n\n## Why I am a good fit\n\n## Why this role\n\n## Closing\n',
+    type: 'note',
+    theme: 'canvas',
+    tags: ['career', 'job', 'application'],
     checklist: [],
   },
 ];
@@ -582,11 +799,13 @@ interface AppState {
   teamSpaces: TeamSpace[];
   activityItems: ActivityItem[];
   notifications: AppNotification[];
+  reminders: AppReminder[];
   profile: UserProfile;
   settings: AppSettings;
   
   // UI State
   currentView: SidebarView;
+  settingsSection: string;
   selectedNoteId: string | null;
   selectedNotebookId: string | null;
   selectedTagId: string | null;
@@ -597,11 +816,24 @@ interface AppState {
   commandPaletteOpen: boolean;
   syncQueue: SyncQueueItem[];
   syncConflicts: SyncConflict[];
+  conflictRecoveryNotice: ConflictRecoveryNotice | null;
+  dismissConflictRecoveryNotice: () => void;
   online: boolean;
+  syncStatus: SyncStatus;
+  syncMessage: string;
+  lastManualSyncAt: string | null;
   unlockedNotes: Record<string, { title: string; content: string; checklist: ChecklistItem[]; password: string }>;
+  syncCenterOpen: boolean;
+  setSyncCenterOpen: (open: boolean) => void;
   
   // Scratch pad
   scratchPad: string;
+
+  // Messaging & AI Context
+  activeChatId: string | null;
+  setActiveChatId: (chatId: string | null) => void;
+  aiNoteContext: { noteId: string; noteTitle: string; noteContent?: string } | null;
+  setAiNoteContext: (context: { noteId: string; noteTitle: string; noteContent?: string } | null) => void;
   
   // Actions — Auth & Sync
   uid: string | null;
@@ -611,14 +843,16 @@ interface AppState {
   unsubscribeTeamSpaces: (() => void) | null;
   unsubscribeActivity: (() => void) | null;
   unsubscribeNotifications: (() => void) | null;
+  unsubscribeReminders: (() => void) | null;
   unsubscribeSharedNotes: (() => void) | null;
   unsubscribeSharedNotebooks: (() => void) | null;
-  initFirestore: (uid: string) => void;
+  initFirestore: (uid: string) => Promise<void>;
+  hydrateAuthenticatedWorkspace: (uid: string) => Promise<void>;
   clearAuth: () => void;
 
   // Actions — Profile
   setProfile: (profile: Partial<UserProfile>) => void;
-  completeOnboarding: (name: string, email?: string) => void;
+  completeOnboarding: (name: string, email?: string, avatar?: string) => void;
   
   // Actions — Settings
   updateSettings: (settings: Partial<AppSettings>) => void;
@@ -627,7 +861,8 @@ interface AppState {
   setNoteTheme: (id: string, theme: NoteTheme) => Promise<void>;
   toggleZenMode: () => void;
   flushSyncQueue: () => Promise<void>;
-  resolveSyncConflict: (conflictId: string, strategy: 'local' | 'remote') => Promise<void>;
+  manualSync: () => Promise<ManualSyncResult>;
+  resolveSyncConflict: (conflictId: string, strategy?: SyncConflictStrategy, conflictOverride?: SyncConflict) => Promise<void>;
   setOnlineStatus: (online: boolean) => void;
 
   // Actions — Notifications
@@ -638,6 +873,21 @@ interface AppState {
   snoozeNotification: (id: string, minutes: number) => void;
   recordNotificationDelivery: (id: string) => void;
   clearDismissedNotifications: () => void;
+
+  // Actions — Reminders
+  createReminder: (input: {
+    title: string;
+    dueAt: string;
+    noteId?: string;
+    details?: string;
+    priority?: Priority;
+    status?: ReminderStatus;
+  }) => Promise<AppReminder>;
+  updateReminder: (id: string, updates: Partial<AppReminder>) => Promise<void>;
+  deleteReminder: (id: string) => Promise<void>;
+  toggleReminderStatus: (id: string) => Promise<void>;
+  snoozeReminderItem: (id: string, minutes: 5 | 10 | 30 | 60 | 'tomorrow') => Promise<void>;
+  getAllReminders: () => AppReminder[];
   
   // Actions — Notes
   createNote: (partial: Partial<Note>) => Promise<Note>;
@@ -645,9 +895,10 @@ interface AppState {
   trashNote: (id: string) => Promise<void>;
   bulkTrashNotes: (ids: string[]) => Promise<void>;
   restoreNote: (id: string) => Promise<void>;
-  deleteNote: (id: string) => Promise<void>;
-  bulkDeleteNotes: (ids: string[]) => Promise<void>;
-  emptyTrash: () => Promise<void>;
+  deleteNote: (id: string) => Promise<DeletionResult>;
+  bulkDeleteNotes: (ids: string[]) => Promise<DeletionResult>;
+  emptyTrash: () => Promise<DeletionResult>;
+  restoreAll: () => Promise<void>;
   cleanupTrashOlderThan: (days: number) => Promise<{ notes: number; notebooks: number }>;
   archiveNote: (id: string) => Promise<void>;
   unarchiveNote: (id: string) => Promise<void>;
@@ -678,7 +929,7 @@ interface AppState {
   reorderNotebook: (id: string, parentId: string | null, targetIndex: number) => void;
   deleteNotebook: (id: string) => void;
   restoreNotebook: (id: string) => void;
-  permanentlyDeleteNotebook: (id: string) => void;
+  permanentlyDeleteNotebook: (id: string) => Promise<DeletionResult>;
   addSection: (notebookId: string, name: string) => Section;
   updateSection: (notebookId: string, sectionId: string, updates: Partial<Section>) => void;
   deleteSection: (notebookId: string, sectionId: string) => void;
@@ -692,6 +943,7 @@ interface AppState {
   setSearchFilters: (filters: Partial<SearchFilters>) => void;
   clearSearch: () => void;
   setCurrentView: (view: SidebarView) => void;
+  openSettings: (section?: string) => void;
   selectNote: (id: string | null) => void;
   selectNotebook: (id: string | null) => void;
   selectTag: (id: string | null) => void;
@@ -706,7 +958,7 @@ interface AppState {
   updateScratchPad: (content: string) => void;
   
   // Actions — Templates
-  createFromTemplate: (templateId: string) => Promise<Note | null>;
+  createFromTemplate: (templateId: string, options?: { title?: string; values?: Record<string, string>; includeExamples?: boolean }) => Promise<Note | null>;
   
   createTeamSpace: (name: string, notebookIds?: string[]) => TeamSpace;
   updateTeamSpace: (id: string, updates: Partial<TeamSpace>) => void;
@@ -719,6 +971,12 @@ interface AppState {
   exportAllNotes: () => string;
   importNotes: (json: string) => boolean;
   resetApp: () => Promise<void>;
+
+  // Actions — Cloud snapshot backups
+  createCloudBackup: (trigger?: CloudBackupMeta['trigger']) => Promise<CloudBackupMeta>;
+  fetchCloudBackups: () => Promise<CloudBackupMeta[]>;
+  restoreCloudBackup: (backupId: string, mode?: 'merge' | 'replace') => Promise<{ restoredNotes: number; restoredNotebooks: number }>;
+  deleteCloudBackup: (backupId: string) => Promise<void>;
   
   // Computed
   getFilteredNotes: () => Note[];
@@ -738,43 +996,57 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set, get) => {
-  // Load initial state from localStorage
-  const initialNotes = loadJSON<Note[]>('ntk-notes', []);
-  const initialNotebooks = loadJSON<Notebook[]>('ntk-notebooks', [defaultNotebook]);
-  const initialProfile = loadJSON<UserProfile>('ntk-profile', defaultProfile);
-  const initialSettings = { ...defaultSettings, ...loadJSON<Partial<AppSettings>>('ntk-settings', {}) };
-  initialSettings.editorFontFamily = fontValue(initialSettings.editorFontFamily);
-  const initialOnboarded = loadJSON<boolean>('ntk-onboarded', false);
-  const initialScratchPad = loadJSON<string>('ntk-scratchpad', '');
-  const initialSavedSearches = loadJSON<SavedSearch[]>('ntk-saved-searches', []);
-  const initialTeamSpaces = loadJSON<TeamSpace[]>('ntk-team-spaces', []);
-  const initialActivityItems = loadJSON<ActivityItem[]>('ntk-activity-items', []);
-  const initialNotifications = capNotifications(loadJSON<AppNotification[]>('ntk-notifications', []));
-  const initialSyncQueue = loadJSON<SyncQueueItem[]>('ntk-sync-queue', []);
-  const initialSyncConflicts = loadJSON<SyncConflict[]>('ntk-sync-conflicts', []);
-
-  // Persist helper
-  const persist = () => {
-    const state = get();
-    saveJSON('ntk-notes', state.notes);
-    saveJSON('ntk-notebooks', state.notebooks);
-    saveJSON('ntk-profile', state.profile);
-    saveJSON('ntk-settings', state.settings);
-    saveJSON('ntk-onboarded', state.isOnboarded);
-    saveJSON('ntk-scratchpad', state.scratchPad);
-    saveJSON('ntk-saved-searches', state.savedSearches);
-    saveJSON('ntk-team-spaces', state.teamSpaces);
-    saveJSON('ntk-activity-items', state.activityItems.slice(0, 200));
-    saveJSON('ntk-notifications', capNotifications(state.notifications));
-    saveJSON('ntk-sync-queue', state.syncQueue);
-    saveJSON('ntk-sync-conflicts', state.syncConflicts);
+  // ── Load workspace data helper (used at init and on workspace switch) ──
+  const loadWorkspaceData = () => {
+    const notes = loadWS<Note[]>('notes', []);
+    const notebooks = loadWS<Notebook[]>('notebooks', [defaultNotebook]);
+    const profile = loadWS<UserProfile>('profile', defaultProfile);
+    const settings = { ...defaultSettings, ...loadWS<Partial<AppSettings>>('settings', {}) };
+    settings.editorFontFamily = fontValue(settings.editorFontFamily);
+    const isOnboarded = loadWS<boolean>('onboarded', false);
+    const scratchPad = loadWS<string>('scratchpad', '');
+    const savedSearches = loadWS<SavedSearch[]>('saved-searches', []);
+    const teamSpaces = loadWS<TeamSpace[]>('team-spaces', []);
+    const activityItems = loadWS<ActivityItem[]>('activity-items', []);
+    const notifications = capNotifications(loadWS<AppNotification[]>('notifications', []));
+    const loadedReminders = loadWS<AppReminder[]>('reminders', []);
+    // Backfill any legacy note.reminder into reminders map
+    const remindersMap = new Map<string, AppReminder>();
+    loadedReminders.forEach(r => remindersMap.set(r.id, r));
+    notes.forEach(n => {
+      if (n.reminder && !n.trashed) {
+        const rid = n.reminder.id || `reminder-note-${n.id}`;
+        if (!remindersMap.has(rid)) {
+          remindersMap.set(rid, {
+            id: rid,
+            ownerId: n.ownerId,
+            noteId: n.id,
+            title: n.reminder.title || n.title || 'Note reminder',
+            dueAt: n.reminder.time,
+            status: 'active',
+            triggered: !!n.reminder.triggered,
+            createdAt: n.createdAt || now(),
+            updatedAt: n.updatedAt || now(),
+          });
+        }
+      }
+    });
+    const reminders = [...remindersMap.values()];
+    const syncQueue = loadWS<SyncQueueItem[]>('sync-queue', []);
+    const syncConflicts = loadWS<SyncConflict[]>('sync-conflicts', []);
+    return {
+      notes, notebooks, profile, settings, isOnboarded, scratchPad,
+      savedSearches, teamSpaces, activityItems, notifications,
+      reminders, syncQueue, syncConflicts,
+      tags: rebuildTagsFromNotes(notes),
+    };
   };
 
-  // Rebuild tags from notes
-  const rebuildTags = (notes: Note[]): Tag[] => {
+  // Rebuild tags from notes (standalone version used before store is ready)
+  const rebuildTagsFromNotes = (notes: Note[]): Tag[] => {
     const tagMap = new Map<string, number>();
     notes.filter(n => !n.trashed).forEach(n => {
-      n.tags.forEach(t => tagMap.set(t, (tagMap.get(t) || 0) + 1));
+      (n.tags || []).forEach(t => tagMap.set(t, (tagMap.get(t) || 0) + 1));
     });
     return Array.from(tagMap.entries()).map(([name, count]) => ({
       id: name.toLowerCase().replace(/\s+/g, '-'),
@@ -784,125 +1056,265 @@ export const useStore = create<AppState>((set, get) => {
     }));
   };
 
-  const enqueueSync = (noteId: string, operation: SyncQueueItem['operation'], entityType: SyncQueueItem['entityType'] = 'note') => {
+  // Load initial state from guest workspace
+  const initialData = loadWorkspaceData();
+  const migratedUids = new Set<string>();
+
+  // Persist helper — writes all workspace data to the active namespace.
+  // §6: For authenticated migrated users, IndexedDB is the heavy-state authority.
+  // Full notes and sync queue are NOT continuously serialized into localStorage once migration succeeds.
+  // localStorage retains small settings, profile, metadata, and crash journals.
+  const persist = () => {
+    const state = get();
+    const uid = state.uid;
+    const isMigrated = Boolean(uid && migratedUids.has(uid));
+
+    if (!isMigrated) {
+      saveWS('notes', state.notes);
+      saveWS('sync-queue', state.syncQueue);
+    }
+    saveWS('notebooks', state.notebooks);
+    saveWS('profile', state.profile);
+    saveWS('settings', state.settings);
+    saveWS('onboarded', state.isOnboarded);
+    saveWS('scratchpad', state.scratchPad);
+    saveWS('saved-searches', state.savedSearches);
+    saveWS('team-spaces', state.teamSpaces);
+    saveWS('activity-items', state.activityItems.slice(0, 200));
+    saveWS('notifications', capNotifications(state.notifications));
+    saveWS('reminders', state.reminders);
+    saveWS('sync-conflicts', state.syncConflicts);
+
+    // Durable heavy state authority in IndexedDB
+    if (uid) {
+      void persistDurableNotes(uid, state.notes);
+      void persistDurableSyncQueue(uid, state.syncQueue);
+    }
+  };
+
+  // Alias for rebuildTagsFromNotes (used throughout the store actions)
+  const rebuildTags = rebuildTagsFromNotes;
+
+  const enqueueSync = (
+    noteId: string,
+    operation: SyncQueueItem['operation'],
+    entityType: SyncQueueItem['entityType'] = 'note',
+    metadata?: Pick<SyncQueueItem, 'wasShared' | 'ownerId' | 'baseUpdatedAt'>,
+  ) => {
     set(s => {
       const queue = s.syncQueue.filter(item => !(item.noteId === noteId && (item.entityType || 'note') === entityType));
       return {
         syncQueue: [
           ...queue,
-          { id: uuid(), noteId, operation, createdAt: now(), attempts: 0, entityType },
+          { id: uuid(), noteId, operation, createdAt: now(), attempts: 0, entityType, ...metadata },
         ],
       };
     });
     persist();
   };
 
-  const flushQueuedSync = async () => {
-    const state = get();
-    if (!state.uid || !state.online || state.syncQueue.length === 0) return;
+  const flushQueuedSync = (): Promise<void> => {
+    const currentGen = authSessionGeneration;
+    const targetUid = get().uid;
+    if (!targetUid) return Promise.resolve();
 
-    for (const item of [...state.syncQueue]) {
-      const isNotebook = item.entityType === 'notebook';
-      const isTeamSpace = item.entityType === 'teamSpace';
-      const isNotification = item.entityType === 'notification';
-      if (!isNotebook && !isTeamSpace && !isNotification && get().syncConflicts.some(conflict => conflict.noteId === item.noteId)) {
-        continue;
-      }
+    syncFlushPromise = (async () => {
+      while (true) {
+        if (currentGen !== authSessionGeneration || get().uid !== targetUid) return;
+        const state = get();
+        if (!state.uid || !state.online || state.syncQueue.length === 0) return;
 
-      try {
-        if (isNotification) {
-          const notification = get().notifications.find(itemRecord => itemRecord.id === item.noteId);
-          if (item.operation === 'delete') {
-            await deleteDoc(doc(db, `users/${state.uid}/notifications`, item.noteId));
-          } else if (notification) {
-            await setDoc(doc(db, `users/${state.uid}/notifications`, item.noteId), stripUndefined(notification));
-          }
-        } else if (isTeamSpace) {
-          const teamSpace = get().teamSpaces.find(space => space.id === item.noteId);
-          if (item.operation === 'delete') {
-            await deleteDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId));
-          } else if (teamSpace) {
-            await setDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId), stripUndefined(teamSpace));
-          }
-        } else if (isNotebook) {
-          const nb = get().notebooks.find(n => n.id === item.noteId);
-          if (item.operation === 'delete') {
-            if (nb?.isShared) {
-              await deleteDoc(doc(db, 'shared_notebooks', item.noteId));
-            } else {
-              await deleteDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId));
+        const conflictIds = new Set(state.syncConflicts.map(conflict => conflict.noteId));
+        const item = state.syncQueue.find(queued =>
+          (queued.entityType || 'note') !== 'note' || !conflictIds.has(queued.noteId)
+        );
+        if (!item) return;
+
+        const isNotebook = item.entityType === 'notebook';
+        const isTeamSpace = item.entityType === 'teamSpace';
+        const isNotification = item.entityType === 'notification';
+        const isReminder = item.entityType === 'reminder';
+
+        try {
+          if (isReminder) {
+            const reminder = get().reminders.find(itemRecord => itemRecord.id === item.noteId);
+            if (item.operation === 'delete') {
+              await deleteDoc(doc(db, `users/${state.uid}/reminders`, item.noteId));
+            } else if (reminder) {
+              await setDoc(doc(db, `users/${state.uid}/reminders`, item.noteId), stripUndefined(reminder));
             }
-          } else {
-            if (nb) {
+          } else if (isNotification) {
+            const notification = get().notifications.find(itemRecord => itemRecord.id === item.noteId);
+            if (item.operation === 'delete') {
+              await deleteDoc(doc(db, `users/${state.uid}/notifications`, item.noteId));
+            } else if (notification) {
+              await setDoc(doc(db, `users/${state.uid}/notifications`, item.noteId), stripUndefined(notification));
+            }
+          } else if (isTeamSpace) {
+            const teamSpace = get().teamSpaces.find(space => space.id === item.noteId);
+            if (item.operation === 'delete') {
+              await deleteDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId));
+            } else if (teamSpace) {
+              await setDoc(doc(db, `users/${state.uid}/team_spaces`, item.noteId), stripUndefined(teamSpace));
+            }
+          } else if (isNotebook) {
+            const nb = get().notebooks.find(n => n.id === item.noteId);
+            if (item.operation === 'delete') {
+              if (item.wasShared && item.ownerId === state.uid) {
+                await deleteDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId));
+                await deleteDoc(doc(db, 'shared_notebooks', item.noteId));
+              } else {
+                await deleteDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId));
+              }
+            } else if (nb) {
               if (nb.isShared) {
                 await setDoc(doc(db, 'shared_notebooks', item.noteId), stripUndefined(nb));
+                if (nb.ownerId === state.uid) {
+                  await setDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId), stripUndefined(nb));
+                }
               } else {
                 await setDoc(doc(db, `users/${state.uid}/notebooks`, item.noteId), stripUndefined(nb));
               }
             }
-          }
-        } else {
-          const note = get().notes.find(n => n.id === item.noteId);
-          if (item.operation === 'delete') {
-            if (note?.isShared) {
-              await deleteDoc(doc(db, 'shared_notes', item.noteId));
-            } else {
-              await deleteDoc(doc(db, `users/${state.uid}/notes`, item.noteId));
-            }
           } else {
-            if (note) {
-              if (note.isShared) {
-                await setDoc(doc(db, 'shared_notes', item.noteId), stripUndefined(note));
+            const note = get().notes.find(n => n.id === item.noteId);
+            if (item.operation === 'delete') {
+              if (item.wasShared && item.ownerId === state.uid) {
+                await deleteDoc(doc(db, `users/${state.uid}/notes`, item.noteId));
+                await deleteDoc(doc(db, 'shared_notes', item.noteId));
               } else {
-                await setDoc(doc(db, `users/${state.uid}/notes`, item.noteId), stripUndefined(note));
+                await deleteDoc(doc(db, `users/${state.uid}/notes`, item.noteId));
+              }
+            } else if (note) {
+              // Atomic compare-and-write via Firestore transaction
+              const commitResult = await commitQueuedNoteSafely(db, state.uid, note, item);
+              if (commitResult.status === 'conflict') {
+                if (currentGen === authSessionGeneration && get().uid === targetUid) {
+                  const conflictId = uuid();
+                  const conflict: SyncConflict = {
+                    id: conflictId,
+                    noteId: item.noteId,
+                    local: note,
+                    remote: commitResult.remoteNote,
+                    detectedAt: now(),
+                  };
+                  await get().resolveSyncConflict(conflictId, 'auto_safe', conflict);
+                }
+                continue;
+              } else if (commitResult.status === 'remote_deleted') {
+                // Note was deleted on another device. Safely recover user edits into new private note.
+                if (currentGen === authSessionGeneration && get().uid === targetUid) {
+                  const conflictId = uuid();
+                  const conflict: SyncConflict = {
+                    id: conflictId,
+                    noteId: item.noteId,
+                    local: note,
+                    detectedAt: now(),
+                    deletedRemotely: true,
+                  };
+                  await get().resolveSyncConflict(conflictId, 'auto_safe', conflict);
+                }
+                continue;
+              } else if (commitResult.status === 'failed') {
+                // FAIL CLOSED: do NOT remove from queue, do not write anyway
+                // Increment attempt count and EXIT the flush loop to prevent hot retry storm.
+                console.warn('[Sync] Atomic commit failed closed:', commitResult.error);
+                if (currentGen === authSessionGeneration && get().uid === targetUid) {
+                  set(s => ({
+                    syncQueue: s.syncQueue.map(queued =>
+                      queued.id === item.id ? { ...queued, attempts: queued.attempts + 1 } : queued
+                    ),
+                  }));
+                  persist();
+                }
+                return; // EXIT flush — do NOT continue to retry in tight loop
               }
             }
           }
+
+          if (currentGen === authSessionGeneration && get().uid === targetUid) {
+            set(s => ({ syncQueue: s.syncQueue.filter(queued => queued.id !== item.id) }));
+            persist();
+          }
+        } catch (error) {
+          console.warn('Sync queued for retry:', error);
+          if (currentGen === authSessionGeneration && get().uid === targetUid) {
+            set(s => ({
+              syncQueue: s.syncQueue.map(queued =>
+                queued.id === item.id ? { ...queued, attempts: queued.attempts + 1 } : queued
+              ),
+            }));
+            persist();
+          }
+          return;
         }
-        set(s => ({ syncQueue: s.syncQueue.filter(queued => queued.id !== item.id) }));
-        persist();
-      } catch (error) {
-        console.warn('Sync queued for retry:', error);
-        set(s => ({
-          syncQueue: s.syncQueue.map(queued =>
-            queued.id === item.id ? { ...queued, attempts: queued.attempts + 1 } : queued
-          ),
-        }));
-        persist();
-        break;
       }
-    }
+    })().finally(() => {
+      syncFlushPromise = null;
+    });
+
+    return syncFlushPromise;
   };
 
-  const syncNoteToFirestore = (noteId: string, debounceMs = 0) => {
-    if (syncTimers[noteId]) {
-      clearTimeout(syncTimers[noteId]);
+  const queueDebouncedNoteEdits = () => {
+    const pendingNoteIds = Object.keys(syncTimers);
+    pendingNoteIds.forEach(noteId => {
+      const timerMeta = syncTimers[noteId];
+      clearTimeout(timerMeta.timer);
+      const preservedBaseUpdatedAt = timerMeta.baseUpdatedAt;
       delete syncTimers[noteId];
-    }
+      const state = get();
+      const queuedDelete = state.syncQueue.some(item =>
+        (item.entityType || 'note') === 'note' && item.noteId === noteId && item.operation === 'delete'
+      );
+      if (!queuedDelete && state.notes.some(note => note.id === noteId)) {
+        enqueueSync(noteId, 'upsert', 'note', preservedBaseUpdatedAt ? { baseUpdatedAt: preservedBaseUpdatedAt } : undefined);
+      }
+    });
+    return pendingNoteIds.length;
+  };
+
+  const setSyncFeedback = (status: Exclude<SyncStatus, 'syncing'>, message: string) => {
+    if (syncFeedbackTimer) clearTimeout(syncFeedbackTimer);
+    set({ syncStatus: status, syncMessage: message });
+    syncFeedbackTimer = setTimeout(() => {
+      if (get().syncStatus === status) set({ syncStatus: 'idle', syncMessage: '' });
+      syncFeedbackTimer = null;
+    }, status === 'success' ? 4_000 : 8_000);
+  };
+
+  const syncNoteToFirestore = (noteId: string, debounceMs = 0, baseUpdatedAt?: string) => {
     if (debounceMs > 0) {
-      syncTimers[noteId] = setTimeout(() => {
+      // Preserve the FIRST remote baseline for this editing session.
+      // If a timer already exists, keep its original baseUpdatedAt — do NOT overwrite with a later local timestamp.
+      const existingMeta = syncTimers[noteId];
+      const preservedBase = existingMeta?.baseUpdatedAt || baseUpdatedAt;
+      if (existingMeta) {
+        clearTimeout(existingMeta.timer);
+      }
+      const timer = setTimeout(() => {
+        const meta = syncTimers[noteId];
+        const finalBase = meta?.baseUpdatedAt;
         delete syncTimers[noteId];
-        enqueueSync(noteId, 'upsert');
+        enqueueSync(noteId, 'upsert', 'note', finalBase ? { baseUpdatedAt: finalBase } : undefined);
         void flushQueuedSync();
       }, debounceMs);
+      syncTimers[noteId] = { timer, baseUpdatedAt: preservedBase };
     } else {
-      enqueueSync(noteId, 'upsert');
+      // Immediate sync — clear any pending debounce and preserve its baseline
+      const existingMeta = syncTimers[noteId];
+      const preservedBase = existingMeta?.baseUpdatedAt || baseUpdatedAt;
+      if (existingMeta) {
+        clearTimeout(existingMeta.timer);
+        delete syncTimers[noteId];
+      }
+      enqueueSync(noteId, 'upsert', 'note', preservedBase ? { baseUpdatedAt: preservedBase } : undefined);
       void flushQueuedSync();
     }
   };
 
-  const deleteNoteFromFirestore = (noteId: string) => {
-    enqueueSync(noteId, 'delete');
-    void flushQueuedSync();
-  };
-
   const syncNotebookToFirestore = (notebookId: string) => {
     enqueueSync(notebookId, 'upsert', 'notebook');
-    void flushQueuedSync();
-  };
-
-  const deleteNotebookFromFirestore = (notebookId: string) => {
-    enqueueSync(notebookId, 'delete', 'notebook');
     void flushQueuedSync();
   };
 
@@ -923,6 +1335,16 @@ export const useStore = create<AppState>((set, get) => {
 
   const deleteNotificationFromFirestore = (notificationId: string) => {
     enqueueSync(notificationId, 'delete', 'notification');
+    void flushQueuedSync();
+  };
+
+  const syncReminderToFirestore = (reminderId: string) => {
+    enqueueSync(reminderId, 'upsert', 'reminder');
+    void flushQueuedSync();
+  };
+
+  const deleteReminderFromFirestore = (reminderId: string) => {
+    enqueueSync(reminderId, 'delete', 'reminder');
     void flushQueuedSync();
   };
 
@@ -955,29 +1377,40 @@ export const useStore = create<AppState>((set, get) => {
     );
 
   return {
-    notes: initialNotes,
-    notebooks: initialNotebooks.length ? initialNotebooks : [defaultNotebook],
-    tags: rebuildTags(initialNotes),
+    notes: initialData.notes,
+    notebooks: initialData.notebooks.length ? initialData.notebooks : [defaultNotebook],
+    tags: initialData.tags,
     templates: [...defaultTemplates, ...premiumTemplates],
-    savedSearches: initialSavedSearches,
-    teamSpaces: initialTeamSpaces,
-    activityItems: initialActivityItems,
-    notifications: initialNotifications,
-    profile: initialProfile,
-    settings: initialSettings,
+    savedSearches: initialData.savedSearches,
+    teamSpaces: initialData.teamSpaces,
+    activityItems: initialData.activityItems,
+    notifications: initialData.notifications,
+    reminders: initialData.reminders,
+    profile: initialData.profile,
+    settings: initialData.settings,
     currentView: 'home',
+    settingsSection: 'profile',
     selectedNoteId: null,
     selectedNotebookId: null,
     selectedTagId: null,
     editingNote: false,
     searchFilters: defaultSearchFilters,
-    isOnboarded: initialOnboarded,
+    isOnboarded: initialData.isOnboarded,
     sidebarOpen: false,
     commandPaletteOpen: false,
-    syncQueue: initialSyncQueue,
-    syncConflicts: initialSyncConflicts,
+    syncQueue: initialData.syncQueue,
+    syncConflicts: initialData.syncConflicts,
+    conflictRecoveryNotice: null,
+    dismissConflictRecoveryNotice: () => set({ conflictRecoveryNotice: null }),
     online: typeof navigator === 'undefined' ? true : navigator.onLine,
+    syncStatus: 'idle',
+    syncMessage: '',
+    lastManualSyncAt: null,
     unlockedNotes: {},
+    syncCenterOpen: false,
+    setSyncCenterOpen: (syncCenterOpen: boolean) => set({ syncCenterOpen }),
+    activeChatId: null,
+    aiNoteContext: null,
     uid: null,
     unsubscribeNotes: null,
     unsubscribeNotebooks: null,
@@ -985,112 +1418,263 @@ export const useStore = create<AppState>((set, get) => {
     unsubscribeTeamSpaces: null,
     unsubscribeActivity: null,
     unsubscribeNotifications: null,
+    unsubscribeReminders: null,
     unsubscribeSharedNotes: null,
     unsubscribeSharedNotebooks: null,
     
-    initFirestore: (uid) => {
-      set({ uid });
-      const notesRef = collection(db, `users/${uid}/notes`);
-      
-      let isFirstNotesSnapshot = true;
-      const unsubscribe = onSnapshot(notesRef, (snapshot) => {
-        const notes = snapshot.docs.map(doc => doc.data() as Note);
-        set(s => {
-          const pendingIds = new Set(s.syncQueue.filter(item => (item.entityType || 'note') === 'note').map(item => item.noteId));
-          const remoteIds = new Set(notes.map(note => note.id));
-          const conflicts = [...s.syncConflicts];
-          const merged = [...s.notes];
+    hydrateAuthenticatedWorkspace: async (uid: string) => {
+      const outgoingUid = get().uid;
+      if (outgoingUid && outgoingUid !== uid) {
+        persist(); // Save outgoing workspace before switching namespace
+      }
+      migrateLegacyData(uid); // Strict legacy migration / quarantine for this user
+      setWorkspacePrefix(uid); // Switch active namespace to ntk:user:{uid}
+      const userData = loadWorkspaceData();
 
-          // Upload any local notes initially to avoid accidental data loss
-          if (isFirstNotesSnapshot) {
-            s.notes.forEach(note => {
-              if (!remoteIds.has(note.id) && !pendingIds.has(note.id)) {
-                void setDoc(doc(db, `users/${uid}/notes`, note.id), stripUndefined(note)).catch(console.error);
-                remoteIds.add(note.id);
+      // ── Durable IndexedDB Hydration (§2-§9) ──
+      try {
+        const durable = await loadDurableRecord(uid);
+        let migrationDone = await isDurableMigrationComplete(uid);
+        if (migrationDone) {
+          migratedUids.add(uid);
+        }
+
+        // Determine best source for notes
+        if (durable.notes && durable.notes.length > 0) {
+          const durableTime = durable.notesUpdatedAt ? new Date(durable.notesUpdatedAt).getTime() : 0;
+          const lsMaxTime = userData.notes.length > 0
+            ? Math.max(...userData.notes.map(n => new Date(n.updatedAt).getTime()))
+            : 0;
+
+          // Prefer IndexedDB if: (a) migration done, OR (b) IndexedDB is newer, OR (c) localStorage empty
+          if (migrationDone || durableTime >= lsMaxTime || userData.notes.length === 0) {
+            userData.notes = durable.notes;
+          }
+        }
+
+        // Determine best source for sync queue
+        if (durable.queue && durable.queue.length > 0) {
+          const durableQueueTime = durable.queueUpdatedAt ? new Date(durable.queueUpdatedAt).getTime() : 0;
+          const merged = new Map<string, typeof userData.syncQueue[0]>();
+          for (const item of userData.syncQueue) {
+            merged.set(`${item.noteId}:${item.entityType || 'note'}`, item);
+          }
+          if (durableQueueTime > 0 || userData.syncQueue.length === 0) {
+            for (const item of durable.queue) {
+              const key = `${item.noteId}:${item.entityType || 'note'}`;
+              if (!merged.has(key)) {
+                merged.set(key, item);
               }
-            });
-            isFirstNotesSnapshot = false;
+            }
+          }
+          userData.syncQueue = [...merged.values()];
+        }
+
+        // Legacy Migration Safety (§7): Write localStorage data to IndexedDB AND verify read-back
+        if (!migrationDone && userData.notes.length > 0) {
+          const writeOk = await persistDurableNotes(uid, userData.notes);
+          if (writeOk) {
+            const readBack = await loadDurableRecord(uid);
+            if (readBack.notes && readBack.notes.length >= userData.notes.length) {
+              await markDurableMigrationComplete(uid);
+              migratedUids.add(uid);
+              migrationDone = true;
+            }
+          }
+          await persistDurableSyncQueue(uid, userData.syncQueue);
+        }
+
+        // Crash Journal Recovery (§9): Peek journal, restore content AND sync intent, persist, verify, acknowledge
+        const journalEntries = peekCrashJournal(uid);
+        if (journalEntries.length > 0) {
+          for (const entry of journalEntries) {
+            const idx = userData.notes.findIndex(n => n.id === entry.noteId);
+            if (idx >= 0) {
+              userData.notes[idx] = {
+                ...userData.notes[idx],
+                title: entry.title,
+                content: entry.content,
+                updatedAt: entry.updatedAt,
+              };
+            } else {
+              userData.notes.push({
+                id: entry.noteId,
+                title: entry.title,
+                content: entry.content,
+                updatedAt: entry.updatedAt,
+                createdAt: entry.updatedAt,
+                tags: [],
+                color: 'default',
+                pinned: false,
+                archived: false,
+                trashed: false,
+                ownerId: uid,
+              } as unknown as Note);
+            }
+            // Restore sync intent: ensure a pending sync item exists with baseUpdatedAt
+            const hasQueueItem = userData.syncQueue.some(
+              q => q.noteId === entry.noteId && (q.entityType || 'note') === 'note'
+            );
+            if (!hasQueueItem) {
+              userData.syncQueue.push({
+                id: uuid(),
+                noteId: entry.noteId,
+                operation: 'upsert',
+                createdAt: now(),
+                attempts: 0,
+                entityType: 'note',
+                baseUpdatedAt: entry.baseUpdatedAt || entry.updatedAt,
+              });
+            }
           }
 
-          notes.forEach(remote => {
-            const idx = merged.findIndex(note => note.id === remote.id);
-            if (idx >= 0) {
-              const local = merged[idx];
-              if (pendingIds.has(remote.id) && local.updatedAt !== remote.updatedAt) {
-                const exists = conflicts.some(conflict =>
-                  conflict.noteId === remote.id &&
-                  conflict.local.updatedAt === local.updatedAt &&
-                  conflict.remote.updatedAt === remote.updatedAt
-                );
-                if (!exists) {
-                  conflicts.push({ id: uuid(), noteId: remote.id, local, remote, detectedAt: now() });
-                }
-              } else {
-                merged[idx] = remote;
-              }
-            } else {
-              merged.push(remote);
-            }
-          });
+          // Persist verified recovered durable state BEFORE acknowledging journal
+          const writeNotesOk = await persistDurableNotes(uid, userData.notes);
+          const writeQueueOk = await persistDurableSyncQueue(uid, userData.syncQueue);
+          if (writeNotesOk && writeQueueOk) {
+            acknowledgeCrashJournal(uid, journalEntries);
+          }
+        }
+      } catch (err) {
+        console.warn('[NTK] Durable hydration failed, using localStorage fallback:', err);
+      }
 
-          const withPending = remoteIds.size === 0
-            ? merged
-            : merged.filter(note => remoteIds.has(note.id) || pendingIds.has(note.id));
-          return { notes: withPending, tags: rebuildTags(withPending), syncConflicts: conflicts };
+      // Apply final hydrated state to Zustand store
+      set({
+        uid,
+        notes: userData.notes,
+        notebooks: userData.notebooks.length ? userData.notebooks : [defaultNotebook],
+        tags: rebuildTags(userData.notes),
+        profile: userData.profile,
+        settings: userData.settings,
+        isOnboarded: userData.isOnboarded,
+        scratchPad: userData.scratchPad,
+        savedSearches: userData.savedSearches,
+        teamSpaces: userData.teamSpaces,
+        activityItems: userData.activityItems,
+        notifications: userData.notifications,
+        reminders: userData.reminders,
+        syncQueue: userData.syncQueue,
+        syncConflicts: userData.syncConflicts,
+        conflictRecoveryNotice: null,
+      });
+
+      persist();
+    },
+
+    initFirestore: async (uid) => {
+      // ── Teardown any previous listeners and invalidate in-flight async operations ──
+      const sessionGen = ++authSessionGeneration;
+      const {
+        unsubscribeNotes: prevUnsubNotes,
+        unsubscribeNotebooks: prevUnsubNotebooks,
+        unsubscribeSettings: prevUnsubSettings,
+        unsubscribeTeamSpaces: prevUnsubTeamSpaces,
+        unsubscribeActivity: prevUnsubActivity,
+        unsubscribeNotifications: prevUnsubNotifications,
+        unsubscribeReminders: prevUnsubReminders,
+        unsubscribeSharedNotes: prevUnsubSharedNotes,
+        unsubscribeSharedNotebooks: prevUnsubSharedNotebooks
+      } = get();
+
+      if (prevUnsubNotes) { try { prevUnsubNotes(); } catch {} }
+      if (prevUnsubNotebooks) { try { prevUnsubNotebooks(); } catch {} }
+      if (prevUnsubSettings) { try { prevUnsubSettings(); } catch {} }
+      if (prevUnsubTeamSpaces) { try { prevUnsubTeamSpaces(); } catch {} }
+      if (prevUnsubActivity) { try { prevUnsubActivity(); } catch {} }
+      if (prevUnsubNotifications) { try { prevUnsubNotifications(); } catch {} }
+      if (prevUnsubReminders) { try { prevUnsubReminders(); } catch {} }
+      if (prevUnsubSharedNotes) { try { prevUnsubSharedNotes(); } catch {} }
+      if (prevUnsubSharedNotebooks) { try { prevUnsubSharedNotebooks(); } catch {} }
+
+      if (syncFeedbackTimer) {
+        clearTimeout(syncFeedbackTimer);
+        syncFeedbackTimer = null;
+      }
+      if (directorySyncTimer) {
+        clearTimeout(directorySyncTimer);
+        directorySyncTimer = null;
+      }
+
+      // Step 1: Durable Hydration MUST complete BEFORE any Firestore listeners attach
+      await get().hydrateAuthenticatedWorkspace(uid);
+      if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+
+      const profile = get().profile;
+      if (uid && profile.email) {
+        void setDoc(
+          doc(db, 'users_directory', normalizeEmail(profile.email)),
+          directoryRecord(profile, uid),
+          { merge: true }
+        ).catch(error => console.warn('Could not sync directory profile:', error));
+      }
+
+      const notesRef = collection(db, `users/${uid}/notes`);
+      const unsubscribe = onSnapshot(notesRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+        const notes = snapshot.docs.map(doc => doc.data() as Note);
+        set(s => {
+          if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+          const result = reconcileRemoteNotesSnapshot(
+            s.notes,
+            notes,
+            s.syncQueue,
+            uid,
+            s.syncConflicts
+          );
+          return {
+            notes: result.notes,
+            tags: rebuildTags(result.notes),
+            syncConflicts: result.syncConflicts,
+          };
         });
-        persist();
-        void flushQueuedSync();
+        if (sessionGen === authSessionGeneration && get().uid === uid) {
+          persist();
+          const pendingConflicts = get().syncConflicts;
+          if (pendingConflicts.length > 0) {
+            for (const c of pendingConflicts) {
+              void get().resolveSyncConflict(c.id, 'auto_safe');
+            }
+          }
+          void flushQueuedSync();
+        }
       }, (error) => {
         console.error("Firestore sync error:", error);
       });
 
       // Synchronize notebooks
       const notebooksRef = collection(db, `users/${uid}/notebooks`);
-      
-      let isFirstNbsSnapshot = true;
       const unsubscribeNbs = onSnapshot(notebooksRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
         const remoteNbs = snapshot.docs.map(doc => doc.data() as Notebook);
         set(s => {
-          const merged = [...s.notebooks];
+          if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+          const externallyShared = s.notebooks.filter(nb => nb.isShared && nb.ownerId !== uid);
+          const mergedPrivate = s.notebooks.filter(nb => !(nb.isShared && nb.ownerId !== uid));
           const remoteIds = new Set(remoteNbs.map(nb => nb.id));
           const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'notebook').map(item => item.noteId));
 
-          if (remoteNbs.length === 0) {
-            // Empty remote: sync local notebooks up to remote
-            s.notebooks.forEach(nb => {
-              void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
-            });
-            isFirstNbsSnapshot = false;
-            return {};
-          }
-
-          // Upload any local notebooks initially to avoid accidental data loss
-          if (isFirstNbsSnapshot) {
-            s.notebooks.forEach(nb => {
-              if (nb.id !== 'default' && !remoteIds.has(nb.id) && !pendingIds.has(nb.id)) {
-                void setDoc(doc(db, `users/${uid}/notebooks`, nb.id), stripUndefined(nb)).catch(console.error);
-                remoteIds.add(nb.id);
-              }
-            });
-            isFirstNbsSnapshot = false;
-          }
-
           remoteNbs.forEach(remote => {
-            const idx = merged.findIndex(nb => nb.id === remote.id);
+            const idx = mergedPrivate.findIndex(nb => nb.id === remote.id);
             if (idx >= 0) {
               if (!pendingIds.has(remote.id)) {
-                merged[idx] = remote;
+                mergedPrivate[idx] = remote;
               }
             } else {
-              merged.push(remote);
+              mergedPrivate.push(remote);
             }
           });
 
-          const finalNbs = merged.filter(nb => remoteIds.has(nb.id) || pendingIds.has(nb.id) || nb.id === 'default');
-          return { notebooks: finalNbs };
+          const privateNbs = mergedPrivate.filter(nb => remoteIds.has(nb.id) || pendingIds.has(nb.id) || nb.id === 'default');
+          const combined = new Map<string, Notebook>();
+          privateNbs.forEach(nb => combined.set(nb.id, nb));
+          externallyShared.forEach(nb => combined.set(nb.id, nb));
+          return { notebooks: [...combined.values()] };
         });
-        saveJSON('ntk-notebooks', get().notebooks);
-        void flushQueuedSync();
+        if (sessionGen === authSessionGeneration && get().uid === uid) {
+          saveWS('notebooks', get().notebooks);
+          void flushQueuedSync();
+        }
       }, (error) => {
         console.error("Firestore notebooks sync error:", error);
       });
@@ -1098,9 +1682,11 @@ export const useStore = create<AppState>((set, get) => {
       const settingsRef = doc(db, `users/${uid}/meta/settings`);
       let isFirstSettingsSnapshot = true;
       const unsubscribeSettings = onSnapshot(settingsRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
         if (snapshot.exists()) {
           const remoteSettings = snapshot.data() as Partial<AppSettings>;
           set(s => {
+            if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
             const settings = { ...s.settings, ...remoteSettings };
             settings.editorFontFamily = fontValue(settings.editorFontFamily);
             return { settings };
@@ -1117,8 +1703,10 @@ export const useStore = create<AppState>((set, get) => {
       const teamSpacesRef = collection(db, `users/${uid}/team_spaces`);
       let isFirstTeamSpacesSnapshot = true;
       const unsubscribeTeamSpaces = onSnapshot(teamSpacesRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
         const remoteSpaces = snapshot.docs.map(doc => doc.data() as TeamSpace);
         set(s => {
+          if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
           const merged = [...s.teamSpaces];
           const remoteIds = new Set(remoteSpaces.map(space => space.id));
           const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'teamSpace').map(item => item.noteId));
@@ -1150,8 +1738,10 @@ export const useStore = create<AppState>((set, get) => {
               : merged.filter(space => remoteIds.has(space.id) || pendingIds.has(space.id)),
           };
         });
-        saveJSON('ntk-team-spaces', get().teamSpaces);
-        void flushQueuedSync();
+        if (sessionGen === authSessionGeneration && get().uid === uid) {
+          saveWS('team-spaces', get().teamSpaces);
+          void flushQueuedSync();
+        }
       }, (error) => {
         console.error("Firestore team spaces sync error:", error);
       });
@@ -1159,8 +1749,10 @@ export const useStore = create<AppState>((set, get) => {
       const notificationsRef = collection(db, `users/${uid}/notifications`);
       let isFirstNotificationsSnapshot = true;
       const unsubscribeNotifications = onSnapshot(notificationsRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
         const remoteNotifications = snapshot.docs.map(doc => doc.data() as AppNotification);
         set(s => {
+          if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
           const merged = new Map<string, AppNotification>();
           s.notifications.forEach(notification => merged.set(notification.id, notification));
           const remoteIds = new Set(remoteNotifications.map(notification => notification.id));
@@ -1184,10 +1776,64 @@ export const useStore = create<AppState>((set, get) => {
 
           return { notifications: capNotifications([...merged.values()]) };
         });
-        saveJSON('ntk-notifications', get().notifications);
-        void flushQueuedSync();
+        if (sessionGen === authSessionGeneration && get().uid === uid) {
+          saveWS('notifications', get().notifications);
+          void flushQueuedSync();
+        }
       }, (error) => {
         console.error("Firestore notifications sync error:", error);
+      });
+
+      const remindersRef = collection(db, `users/${uid}/reminders`);
+      let isFirstRemindersSnapshot = true;
+      const unsubscribeReminders = onSnapshot(remindersRef, (snapshot) => {
+        if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+        const remoteReminders = snapshot.docs.map(doc => doc.data() as AppReminder);
+        set(s => {
+          if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+          const remoteIds = new Set(remoteReminders.map(reminder => reminder.id));
+          const pendingIds = new Set(s.syncQueue.filter(item => item.entityType === 'reminder').map(item => item.noteId));
+
+          if (isFirstRemindersSnapshot) {
+            // Upload local-only reminders that aren't in Firestore yet
+            s.reminders.forEach(reminder => {
+              if (!remoteIds.has(reminder.id) && !pendingIds.has(reminder.id)) {
+                void setDoc(doc(db, `users/${uid}/reminders`, reminder.id), stripUndefined(reminder)).catch(console.error);
+                remoteIds.add(reminder.id);
+              }
+            });
+            isFirstRemindersSnapshot = false;
+          }
+
+          // Build merged set: remote is authoritative after first snapshot.
+          // Local reminders are retained ONLY if they have a pending sync entry.
+          const merged = new Map<string, AppReminder>();
+
+          // Start with remote reminders
+          remoteReminders.forEach(remote => {
+            if (!pendingIds.has(remote.id)) {
+              merged.set(remote.id, remote);
+            } else {
+              const local = s.reminders.find(r => r.id === remote.id);
+              merged.set(remote.id, local || remote);
+            }
+          });
+
+          // Preserve local-only reminders ONLY if they have a pending sync
+          s.reminders.forEach(reminder => {
+            if (!remoteIds.has(reminder.id) && pendingIds.has(reminder.id)) {
+              merged.set(reminder.id, reminder);
+            }
+          });
+
+          return { reminders: [...merged.values()] };
+        });
+        if (sessionGen === authSessionGeneration && get().uid === uid) {
+          saveWS('reminders', get().reminders);
+          void flushQueuedSync();
+        }
+      }, (error) => {
+        console.error("Firestore reminders sync error:", error);
       });
 
       // Synchronize shared notes & notebooks real-time
@@ -1198,15 +1844,18 @@ export const useStore = create<AppState>((set, get) => {
 
       if (email) {
         const normalizedEmail = normalizeEmail(email);
+        // ── Subscriber-side: notes shared WITH this user ──
         const sharedNotesQuery = query(collection(db, 'shared_notes'), where('sharedWith', 'array-contains', normalizedEmail));
-        unsubscribeSharedNotes = onSnapshot(sharedNotesQuery, (snapshot) => {
+        const unsubSharedReceived = onSnapshot(sharedNotesQuery, (snapshot) => {
+          if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
           const sharedNotes = snapshot.docs.map(doc => ({
             ...doc.data(),
             isShared: true
           } as Note));
           
           set(s => {
-            const privateNotes = s.notes.filter(n => !n.isShared);
+            if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+            const privateNotes = s.notes.filter(n => !(n.isShared && n.ownerId !== uid));
             const merged = [...privateNotes];
             
             sharedNotes.forEach(shared => {
@@ -1223,15 +1872,55 @@ export const useStore = create<AppState>((set, get) => {
           console.error("Firestore shared notes sync error:", error);
         });
 
+        // ── Owner-side: notes this user owns that are shared ──
+        // Ensures the owner sees editor changes via the shared_notes authority.
+        const ownedSharedQuery = query(collection(db, 'shared_notes'), where('ownerId', '==', uid));
+        const unsubSharedOwned = onSnapshot(ownedSharedQuery, (snapshot) => {
+          if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+          const ownedSharedNotes = snapshot.docs.map(doc => doc.data() as Note);
+          
+          set(s => {
+            if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+            const updated = [...s.notes];
+            ownedSharedNotes.forEach(shared => {
+              const idx = updated.findIndex(n => n.id === shared.id);
+              if (idx >= 0) {
+                // Update the private copy with the shared authority's content
+                updated[idx] = {
+                  ...updated[idx],
+                  title: shared.title,
+                  content: shared.content,
+                  updatedAt: shared.updatedAt,
+                  tags: shared.tags,
+                };
+              }
+            });
+            return { notes: updated, tags: rebuildTags(updated) };
+          });
+          if (sessionGen === authSessionGeneration && get().uid === uid) {
+            persist();
+          }
+        }, (error) => {
+          console.error("Firestore owned-shared notes sync error:", error);
+        });
+
+        // Combine both shared note unsubs into one
+        unsubscribeSharedNotes = () => {
+          unsubSharedReceived();
+          unsubSharedOwned();
+        };
+
         const sharedNotebooksQuery = query(collection(db, 'shared_notebooks'), where('sharedWith', 'array-contains', normalizedEmail));
         unsubscribeSharedNotebooks = onSnapshot(sharedNotebooksQuery, (snapshot) => {
+          if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
           const sharedNotebooks = snapshot.docs.map(doc => ({
             ...doc.data(),
             isShared: true
           } as Notebook));
           
           set(s => {
-            const privateNbs = s.notebooks.filter(nb => !nb.isShared);
+            if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
+            const privateNbs = s.notebooks.filter(nb => !(nb.isShared && nb.ownerId !== uid));
             const merged = [...privateNbs];
             
             sharedNotebooks.forEach(shared => {
@@ -1248,10 +1937,18 @@ export const useStore = create<AppState>((set, get) => {
           console.error("Firestore shared notebooks sync error:", error);
         });
 
-        const activityQuery = query(collection(db, 'activity_feed'), where('participants', 'array-contains', normalizedEmail));
+        // Bounded activity feed query — limit(200) with newest-first ordering
+        const activityQuery = query(
+          collection(db, 'activity_feed'),
+          where('participants', 'array-contains', normalizedEmail),
+          orderBy('createdAt', 'desc'),
+          limit(200)
+        );
         unsubscribeActivity = onSnapshot(activityQuery, (snapshot) => {
+          if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
           const remoteActivity = snapshot.docs.map(doc => doc.data() as ActivityItem);
           set(s => {
+            if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
             const merged = new Map<string, ActivityItem>();
             [...remoteActivity, ...s.activityItems].forEach(item => merged.set(item.id, item));
             return {
@@ -1260,7 +1957,9 @@ export const useStore = create<AppState>((set, get) => {
                 .slice(0, 200),
             };
           });
-          saveJSON('ntk-activity-items', get().activityItems.slice(0, 200));
+          if (sessionGen === authSessionGeneration && get().uid === uid) {
+            saveWS('activity-items', get().activityItems.slice(0, 200));
+          }
         }, (error) => {
           console.error("Firestore activity feed sync error:", error);
         });
@@ -1273,27 +1972,93 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeTeamSpaces,
         unsubscribeActivity,
         unsubscribeNotifications,
+        unsubscribeReminders,
         unsubscribeSharedNotes,
         unsubscribeSharedNotebooks
       });
+      setActiveListenersCount(email ? 9 : 6);
       void flushQueuedSync();
+      if (uid) {
+        void retryPendingMediaCleanups(uid).catch(() => 0);
+        void retryPendingReminderCleanups(uid).catch(() => 0);
+      }
     },
 
     clearAuth: () => {
-      const { unsubscribeNotes, unsubscribeNotebooks, unsubscribeSettings, unsubscribeTeamSpaces, unsubscribeActivity, unsubscribeNotifications, unsubscribeSharedNotes, unsubscribeSharedNotebooks } = get();
-      if (unsubscribeNotes) unsubscribeNotes();
-      if (unsubscribeNotebooks) unsubscribeNotebooks();
-      if (unsubscribeSettings) unsubscribeSettings();
-      if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
-      if (unsubscribeActivity) unsubscribeActivity();
-      if (unsubscribeNotifications) unsubscribeNotifications();
-      if (unsubscribeSharedNotes) unsubscribeSharedNotes();
-      if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
-      // Clear persisted auth / onboarding state
-      localStorage.removeItem('ntk-onboarded');
-      localStorage.removeItem('ntk-profile');
+      // Invalidate session generation so in-flight listener callbacks are discarded
+      ++authSessionGeneration;
+      setActiveListenersCount(0);
+
+      const {
+        unsubscribeNotes,
+        unsubscribeNotebooks,
+        unsubscribeSettings,
+        unsubscribeTeamSpaces,
+        unsubscribeActivity,
+        unsubscribeNotifications,
+        unsubscribeReminders,
+        unsubscribeSharedNotes,
+        unsubscribeSharedNotebooks
+      } = get();
+
+      if (unsubscribeNotes) { try { unsubscribeNotes(); } catch {} }
+      if (unsubscribeNotebooks) { try { unsubscribeNotebooks(); } catch {} }
+      if (unsubscribeSettings) { try { unsubscribeSettings(); } catch {} }
+      if (unsubscribeTeamSpaces) { try { unsubscribeTeamSpaces(); } catch {} }
+      if (unsubscribeActivity) { try { unsubscribeActivity(); } catch {} }
+      if (unsubscribeNotifications) { try { unsubscribeNotifications(); } catch {} }
+      if (unsubscribeReminders) { try { unsubscribeReminders(); } catch {} }
+      if (unsubscribeSharedNotes) { try { unsubscribeSharedNotes(); } catch {} }
+      if (unsubscribeSharedNotebooks) { try { unsubscribeSharedNotebooks(); } catch {} }
+
+      if (syncFeedbackTimer) {
+        clearTimeout(syncFeedbackTimer);
+        syncFeedbackTimer = null;
+      }
+      if (directorySyncTimer) {
+        clearTimeout(directorySyncTimer);
+        directorySyncTimer = null;
+      }
+
+      // Clear chat listeners and in-memory cache to prevent cross-account leaks
+      unsubscribeActiveMessages();
+      clearChatCache();
+      setCurrentSpeechUser(null);
+
+      // Save the outgoing user's workspace before clearing
+      persist();
+
+      // Broadcast auth change to other tabs so they synchronize immediately
+      try {
+        getTabCoordinator().broadcast({
+          type: 'AUTH_CHANGED',
+          senderId: getTabCoordinator().tabId,
+          timestamp: Date.now(),
+          payload: { uid: null }
+        });
+      } catch {}
+
+      // Switch to guest workspace namespace
+      setWorkspacePrefix(null);
+      // Load clean guest workspace (typically empty)
+      const guestData = loadWorkspaceData();
       set({
         uid: null,
+        notes: guestData.notes,
+        notebooks: guestData.notebooks.length ? guestData.notebooks : [defaultNotebook],
+        tags: guestData.tags,
+        profile: defaultProfile,
+        settings: defaultSettings,
+        isOnboarded: false,
+        scratchPad: guestData.scratchPad,
+        savedSearches: guestData.savedSearches,
+        teamSpaces: [],
+        activityItems: [],
+        notifications: [],
+        reminders: [],
+        syncQueue: [],
+        syncConflicts: [],
+        conflictRecoveryNotice: null,
         unsubscribeNotes: null,
         unsubscribeNotebooks: null,
         unsubscribeSettings: null,
@@ -1302,20 +2067,28 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeNotifications: null,
         unsubscribeSharedNotes: null,
         unsubscribeSharedNotebooks: null,
-        isOnboarded: false,
-        profile: defaultProfile,
+        unlockedNotes: {},
         currentView: 'home',
         selectedNoteId: null,
         editingNote: false,
+        syncStatus: 'idle',
+        syncMessage: '',
+        lastManualSyncAt: null,
       });
+      resolvedConflictIdentities.clear();
     },
 
-    scratchPad: initialScratchPad,
+    scratchPad: initialData.scratchPad,
 
     // ── Profile ──
     setProfile: (updates) => {
       set(s => {
-        const profile = { ...s.profile, ...updates };
+        const authenticatedEmail = normalizeEmail(auth.currentUser?.email || '');
+        const profile = {
+          ...s.profile,
+          ...updates,
+          ...(authenticatedEmail ? { email: authenticatedEmail } : {}),
+        };
         if (profile.name) {
           const parts = profile.name.trim().split(' ');
           profile.initials = parts.length >= 2
@@ -1325,26 +2098,46 @@ export const useStore = create<AppState>((set, get) => {
         return { profile };
       });
       persist();
+
+      const { uid, profile } = get();
+      if (directorySyncTimer) clearTimeout(directorySyncTimer);
+      if (uid && profile.email) {
+        directorySyncTimer = setTimeout(() => {
+          void setDoc(
+            doc(db, 'users_directory', normalizeEmail(profile.email)),
+            directoryRecord(profile, uid),
+            { merge: true }
+          ).catch(error => console.warn('Could not update collaboration directory profile:', error));
+          directorySyncTimer = null;
+        }, 700);
+      }
     },
 
-    completeOnboarding: (name, email) => {
+    completeOnboarding: (name, email, avatar) => {
       const parts = name.trim().split(' ');
       const initials = parts.length >= 2
         ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
         : parts[0].slice(0, 2).toUpperCase();
-      const profile = { name, email: email || '', initials, createdAt: now() };
+      const existingProfile = get().profile;
+      const keepChosenAvatar = existingProfile.avatarSource === 'builtin' || existingProfile.avatarSource === 'custom';
+      const resolvedAvatar = keepChosenAvatar
+        ? (existingProfile.avatar || 'builtin:aurora')
+        : (avatar || existingProfile.avatar || 'builtin:aurora');
+      const avatarSource = keepChosenAvatar
+        ? existingProfile.avatarSource
+        : (avatar ? 'google' : existingProfile.avatarSource || 'builtin');
+      const profile = { name, email: email || '', initials, avatar: resolvedAvatar, avatarSource, createdAt: now() };
       set({
         isOnboarded: true,
         profile
       });
       persist();
       if (email) {
-        void setDoc(doc(db, 'users_directory', email), {
-          name,
-          email,
-          initials,
-          updatedAt: now()
-        }).catch(console.error);
+        void setDoc(
+          doc(db, 'users_directory', normalizeEmail(email)),
+          directoryRecord(profile, get().uid),
+          { merge: true }
+        ).catch(error => console.warn('Could not register collaboration directory profile:', error));
       }
     },
 
@@ -1377,23 +2170,438 @@ export const useStore = create<AppState>((set, get) => {
       syncSettingsToFirestore();
     },
     flushSyncQueue: flushQueuedSync,
-    resolveSyncConflict: async (conflictId, strategy) => {
-      const conflict = get().syncConflicts.find(item => item.id === conflictId);
+    manualSync: async () => {
+      const initialState = get();
+      if (!initialState.uid) {
+        const message = 'Sign in to sync this app across your devices.';
+        setSyncFeedback('error', message);
+        throw new Error(message);
+      }
+      if (!initialState.online) {
+        const message = "You're offline. Your changes are safe on this device and will sync when you're back online.";
+        setSyncFeedback('error', message);
+        throw new Error(message);
+      }
+      const activeManualSync = manualSyncInFlight;
+      if (activeManualSync && activeManualSync.uid === initialState.uid) return activeManualSync.promise;
+      if (activeManualSync) {
+        const message = 'A sync for the previous account is still finishing. Please try again in a moment.';
+        setSyncFeedback('error', message);
+        throw new Error(message);
+      }
+
+      const syncUid = initialState.uid;
+      const ensureSameSession = () => {
+        if (get().uid !== syncUid) {
+          throw new Error('Sync stopped because the signed-in account changed.');
+        }
+      };
+
+      const operation = (async () => {
+        ensureSameSession();
+
+        if (syncFeedbackTimer) {
+          clearTimeout(syncFeedbackTimer);
+          syncFeedbackTimer = null;
+        }
+        set({ syncStatus: 'syncing', syncMessage: 'Syncing local changes with the cloud...' });
+
+        const syncStartTime = performance.now();
+        try {
+          queueDebouncedNoteEdits();
+          const queuedBefore = get().syncQueue.length;
+          await withTimeout(
+            flushQueuedSync(),
+            MANUAL_SYNC_TIMEOUT_MS,
+            'Uploading changes took too long. They remain queued and automatic sync will retry.'
+          );
+          ensureSameSession();
+          await withTimeout(
+            waitForPendingWrites(db),
+            MANUAL_SYNC_TIMEOUT_MS,
+            'Cloud confirmation took too long. Automatic sync will keep trying in the background.'
+          );
+          ensureSameSession();
+
+          // Truthful sync: Also request offline media draining
+          const mediaSyncService = getOfflineMediaSyncService();
+          const mediaResult = await mediaSyncService.requestSyncFromLeader(syncUid).catch(async () => {
+            // §40: On media sync/delegation failure, query actual local pending count.
+            // Never translate unknown failure into 0 pending.
+            try {
+              const allPending = await getPendingMediaForUser(syncUid, false);
+              return summarizePendingMedia(allPending, 0, 0);
+            } catch {
+              return {
+                synced: 0,
+                failed: 0,
+                pendingCount: -1,
+                pendingTotal: -1,
+                eligibleNow: 0,
+                waitingForBackoff: 0,
+                needsAttention: 0,
+                authPaused: 0,
+              }; // -1 signals unknown
+            }
+          });
+          ensureSameSession();
+
+          const currentState = get();
+          const remainingDocChanges = currentState.syncQueue.length;
+          const remainingMedia = mediaResult.pendingTotal >= 0 ? mediaResult.pendingTotal : mediaResult.pendingCount;
+          const conflicts = currentState.syncConflicts.length;
+          const conflictIds = new Set(currentState.syncConflicts.map(conflict => conflict.noteId));
+          const blockedByConflicts = currentState.syncQueue.filter(item =>
+            (item.entityType || 'note') === 'note' && conflictIds.has(item.noteId)
+          ).length;
+          const failedDocChanges = Math.max(0, remainingDocChanges - blockedByConflicts);
+          const syncedChanges = Math.max(0, queuedBefore - remainingDocChanges) + mediaResult.synced;
+          const syncedAt = now();
+
+          if (failedDocChanges > 0 || mediaResult.failed > 0) {
+            const failCount = failedDocChanges + mediaResult.failed;
+            throw new Error(`${failCount} change${failCount === 1 ? '' : 's'} could not reach the cloud yet. They remain queued for retry.`);
+          }
+
+          set({ lastManualSyncAt: syncedAt });
+          if (conflicts > 0) {
+            setSyncFeedback(
+              'attention',
+              `Available changes synced. ${conflicts} conflict${conflicts === 1 ? '' : 's'} still need review.`
+            );
+          } else if (remainingMedia > 0) {
+            if (mediaResult.needsAttention > 0) {
+              setSyncFeedback(
+                'attention',
+                'Your notes are synced. Some files need attention before they can upload.'
+              );
+            } else {
+              setSyncFeedback(
+                'attention',
+                'Your notes are synced. Some files are waiting to upload and will retry automatically.'
+              );
+            }
+          } else {
+            setSyncFeedback(
+              'success',
+              'Everything is up to date.'
+            );
+          }
+
+          if (syncUid) {
+            void retryPendingMediaCleanups(syncUid).catch(() => 0);
+            void retryPendingReminderCleanups(syncUid).catch(() => 0);
+          }
+
+          recordManualSyncMetrics(performance.now() - syncStartTime, 'success');
+          return {
+            queuedBefore,
+            syncedChanges,
+            remainingChanges: remainingDocChanges + Math.max(0, remainingMedia),
+            conflicts,
+            syncedAt,
+            mediaDetails: {
+              pendingTotal: mediaResult.pendingTotal,
+              waitingForBackoff: mediaResult.waitingForBackoff,
+              needsAttention: mediaResult.needsAttention,
+              eligibleNow: mediaResult.eligibleNow,
+              authPaused: mediaResult.authPaused,
+            },
+          };
+        } catch (error) {
+          recordManualSyncMetrics(performance.now() - syncStartTime, 'error');
+          const message = error instanceof Error ? error.message : 'Sync could not finish. Your changes remain saved on this device.';
+          if (get().uid === syncUid) setSyncFeedback('error', message);
+          throw error;
+        }
+      });
+
+      const trackedOperation = operation().finally(() => {
+        if (manualSyncInFlight?.promise === trackedOperation) manualSyncInFlight = null;
+      });
+      manualSyncInFlight = { uid: syncUid, promise: trackedOperation };
+      return trackedOperation;
+    },
+    resolveSyncConflict: async (conflictId, strategy, conflictOverride) => {
+      const conflict = conflictOverride || get().syncConflicts.find(item => item.id === conflictId);
       if (!conflict) return;
-      const chosen = strategy === 'local' ? conflict.local : conflict.remote;
-      set(s => ({
-        notes: s.notes.map(n => n.id === conflict.noteId ? chosen : n),
-        syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-        syncQueue: strategy === 'remote'
-          ? s.syncQueue.filter(item => item.noteId !== conflict.noteId)
-          : s.syncQueue,
-      }));
-      persist();
-      if (strategy === 'local') syncNoteToFirestore(conflict.noteId);
+
+      const currentUid = get().uid;
+      const cleanTitle = (conflict.local.title || 'Untitled').replace(/\s*\(Recovered Copy\)$/, '');
+
+      // Explicit legacy strategies for backward compatibility
+      if (strategy === 'keep_deleted') {
+        set(s => ({
+          notes: s.notes.filter(n => n.id !== conflict.noteId),
+          tags: rebuildTags(s.notes.filter(n => n.id !== conflict.noteId)),
+          syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+          syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+        }));
+        persist();
+        return;
+      }
+
+      if (strategy === 'recover_version') {
+        const newId = uuid();
+        const recoveredCopy: Note = {
+          ...conflict.local,
+          id: newId,
+          ownerId: currentUid || conflict.local.ownerId,
+          isShared: false,
+          isPublished: false,
+          shareAccess: undefined,
+          sharedWith: undefined,
+          editors: undefined,
+          commenters: undefined,
+          viewers: undefined,
+          sharedBy: undefined,
+          title: `${cleanTitle} (Recovered Copy)`,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+
+        set(s => {
+          const notesWithoutOriginal = s.notes.filter(n => n.id !== conflict.noteId);
+          const updatedNotes = [...notesWithoutOriginal, recoveredCopy];
+          return {
+            notes: updatedNotes,
+            tags: rebuildTags(updatedNotes),
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+            conflictRecoveryNotice: {
+              id: uuid(),
+              conflictId: conflict.id,
+              type: 'remote_deletion',
+              title: 'Your edits are safe',
+              message: 'This note was deleted on another device, so we saved your unsynced edits as a new note.',
+              recoveredNoteId: recoveredCopy.id,
+              canonicalNoteId: null,
+              recoveredNote: recoveredCopy,
+              localTitle: conflict.local.title,
+              localContent: conflict.local.content,
+              detectedAt: now(),
+            },
+          };
+        });
+        persist();
+        syncNoteToFirestore(recoveredCopy.id);
+        get().selectNote(recoveredCopy.id);
+        return;
+      }
+
+      if (strategy === 'keep_local' || strategy === 'local') {
+        set(s => {
+          const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.local : n);
+          return {
+            notes: updatedNotes,
+            tags: rebuildTags(updatedNotes),
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+          };
+        });
+        persist();
+        syncNoteToFirestore(conflict.noteId);
+        return;
+      }
+
+      if (strategy === 'use_remote' || strategy === 'remote') {
+        if (conflict.remote) {
+          set(s => {
+            const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
+            return {
+              notes: updatedNotes,
+              tags: rebuildTags(updatedNotes),
+              syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+              syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+            };
+          });
+          persist();
+        }
+        return;
+      }
+
+      if (strategy === 'keep_both' && conflict.remote) {
+        const localCopy: Note = {
+          ...conflict.local,
+          id: uuid(),
+          ownerId: currentUid || conflict.local.ownerId,
+          isShared: false,
+          isPublished: false,
+          shareAccess: undefined,
+          sharedWith: undefined,
+          editors: undefined,
+          commenters: undefined,
+          viewers: undefined,
+          sharedBy: undefined,
+          title: `${cleanTitle} (Recovered Copy)`,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+        set(s => {
+          const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? (conflict.remote || n) : n);
+          return {
+            notes: [...updatedNotes, localCopy],
+            tags: rebuildTags([...updatedNotes, localCopy]),
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+          };
+        });
+        persist();
+        syncNoteToFirestore(localCopy.id);
+        get().selectNote(localCopy.id);
+        return;
+      }
+
+      // NOVICE-FIRST AUTOMATIC SAFE RECOVERY (Default / 'auto_safe')
+      // Rule 1: Remote Deletion Conflict
+      if (conflict.deletedRemotely) {
+        const identityKey = getConflictIdentity(conflict);
+        if (resolvedConflictIdentities.has(identityKey)) {
+          set(s => ({
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+          }));
+          persist();
+          return;
+        }
+        resolvedConflictIdentities.add(identityKey);
+
+        const newId = uuid();
+        const recoveredCopy: Note = {
+          ...conflict.local,
+          id: newId,
+          ownerId: currentUid || conflict.local.ownerId,
+          isShared: false,
+          isPublished: false,
+          shareAccess: undefined,
+          sharedWith: undefined,
+          editors: undefined,
+          commenters: undefined,
+          viewers: undefined,
+          sharedBy: undefined,
+          title: `${cleanTitle} (Recovered Copy)`,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+
+        set(s => {
+          const notesWithoutOriginal = s.notes.filter(n => n.id !== conflict.noteId);
+          const updatedNotes = [...notesWithoutOriginal, recoveredCopy];
+          return {
+            notes: updatedNotes,
+            tags: rebuildTags(updatedNotes),
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+            conflictRecoveryNotice: {
+              id: uuid(),
+              conflictId: conflict.id,
+              type: 'remote_deletion',
+              title: 'Your edits are safe',
+              message: 'This note was deleted on another device, so we saved your unsynced edits as a new note.',
+              recoveredNoteId: recoveredCopy.id,
+              canonicalNoteId: null,
+              recoveredNote: recoveredCopy,
+              localTitle: conflict.local.title,
+              localContent: conflict.local.content,
+              detectedAt: now(),
+            },
+          };
+        });
+        persist();
+        syncNoteToFirestore(recoveredCopy.id);
+        get().selectNote(recoveredCopy.id);
+        return;
+      }
+
+      // Rule 2: Standard Concurrent Edit Conflict
+      if (conflict.remote) {
+        // Section 10: If local and remote user-visible content are identical, resolve silently
+        if (!hasMeaningfulNoteDifference(conflict.local, conflict.remote)) {
+          set(s => {
+            const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
+            return {
+              notes: updatedNotes,
+              tags: rebuildTags(updatedNotes),
+              syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+              syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+            };
+          });
+          persist();
+          return;
+        }
+
+        // Section 9: Idempotency guard - prevent duplicate recovered copies
+        const identityKey = getConflictIdentity(conflict);
+        if (resolvedConflictIdentities.has(identityKey)) {
+          set(s => ({
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+          }));
+          persist();
+          return;
+        }
+        resolvedConflictIdentities.add(identityKey);
+
+        // Section 5 & 6: Preserve remote as existing canonical note; fork local edits to new private note
+        const newId = uuid();
+        const recoveredCopy: Note = {
+          ...conflict.local,
+          id: newId,
+          ownerId: currentUid || conflict.local.ownerId,
+          isShared: false,
+          isPublished: false,
+          shareAccess: undefined,
+          sharedWith: undefined,
+          editors: undefined,
+          commenters: undefined,
+          viewers: undefined,
+          sharedBy: undefined,
+          title: `${cleanTitle} (Recovered Copy)`,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+
+        set(s => {
+          const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
+          const combinedNotes = [...updatedNotes, recoveredCopy];
+          return {
+            notes: combinedNotes,
+            tags: rebuildTags(combinedNotes),
+            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
+            conflictRecoveryNotice: {
+              id: uuid(),
+              conflictId: conflict.id,
+              type: 'concurrent_edit',
+              title: 'Your edits are safe',
+              message: 'This note also changed on another device, so NTK Note saved your edits as a separate copy. Nothing was lost.',
+              recoveredNoteId: recoveredCopy.id,
+              canonicalNoteId: conflict.remote!.id,
+              recoveredNote: recoveredCopy,
+              canonicalNote: conflict.remote,
+              localTitle: conflict.local.title,
+              remoteTitle: conflict.remote!.title,
+              localContent: conflict.local.content,
+              remoteContent: conflict.remote!.content,
+              detectedAt: now(),
+            },
+          };
+        });
+        persist();
+        syncNoteToFirestore(recoveredCopy.id);
+        get().selectNote(recoveredCopy.id);
+        return;
+      }
     },
     setOnlineStatus: (online) => {
       set({ online });
-      if (online) void flushQueuedSync();
+      if (online) {
+        void flushQueuedSync();
+        const currentUid = get().uid;
+        if (currentUid) {
+          void retryPendingMediaCleanups(currentUid).catch(() => 0);
+          void retryPendingReminderCleanups(currentUid).catch(() => 0);
+        }
+      }
     },
 
     // ── Notifications ──
@@ -1538,6 +2746,131 @@ export const useStore = create<AppState>((set, get) => {
       dismissedIds.forEach(id => deleteNotificationFromFirestore(id));
     },
 
+    // ── Reminders ──
+    createReminder: async (input) => {
+      const { uid } = get();
+      const id = uuid();
+      const createdAt = now();
+      const updatedAt = createdAt;
+      const reminder: AppReminder = {
+        id,
+        ownerId: uid || undefined,
+        noteId: input.noteId,
+        title: input.title.trim(),
+        details: input.details?.trim() || undefined,
+        dueAt: input.dueAt,
+        priority: input.priority,
+        status: input.status || 'active',
+        triggered: false,
+        createdAt,
+        updatedAt,
+      };
+
+      set(s => {
+        const nextReminders = [reminder, ...s.reminders];
+        let nextNotes = s.notes;
+        if (input.noteId) {
+          nextNotes = s.notes.map(n => n.id === input.noteId ? {
+            ...n,
+            reminder: {
+              id,
+              noteId: input.noteId!,
+              time: input.dueAt,
+              title: input.title.trim(),
+              triggered: false,
+            },
+            updatedAt,
+          } : n);
+        }
+        return { reminders: nextReminders, notes: nextNotes };
+      });
+      persist();
+      syncReminderToFirestore(id);
+      if (input.noteId) {
+        syncNoteToFirestore(input.noteId);
+      }
+      return reminder;
+    },
+
+    updateReminder: async (id, updates) => {
+      const updatedAt = now();
+      const current = get().reminders.find(r => r.id === id);
+      if (!current) return;
+      const updated: AppReminder = {
+        ...current,
+        ...updates,
+        updatedAt,
+      };
+
+      set(s => {
+        const nextReminders = s.reminders.map(r => r.id === id ? updated : r);
+        let nextNotes = s.notes;
+        if (updated.noteId) {
+          nextNotes = s.notes.map(n => n.id === updated.noteId ? {
+            ...n,
+            reminder: updated.status === 'active' ? {
+              id: updated.id,
+              noteId: updated.noteId!,
+              time: updated.dueAt,
+              title: updated.title,
+              triggered: !!updated.triggered,
+            } : undefined,
+            updatedAt,
+          } : n);
+        }
+        return { reminders: nextReminders, notes: nextNotes };
+      });
+      persist();
+      syncReminderToFirestore(id);
+      if (updated.noteId) {
+        syncNoteToFirestore(updated.noteId);
+      }
+    },
+
+    deleteReminder: async (id) => {
+      const current = get().reminders.find(r => r.id === id);
+      set(s => {
+        const nextReminders = s.reminders.filter(r => r.id !== id);
+        let nextNotes = s.notes;
+        if (current?.noteId) {
+          nextNotes = s.notes.map(n => n.id === current.noteId ? {
+            ...n,
+            reminder: undefined,
+            updatedAt: now(),
+          } : n);
+        }
+        return { reminders: nextReminders, notes: nextNotes };
+      });
+      persist();
+      deleteReminderFromFirestore(id);
+      if (current?.noteId) {
+        syncNoteToFirestore(current.noteId);
+      }
+    },
+
+    toggleReminderStatus: async (id) => {
+      const current = get().reminders.find(r => r.id === id);
+      if (!current) return;
+      const nextStatus: ReminderStatus = current.status === 'completed' ? 'active' : 'completed';
+      await get().updateReminder(id, {
+        status: nextStatus,
+        triggered: nextStatus === 'completed' ? true : current.triggered,
+      });
+    },
+
+    snoozeReminderItem: async (id, option) => {
+      const snoozedUntil = calculateSnoozeTime(option);
+      await get().updateReminder(id, {
+        snoozedUntil,
+        triggered: false,
+        status: 'active',
+      });
+    },
+
+    getAllReminders: () => {
+      return get().reminders;
+    },
+
     // ── Notes ──
     createNote: (partial) => {
       const id = uuid();
@@ -1579,7 +2912,13 @@ export const useStore = create<AppState>((set, get) => {
       let activityMessage = '';
       let activityShared = false;
       let activityParticipants: string[] = [];
+      let baseUpdatedAt: string | undefined;
       set(s => {
+        const existing = s.notes.find(n => n.id === id);
+        if (existing) {
+          const queued = s.syncQueue.find(q => q.noteId === id && (q.entityType || 'note') === 'note');
+          baseUpdatedAt = queued?.baseUpdatedAt || existing.updatedAt;
+        }
         const notes = s.notes.map(n => {
           if (n.id !== id) return n;
           const updated = { ...n, ...updates, updatedAt: now() };
@@ -1608,7 +2947,7 @@ export const useStore = create<AppState>((set, get) => {
       });
       persist();
       const isTextEdit = updates.title !== undefined || updates.content !== undefined;
-      syncNoteToFirestore(id, (isTextEdit && !immediateSync) ? 5000 : 0);
+      syncNoteToFirestore(id, (isTextEdit && !immediateSync) ? 5000 : 0, baseUpdatedAt);
       if (activityShared && activityMessage) {
         void get().addActivity({
           entityType: 'note',
@@ -1623,31 +2962,95 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     deleteNote: async (id) => {
-      set(s => {
-        const notes = s.notes.filter(n => n.id !== id);
-        return {
-          notes,
-          tags: rebuildTags(notes),
-          selectedNoteId: s.selectedNoteId === id ? null : s.selectedNoteId,
-          editingNote: s.selectedNoteId === id ? false : s.editingNote,
-        };
+      const { notes, notebooks, reminders, uid } = get();
+      const plan = buildDeletionPlan({
+        allNotes: notes,
+        allNotebooks: notebooks,
+        allReminders: reminders,
+        targetNoteIds: [id],
+        currentUserId: uid,
       });
-      persist();
-      deleteNoteFromFirestore(id);
+
+      const result = await executePermanentDeletion(plan, { currentUserId: uid });
+
+      if (result.deletedNoteIds.length > 0) {
+        const deletedSet = new Set(result.deletedNoteIds);
+        set(s => {
+          const remainingNotes = s.notes.filter(n => !deletedSet.has(n.id));
+          return {
+            notes: remainingNotes,
+            tags: rebuildTags(remainingNotes),
+            selectedNoteId: deletedSet.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+            editingNote: deletedSet.has(s.selectedNoteId || '') ? false : s.editingNote,
+            aiNoteContext: s.aiNoteContext && deletedSet.has(s.aiNoteContext.noteId) ? null : s.aiNoteContext,
+          };
+        });
+        persist();
+      }
+
+      if (result.deletedReminderIds?.length > 0) {
+        const deletedReminderSet = new Set(result.deletedReminderIds);
+        set(s => ({
+          reminders: s.reminders.filter(r => !deletedReminderSet.has(r.id)),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNoteIds?.length > 0) {
+        const staleSet = new Set(result.staleSkippedNoteIds);
+        set(s => ({
+          notes: s.notes.map(n => staleSet.has(n.id) ? { ...n, trashed: false, trashedAt: undefined } : n),
+        }));
+        persist();
+      }
+
+      return result;
     },
 
     bulkDeleteNotes: async (ids) => {
-      set(s => {
-        const notes = s.notes.filter(n => !ids.includes(n.id));
-        return {
-          notes,
-          tags: rebuildTags(notes),
-          selectedNoteId: ids.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
-          editingNote: ids.includes(s.selectedNoteId || '') ? false : s.editingNote,
-        };
+      const { notes, notebooks, reminders, uid } = get();
+      const plan = buildDeletionPlan({
+        allNotes: notes,
+        allNotebooks: notebooks,
+        allReminders: reminders,
+        targetNoteIds: ids,
+        currentUserId: uid,
       });
-      persist();
-      ids.forEach(id => deleteNoteFromFirestore(id));
+
+      const result = await executePermanentDeletion(plan, { currentUserId: uid });
+
+      if (result.deletedNoteIds.length > 0) {
+        const deletedSet = new Set(result.deletedNoteIds);
+        set(s => {
+          const remainingNotes = s.notes.filter(n => !deletedSet.has(n.id));
+          return {
+            notes: remainingNotes,
+            tags: rebuildTags(remainingNotes),
+            selectedNoteId: deletedSet.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+            editingNote: deletedSet.has(s.selectedNoteId || '') ? false : s.editingNote,
+            aiNoteContext: s.aiNoteContext && deletedSet.has(s.aiNoteContext.noteId) ? null : s.aiNoteContext,
+          };
+        });
+        persist();
+      }
+
+      if (result.deletedReminderIds?.length > 0) {
+        const deletedReminderSet = new Set(result.deletedReminderIds);
+        set(s => ({
+          reminders: s.reminders.filter(r => !deletedReminderSet.has(r.id)),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNoteIds?.length > 0) {
+        const staleSet = new Set(result.staleSkippedNoteIds);
+        set(s => ({
+          notes: s.notes.map(n => staleSet.has(n.id) ? { ...n, trashed: false, trashedAt: undefined } : n),
+        }));
+        persist();
+      }
+
+      return result;
     },
 
     trashNote: async (id) => {
@@ -1701,30 +3104,110 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     emptyTrash: async () => {
+      const { notes, notebooks, reminders, uid } = get();
+      const plan = buildDeletionPlan({
+        allNotes: notes,
+        allNotebooks: notebooks,
+        allReminders: reminders,
+        currentUserId: uid,
+      });
+
+      const result = await executePermanentDeletion(plan, { currentUserId: uid });
+
+      if (result.deletedNoteIds.length > 0 || result.deletedNotebookIds.length > 0 || result.reparentedNoteIds.length > 0 || result.reparentedNotebookIds.length > 0) {
+        const deletedNoteSet = new Set(result.deletedNoteIds);
+        const deletedNbSet = new Set(result.deletedNotebookIds);
+        const reparentedSet = new Set(result.reparentedNoteIds);
+        const reparentedNbSet = new Set(result.reparentedNotebookIds);
+
+        set(s => {
+          const remainingNotes = s.notes
+            .filter(n => !deletedNoteSet.has(n.id))
+            .map(n => reparentedSet.has(n.id) ? { ...n, notebookId: 'default', sectionId: undefined } : n);
+          const remainingNotebooks = s.notebooks
+            .filter(nb => !deletedNbSet.has(nb.id))
+            .map(nb => reparentedNbSet.has(nb.id) ? { ...nb, parentId: null } : nb);
+          return {
+            notes: remainingNotes,
+            tags: rebuildTags(remainingNotes),
+            notebooks: remainingNotebooks,
+            selectedNoteId: deletedNoteSet.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+            editingNote: deletedNoteSet.has(s.selectedNoteId || '') ? false : s.editingNote,
+            selectedNotebookId: deletedNbSet.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+            aiNoteContext: s.aiNoteContext && deletedNoteSet.has(s.aiNoteContext.noteId) ? null : s.aiNoteContext,
+          };
+        });
+        persist();
+      }
+
+      if (result.deletedReminderIds?.length > 0) {
+        const deletedReminderSet = new Set(result.deletedReminderIds);
+        set(s => ({
+          reminders: s.reminders.filter(r => !deletedReminderSet.has(r.id)),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNoteIds?.length > 0) {
+        const staleSet = new Set(result.staleSkippedNoteIds);
+        set(s => ({
+          notes: s.notes.map(n => staleSet.has(n.id) ? { ...n, trashed: false, trashedAt: undefined } : n),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNotebookIds?.length > 0) {
+        const staleNbSet = new Set(result.staleSkippedNotebookIds);
+        set(s => ({
+          notebooks: s.notebooks.map(nb => staleNbSet.has(nb.id) ? { ...nb, trashed: false, trashedAt: undefined } : nb),
+        }));
+        persist();
+      }
+
+      return result;
+    },
+
+    restoreAll: async () => {
       const { notes, notebooks, uid } = get();
       const trashedNotes = notes.filter(n => n.trashed);
       const trashedNotebooks = notebooks.filter(nb => nb.trashed);
-      
+      if (trashedNotes.length === 0 && trashedNotebooks.length === 0) return;
+
+      const validNotebookIds = new Set(notebooks.map(nb => nb.id));
+
       set(s => {
-        const remainingNotes = s.notes.filter(n => !n.trashed);
-        const remainingNotebooks = s.notebooks.filter(nb => !nb.trashed);
-        return { 
-          notes: remainingNotes, 
-          tags: rebuildTags(remainingNotes),
-          notebooks: remainingNotebooks
+        const nextNotebooks = s.notebooks.map(nb =>
+          nb.trashed ? { ...nb, trashed: false, trashedAt: undefined } : nb
+        );
+        const nextNotes = s.notes.map(n => {
+          if (!n.trashed) return n;
+          const notebookExists = validNotebookIds.has(n.notebookId);
+          return {
+            ...n,
+            trashed: false,
+            trashedAt: undefined,
+            notebookId: notebookExists ? n.notebookId : 'default',
+            sectionId: notebookExists ? n.sectionId : undefined,
+          };
+        });
+
+        return {
+          notebooks: nextNotebooks,
+          notes: nextNotes,
+          tags: rebuildTags(nextNotes),
         };
       });
       persist();
-      
+
       if (uid) {
-        trashedNotes.forEach(n => deleteNoteFromFirestore(n.id));
-        trashedNotebooks.forEach(nb => deleteNotebookFromFirestore(nb.id));
+        trashedNotebooks.forEach(nb => syncNotebookToFirestore(nb.id));
+        trashedNotes.forEach(n => syncNoteToFirestore(n.id));
       }
     },
 
     cleanupTrashOlderThan: async (days) => {
       const cutoff = Date.now() - Math.max(0, days) * 24 * 60 * 60 * 1000;
-      const { notes, notebooks, uid } = get();
+      const { notes, notebooks, reminders, uid } = get();
       const expiredNotes = notes.filter(n =>
         n.trashed &&
         n.trashedAt &&
@@ -1735,28 +3218,57 @@ export const useStore = create<AppState>((set, get) => {
         nb.trashedAt &&
         new Date(nb.trashedAt).getTime() <= cutoff
       );
-      const expiredNoteIds = new Set(expiredNotes.map(note => note.id));
-      const expiredNotebookIds = new Set(expiredNotebooks.map(nb => nb.id));
 
-      set(s => {
-        const remainingNotes = s.notes.filter(note => !expiredNoteIds.has(note.id));
-        return {
-          notes: remainingNotes,
-          tags: rebuildTags(remainingNotes),
-          notebooks: s.notebooks.filter(nb => !expiredNotebookIds.has(nb.id)),
-          selectedNoteId: expiredNoteIds.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
-          editingNote: expiredNoteIds.has(s.selectedNoteId || '') ? false : s.editingNote,
-          selectedNotebookId: expiredNotebookIds.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
-        };
-      });
-      persist();
-
-      if (uid) {
-        expiredNotes.forEach(note => deleteNoteFromFirestore(note.id));
-        expiredNotebooks.forEach(nb => deleteNotebookFromFirestore(nb.id));
+      if (expiredNotes.length === 0 && expiredNotebooks.length === 0) {
+        return { notes: 0, notebooks: 0 };
       }
 
-      return { notes: expiredNotes.length, notebooks: expiredNotebooks.length };
+      const plan = buildDeletionPlan({
+        allNotes: notes,
+        allNotebooks: notebooks,
+        allReminders: reminders,
+        targetNoteIds: expiredNotes.map(n => n.id),
+        targetNotebookIds: expiredNotebooks.map(nb => nb.id),
+        currentUserId: uid,
+      });
+
+      const result = await executePermanentDeletion(plan, { currentUserId: uid });
+
+      if (result.deletedNoteIds.length > 0 || result.deletedNotebookIds.length > 0 || result.reparentedNoteIds.length > 0 || result.reparentedNotebookIds.length > 0) {
+        const deletedNoteSet = new Set(result.deletedNoteIds);
+        const deletedNbSet = new Set(result.deletedNotebookIds);
+        const reparentedSet = new Set(result.reparentedNoteIds);
+        const reparentedNbSet = new Set(result.reparentedNotebookIds);
+
+        set(s => {
+          const remainingNotes = s.notes
+            .filter(n => !deletedNoteSet.has(n.id))
+            .map(n => reparentedSet.has(n.id) ? { ...n, notebookId: 'default', sectionId: undefined } : n);
+          const remainingNotebooks = s.notebooks
+            .filter(nb => !deletedNbSet.has(nb.id))
+            .map(nb => reparentedNbSet.has(nb.id) ? { ...nb, parentId: null } : nb);
+          return {
+            notes: remainingNotes,
+            tags: rebuildTags(remainingNotes),
+            notebooks: remainingNotebooks,
+            selectedNoteId: deletedNoteSet.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+            editingNote: deletedNoteSet.has(s.selectedNoteId || '') ? false : s.editingNote,
+            selectedNotebookId: deletedNbSet.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+            aiNoteContext: s.aiNoteContext && deletedNoteSet.has(s.aiNoteContext.noteId) ? null : s.aiNoteContext,
+          };
+        });
+        persist();
+      }
+
+      if (result.deletedReminderIds?.length > 0) {
+        const deletedReminderSet = new Set(result.deletedReminderIds);
+        set(s => ({
+          reminders: s.reminders.filter(r => !deletedReminderSet.has(r.id)),
+        }));
+        persist();
+      }
+
+      return { notes: result.deletedNoteIds.length, notebooks: result.deletedNotebookIds.length };
     },
 
     archiveNote: async (id) => {
@@ -1884,11 +3396,42 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     setNoteReminder: async (noteId, reminder) => {
-      set(s => ({
-        notes: s.notes.map(n => n.id === noteId ? { ...n, reminder, updatedAt: now() } : n)
-      }));
+      const { uid } = get();
+      const reminderId = reminder?.id || `reminder-note-${noteId}`;
+      set(s => {
+        const notes = s.notes.map(n => n.id === noteId ? { ...n, reminder, updatedAt: now() } : n);
+        let reminders = [...s.reminders];
+        const existingIdx = reminders.findIndex(r => r.id === reminderId || r.noteId === noteId);
+
+        if (reminder) {
+          const reminderItem: AppReminder = {
+            id: reminderId,
+            ownerId: uid || undefined,
+            noteId,
+            title: reminder.title || 'Note reminder',
+            dueAt: reminder.time,
+            status: 'active',
+            triggered: !!reminder.triggered,
+            createdAt: existingIdx >= 0 ? reminders[existingIdx].createdAt : now(),
+            updatedAt: now(),
+          };
+          if (existingIdx >= 0) {
+            reminders[existingIdx] = reminderItem;
+          } else {
+            reminders.push(reminderItem);
+          }
+        } else {
+          reminders = reminders.filter(r => r.id !== reminderId && r.noteId !== noteId);
+        }
+        return { notes, reminders };
+      });
       persist();
       syncNoteToFirestore(noteId);
+      if (reminder) {
+        syncReminderToFirestore(reminderId);
+      } else {
+        deleteReminderFromFirestore(reminderId);
+      }
     },
 
     reorderNotes: async (noteIds) => {
@@ -2170,24 +3713,71 @@ export const useStore = create<AppState>((set, get) => {
       affectedNoteIds.forEach(noteId => syncNoteToFirestore(noteId));
     },
 
-    permanentlyDeleteNotebook: (id) => {
-      const notebookIds = getNotebookTreeIds(id);
-      const affectedNoteIds = get().notes.filter(n => notebookIds.has(n.notebookId)).map(n => n.id);
-      set(s => {
-        const notes = s.notes.filter(n => !notebookIds.has(n.notebookId));
-        return {
-          notebooks: s.notebooks.filter(nb => !notebookIds.has(nb.id)),
-          notes,
-          tags: rebuildTags(notes),
-          selectedNotebookId: notebookIds.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
-          selectedNoteId: affectedNoteIds.includes(s.selectedNoteId || '') ? null : s.selectedNoteId,
-          editingNote: affectedNoteIds.includes(s.selectedNoteId || '') ? false : s.editingNote,
-        };
+    permanentlyDeleteNotebook: async (id) => {
+      const { notes, notebooks, reminders, uid } = get();
+      const plan = buildDeletionPlan({
+        allNotes: notes,
+        allNotebooks: notebooks,
+        allReminders: reminders,
+        targetNotebookIds: [id],
+        currentUserId: uid,
       });
-      persist();
-      notebookIds.forEach(notebookId => deleteNotebookFromFirestore(notebookId));
-      affectedNoteIds.forEach(noteId => deleteNoteFromFirestore(noteId));
+
+      const result = await executePermanentDeletion(plan, { currentUserId: uid });
+
+      if (result.deletedNotebookIds.length > 0 || result.deletedNoteIds.length > 0 || result.reparentedNoteIds.length > 0 || result.reparentedNotebookIds.length > 0) {
+        const deletedNbSet = new Set(result.deletedNotebookIds);
+        const deletedNoteSet = new Set(result.deletedNoteIds);
+        const reparentedSet = new Set(result.reparentedNoteIds);
+        const reparentedNbSet = new Set(result.reparentedNotebookIds);
+
+        set(s => {
+          const remainingNotes = s.notes
+            .filter(n => !deletedNoteSet.has(n.id))
+            .map(n => reparentedSet.has(n.id) ? { ...n, notebookId: 'default', sectionId: undefined } : n);
+          const remainingNotebooks = s.notebooks
+            .filter(nb => !deletedNbSet.has(nb.id))
+            .map(nb => reparentedNbSet.has(nb.id) ? { ...nb, parentId: null } : nb);
+          return {
+            notebooks: remainingNotebooks,
+            notes: remainingNotes,
+            tags: rebuildTags(remainingNotes),
+            selectedNotebookId: deletedNbSet.has(s.selectedNotebookId || '') ? null : s.selectedNotebookId,
+            selectedNoteId: deletedNoteSet.has(s.selectedNoteId || '') ? null : s.selectedNoteId,
+            editingNote: deletedNoteSet.has(s.selectedNoteId || '') ? false : s.editingNote,
+            aiNoteContext: s.aiNoteContext && deletedNoteSet.has(s.aiNoteContext.noteId) ? null : s.aiNoteContext,
+          };
+        });
+        persist();
+      }
+
+      if (result.deletedReminderIds?.length > 0) {
+        const deletedReminderSet = new Set(result.deletedReminderIds);
+        set(s => ({
+          reminders: s.reminders.filter(r => !deletedReminderSet.has(r.id)),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNoteIds?.length > 0) {
+        const staleSet = new Set(result.staleSkippedNoteIds);
+        set(s => ({
+          notes: s.notes.map(n => staleSet.has(n.id) ? { ...n, trashed: false, trashedAt: undefined } : n),
+        }));
+        persist();
+      }
+
+      if (result.staleSkippedNotebookIds?.length > 0) {
+        const staleNbSet = new Set(result.staleSkippedNotebookIds);
+        set(s => ({
+          notebooks: s.notebooks.map(nb => staleNbSet.has(nb.id) ? { ...nb, trashed: false, trashedAt: undefined } : nb),
+        }));
+        persist();
+      }
+
+      return result;
     },
+
 
     addSection: (notebookId, name) => {
       const section: Section = {
@@ -2303,6 +3893,9 @@ export const useStore = create<AppState>((set, get) => {
     },
     clearSearch: () => set({ searchFilters: defaultSearchFilters }),
     setCurrentView: (view) => set({ currentView: view, selectedNoteId: null, editingNote: false }),
+    setActiveChatId: (chatId) => set({ activeChatId: chatId }),
+    setAiNoteContext: (context) => set({ aiNoteContext: context }),
+    openSettings: (section = 'profile') => set({ settingsSection: section, currentView: 'settings', selectedNoteId: null, editingNote: false }),
     selectNote: (id) => set({ selectedNoteId: id, editingNote: !!id }),
     selectNotebook: (id) => set({ selectedNotebookId: id }),
     selectTag: (id) => set({ selectedTagId: id }),
@@ -2317,16 +3910,17 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     // ── Templates ──
-    createFromTemplate: (templateId) => {
+    createFromTemplate: (templateId, options) => {
       const template = get().templates.find(t => t.id === templateId);
       if (!template) return Promise.resolve(null);
+      const draft = buildTemplateDraft(template, options?.title, new Date(), options?.values || {}, options?.includeExamples ?? true);
       return get().createNote({
-        title: template.name,
-        content: template.content,
-        type: template.type,
+        title: draft.title,
+        content: draft.content,
+        type: draft.type,
         theme: template.theme || get().settings.defaultNoteTheme,
         tags: [...template.tags],
-        checklist: template.checklist.map(c => ({ ...c, id: uuid() })),
+        checklist: draft.checklist.map(c => ({ ...c, id: uuid() })),
       });
     },
 
@@ -2417,16 +4011,43 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     shareNote: async (noteId, sharedWith, isPublished, shareAccess) => {
-      const { notes, uid, profile } = get();
+      const { notes, uid, profile, online } = get();
       const note = notes.find(n => n.id === noteId);
       if (!note || !uid) return;
+      if (!online) throw new Error('Connect to the internet before changing note sharing.');
 
       const access = normalizeShareAccess(shareAccess || legacyEmailsToShareAccess(sharedWith, note.shareAccess));
       const roleArrays = shareAccessToRoleArrays(access);
       const isSharedOrPublished = roleArrays.sharedWith.length > 0 || isPublished;
       const sharedBy = note.sharedBy || profile.email || 'Anonymous';
+      // If unsharing a note that was shared, ensure we read the latest shared authority
+      let finalContent = note.content;
+      let finalTitle = note.title;
+      let finalTags = note.tags;
+      let finalUpdatedAt = note.updatedAt;
+
+      if (!isSharedOrPublished && note.isShared) {
+        try {
+          const sharedDocRef = doc(db, 'shared_notes', noteId);
+          const sharedDocSnap = await getDoc(sharedDocRef);
+          if (sharedDocSnap.exists()) {
+            const sharedData = sharedDocSnap.data() as Note;
+            if (sharedData.content !== undefined) finalContent = sharedData.content;
+            if (sharedData.title !== undefined) finalTitle = sharedData.title;
+            if (sharedData.tags !== undefined) finalTags = sharedData.tags;
+            if (sharedData.updatedAt !== undefined) finalUpdatedAt = sharedData.updatedAt;
+          }
+        } catch (fetchErr) {
+          console.warn('Could not read latest shared document before unshare, falling back to local copy:', fetchErr);
+        }
+      }
+
       const updatedNote: Note = {
         ...note,
+        title: finalTitle,
+        content: finalContent,
+        tags: finalTags,
+        updatedAt: !isSharedOrPublished && note.isShared ? now() : finalUpdatedAt,
         ownerId: note.ownerId || uid,
         ...roleArrays,
         shareAccess: access,
@@ -2463,9 +4084,10 @@ export const useStore = create<AppState>((set, get) => {
     },
 
     shareNotebook: async (notebookId, sharedWith, shareAccess) => {
-      const { notebooks, uid, profile } = get();
+      const { notebooks, uid, profile, online } = get();
       const notebook = notebooks.find(nb => nb.id === notebookId);
       if (!notebook || !uid) return;
+      if (!online) throw new Error('Connect to the internet before changing notebook sharing.');
 
       const access = normalizeShareAccess(shareAccess || legacyEmailsToShareAccess(sharedWith, notebook.shareAccess));
       const roleArrays = shareAccessToRoleArrays(access);
@@ -2564,6 +4186,83 @@ export const useStore = create<AppState>((set, get) => {
       }
     },
 
+    // ── Cloud snapshot backups ──
+    createCloudBackup: async (trigger = 'manual') => {
+      const { uid, exportAllNotes, updateSettings } = get();
+      if (!uid) {
+        throw new Error('Sign in to save cloud backups.');
+      }
+      const meta = await saveCloudBackup(uid, exportAllNotes(), trigger);
+      updateSettings({ lastBackupAt: meta.createdAt });
+      return meta;
+    },
+
+    fetchCloudBackups: async () => {
+      const { uid } = get();
+      if (!uid) return [];
+      return listCloudBackups(uid);
+    },
+
+    deleteCloudBackup: async (backupId) => {
+      const { uid } = get();
+      if (!uid) {
+        throw new Error('Sign in to manage cloud backups.');
+      }
+      await removeCloudBackup(uid, backupId);
+    },
+
+    restoreCloudBackup: async (backupId, mode = 'merge') => {
+      const { uid, notes, notebooks, importNotes } = get();
+      if (!uid) {
+        throw new Error('Sign in to restore cloud backups.');
+      }
+
+      const payload = await loadCloudBackupPayload(uid, backupId);
+      let data: { notes?: Note[]; notebooks?: Notebook[] };
+      try {
+        data = JSON.parse(payload);
+      } catch {
+        throw new Error('This backup is corrupted and cannot be restored.');
+      }
+      if (!data || !Array.isArray(data.notes)) {
+        throw new Error('This backup does not contain any notes.');
+      }
+
+      if (mode === 'replace') {
+        // Clear the local workspace first so the sync listeners never see a
+        // remote-empty state with stale local notes and re-upload them.
+        // Notes shared with collaborators are kept so their links survive.
+        const keptNotes = notes.filter(note => note.isShared);
+        const keptNotebooks = notebooks.filter(nb => nb.isShared || nb.id === 'default');
+        const removedNoteIds = notes.filter(note => !note.isShared).map(note => note.id);
+        const removedNotebookIds = notebooks
+          .filter(nb => !nb.isShared && nb.id !== 'default')
+          .map(nb => nb.id);
+
+        set({
+          notes: keptNotes,
+          notebooks: keptNotebooks,
+          tags: rebuildTags(keptNotes),
+        });
+        persist();
+
+        await Promise.all([
+          ...removedNoteIds.map(id =>
+            deleteDoc(doc(db, `users/${uid}/notes`, id)).catch(console.error)),
+          ...removedNotebookIds.map(id =>
+            deleteDoc(doc(db, `users/${uid}/notebooks`, id)).catch(console.error)),
+        ]);
+      }
+
+      if (!importNotes(payload)) {
+        throw new Error('Restore failed: the backup could not be imported.');
+      }
+      return {
+        restoredNotes: data.notes.length,
+        restoredNotebooks: Array.isArray(data.notebooks) ? data.notebooks.length : 0,
+      };
+    },
+
     resetApp: async () => {
       const {
         notes,
@@ -2574,6 +4273,7 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeTeamSpaces,
         unsubscribeActivity,
         unsubscribeNotifications,
+        unsubscribeReminders,
         unsubscribeSharedNotes,
         unsubscribeSharedNotebooks,
       } = get();
@@ -2583,6 +4283,7 @@ export const useStore = create<AppState>((set, get) => {
       if (unsubscribeTeamSpaces) unsubscribeTeamSpaces();
       if (unsubscribeActivity) unsubscribeActivity();
       if (unsubscribeNotifications) unsubscribeNotifications();
+      if (unsubscribeReminders) unsubscribeReminders();
       if (unsubscribeSharedNotes) unsubscribeSharedNotes();
       if (unsubscribeSharedNotebooks) unsubscribeSharedNotebooks();
       if (uid) {
@@ -2591,18 +4292,10 @@ export const useStore = create<AppState>((set, get) => {
         ));
         await signOut(auth).catch(console.error);
       }
-      localStorage.removeItem('ntk-notes');
-      localStorage.removeItem('ntk-notebooks');
-      localStorage.removeItem('ntk-profile');
-      localStorage.removeItem('ntk-settings');
-      localStorage.removeItem('ntk-onboarded');
-      localStorage.removeItem('ntk-scratchpad');
-      localStorage.removeItem('ntk-saved-searches');
-      localStorage.removeItem('ntk-team-spaces');
-      localStorage.removeItem('ntk-activity-items');
-      localStorage.removeItem('ntk-notifications');
-      localStorage.removeItem('ntk-sync-queue');
-      localStorage.removeItem('ntk-sync-conflicts');
+      // Clear the active workspace's scoped keys
+      WORKSPACE_SHORT_KEYS.forEach(k => localStorage.removeItem(wsKey(k)));
+      // Also clean up any legacy global keys
+      LEGACY_GLOBAL_KEYS.forEach(k => localStorage.removeItem(k));
       set({
         notes: [],
         notebooks: [defaultNotebook],
@@ -2610,6 +4303,7 @@ export const useStore = create<AppState>((set, get) => {
         teamSpaces: [],
         activityItems: [],
         notifications: [],
+        reminders: [],
         profile: defaultProfile,
         settings: defaultSettings,
         isOnboarded: false,
@@ -2620,9 +4314,11 @@ export const useStore = create<AppState>((set, get) => {
         unsubscribeTeamSpaces: null,
         unsubscribeActivity: null,
         unsubscribeNotifications: null,
+        unsubscribeReminders: null,
         unsubscribeSharedNotes: null,
         unsubscribeSharedNotebooks: null,
         currentView: 'home',
+        settingsSection: 'profile',
         selectedNoteId: null,
         editingNote: false,
         searchFilters: defaultSearchFilters,
@@ -2631,6 +4327,7 @@ export const useStore = create<AppState>((set, get) => {
         syncQueue: [],
         syncConflicts: [],
         unlockedNotes: {},
+        syncCenterOpen: false,
       });
     },
 
@@ -2718,14 +4415,14 @@ export const useStore = create<AppState>((set, get) => {
 
     getStats: () => {
       const notes = get().notes.filter(n => !n.trashed);
-      const allChecklist = notes.flatMap(n => n.checklist);
+      const allChecklist = notes.flatMap(n => n.checklist || []).filter(Boolean);
       return {
         notes: notes.filter(n => !n.archived).length,
-        words: notes.reduce((sum, n) => sum + n.wordCount, 0),
+        words: notes.reduce((sum, n) => sum + (n.wordCount || 0), 0),
         tags: get().tags.length,
         notebooks: get().notebooks.length,
         tasks: allChecklist.length,
-        completedTasks: allChecklist.filter(c => c.checked).length,
+        completedTasks: allChecklist.filter(c => Boolean(c?.checked)).length,
       };
     },
 

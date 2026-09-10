@@ -8,16 +8,27 @@ import {
   User, Palette, Type, Download, Upload,
   Trash2, Moon, Sun, Keyboard, Info, BellRing,
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
-  AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink
+  AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink,
+  ArchiveRestore, CheckCircle2, CloudUpload, DatabaseBackup, Monitor, Search, Sparkles, RotateCcw,
+  Camera, HardDrive, Loader2
 } from 'lucide-react';
 import ImportManager from './ImportManager';
+import BackupCenterModal from './BackupCenterModal';
 import QuotaDashboard from './QuotaDashboard';
+import ManualSyncButton from './ManualSyncButton';
 import BrandMark from './BrandMark';
+import AiSettingsPanel from './AiSettingsPanel';
+import UserAvatar, { builtinAvatarIds, builtinAvatarValue } from './UserAvatar';
+import { auth } from '@/utils/firebase';
 import {
   createWorkspaceArchive,
   exportWorkspaceArchiveToGoogleDrive,
+  exportWorkspaceArchiveToConnectedStorage,
   getWorkspaceArchiveFileName,
+  readWorkspaceBackupFile,
 } from '@/utils/cloudExport';
+import { saveExternalStorageBackup } from '@/utils/cloudBackup';
+import { uploadStorageFile } from '@/utils/cloudStorage';
 import { compressInlineImagesInMarkdown } from '@/utils/imageCompression';
 import { countInlineImages, formatBytes, getOversizedNotes, getStorageHeavyNotes } from '@/utils/storageHealth';
 
@@ -31,13 +42,17 @@ export default function SettingsView() {
     profile, setProfile, settings, updateSettings, setTheme, setAccent,
     exportAllNotes, importNotes, resetApp, getStats,
     syncConflicts, resolveSyncConflict, online,
-    notes, updateNote, cleanupTrashOlderThan, selectNote,
+    notes, notebooks, updateNote, cleanupTrashOlderThan, selectNote,
+    uid, createCloudBackup, settingsSection, setSyncCenterOpen,
   } = useStore();
 
-  const [activeSection, setActiveSection] = useState('profile');
+  const [activeSection, setActiveSection] = useState(settingsSection || 'profile');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [showImportManager, setShowImportManager] = useState(false);
+  const [showBackupCenter, setShowBackupCenter] = useState(false);
+  const [snapshotRunning, setSnapshotRunning] = useState(false);
+  const [snapshotStatus, setSnapshotStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installMessage, setInstallMessage] = useState('');
   const [offlineStatus, setOfflineStatus] = useState('');
@@ -45,6 +60,15 @@ export default function SettingsView() {
   const [cloudSharing, setCloudSharing] = useState(false);
   const [cloudExportStatus, setCloudExportStatus] = useState('');
   const [cloudExportLink, setCloudExportLink] = useState('');
+  const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
+  const [externalBackupRunning, setExternalBackupRunning] = useState(false);
+  const [externalBackupStatus, setExternalBackupStatus] = useState<string | null>(null);
+  const [externalBackupRetention, setExternalBackupRetention] = useState(5);
+  const [connectedExportRunning, setConnectedExportRunning] = useState(false);
+  const [connectedExportStatus, setConnectedExportStatus] = useState<string | null>(null);
+  const [connectedExportRetention, setConnectedExportRetention] = useState(30);
+  const profilePhotoInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [notificationStatus, setNotificationStatus] = useState('');
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
@@ -53,21 +77,28 @@ export default function SettingsView() {
   const [cleanupDays, setCleanupDays] = useState(30);
   const [cleanupStatus, setCleanupStatus] = useState('');
   const [compressingImages, setCompressingImages] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [settingsQuery, setSettingsQuery] = useState('');
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showAllFonts, setShowAllFonts] = useState(false);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   const stats = getStats();
   const storageHeavyNotes = getStorageHeavyNotes(notes.filter(note => !note.trashed), 6);
   const oversizedNotes = getOversizedNotes(notes.filter(note => !note.trashed));
   const imageHeavyNotes = notes.filter(note => !note.trashed && countInlineImages(note.content) > 0);
 
+  // Requested section arrives through application state (store.settingsSection)
+  // so navigation can never race component mounting.
   useEffect(() => {
-    const handleOpenSettingsSection = (event: Event) => {
-      const section = (event as CustomEvent<string>).detail;
-      if (section) setActiveSection(section);
-    };
+    if (settingsSection) setActiveSection(settingsSection);
+  }, [settingsSection]);
 
-    window.addEventListener('ntk-settings-section', handleOpenSettingsSection);
-    return () => window.removeEventListener('ntk-settings-section', handleOpenSettingsSection);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => setSystemPrefersDark(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
   }, []);
 
   useEffect(() => {
@@ -92,11 +123,11 @@ export default function SettingsView() {
         return scriptUrl.endsWith('/sw.js');
       });
       if (hasNtkWorker) {
-        setOfflineStatus('Offline app cache is active.');
-      } else if (settings.offlineModeEnabled) {
-        setOfflineStatus('Offline app cache is turning on. It may finish after a refresh.');
+        setOfflineStatus(online
+          ? 'Offline support is ready. If your connection drops, recent app files remain available and safe edits can stay queued.'
+          : 'You are offline. NTK Note is using its local app cache and will sync safe queued changes after you reconnect.');
       } else {
-        setOfflineStatus('Offline app cache is off.');
+        setOfflineStatus('Offline support is starting. Refresh once if it does not become ready automatically.');
       }
     };
 
@@ -107,13 +138,9 @@ export default function SettingsView() {
       window.clearTimeout(timer);
       navigator.serviceWorker?.removeEventListener?.('controllerchange', refreshOfflineStatus);
     };
-  }, [settings.offlineModeEnabled]);
+  }, [online]);
 
   const handleInstallPwa = async () => {
-    if (!settings.offlineModeEnabled) {
-      setInstallMessage('Turn on optional offline mode first so the browser can install the app.');
-      return;
-    }
     if (!installPrompt) {
       setInstallMessage('Your browser has not exposed an install prompt yet. Use the browser menu and choose Install app when available.');
       return;
@@ -124,16 +151,19 @@ export default function SettingsView() {
     setInstallPrompt(null);
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const result = importNotes(ev.target?.result as string);
-      setImportResult(result ? 'Notes imported successfully!' : 'Failed to import. Invalid format.');
-      setTimeout(() => setImportResult(null), 3000);
-    };
-    reader.readAsText(file);
+    try {
+      const payload = await readWorkspaceBackupFile(file);
+      const result = importNotes(payload);
+      setImportResult(result ? 'Backup imported successfully.' : 'This backup could not be imported.');
+    } catch (error) {
+      setImportResult(error instanceof Error ? error.message : 'This backup could not be imported.');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      window.setTimeout(() => setImportResult(null), 5000);
+    }
   };
 
   const handleExport = async () => {
@@ -180,18 +210,15 @@ export default function SettingsView() {
       const blob = await createWorkspaceArchive(exportAllNotes());
       const file = new File([blob], getWorkspaceArchiveFileName(), { type: 'application/zip' });
       const shareData = {
-        title: 'NTK Note backup',
-        text: 'NTK Note workspace backup',
+        title: 'NTK Note Backup',
+        text: 'Backup of notes from NTK Note',
         files: [file],
       };
-
-      if (!navigator.canShare?.(shareData)) {
-        setCloudExportStatus('This browser cannot share backup files directly. Download the ZIP and upload it to your cloud storage app.');
-        return;
+      if (navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+      } else {
+        await handleExport();
       }
-
-      await navigator.share(shareData);
-      setCloudExportStatus('Backup handed off to your selected app.');
       updateSettings({ lastBackupAt: new Date().toISOString() });
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -202,6 +229,80 @@ export default function SettingsView() {
       }
     } finally {
       setCloudSharing(false);
+    }
+  };
+
+  const handleProfilePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingProfilePhoto(true);
+    try {
+      const previousAvatar = profile.avatar;
+      const res = await uploadStorageFile(file, 'profilePhotos');
+      const { buildStorageReference, parseStorageReference, deleteStorageFile } = await import('@/utils/cloudStorage');
+      const storageRef = buildStorageReference('profilePhotos', res.objectId, res.fileName);
+      setProfile({ avatar: storageRef, avatarSource: 'custom' });
+      if (previousAvatar && previousAvatar.startsWith('storage:profilePhotos:')) {
+        const parsed = parseStorageReference(previousAvatar);
+        if (parsed) {
+          void deleteStorageFile('profilePhotos', parsed.objectId).catch(() => undefined);
+        }
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to upload profile photo.');
+    } finally {
+      setUploadingProfilePhoto(false);
+      if (profilePhotoInputRef.current) profilePhotoInputRef.current.value = '';
+    }
+  };
+
+  const handleExternalStorageBackup = async () => {
+    setExternalBackupRunning(true);
+    setExternalBackupStatus('Saving backup to connected storage...');
+    try {
+      const payload = exportAllNotes();
+      const result = await saveExternalStorageBackup(payload, externalBackupRetention);
+      setExternalBackupStatus(`Saved ${result.fileName} (${(result.size / 1024).toFixed(1)} KB) to external storage.`);
+      updateSettings({ lastBackupAt: new Date().toISOString() });
+    } catch (error) {
+      setExternalBackupStatus(error instanceof Error ? error.message : 'External storage backup failed.');
+    } finally {
+      setExternalBackupRunning(false);
+    }
+  };
+
+  const handleConnectedStorageExport = async () => {
+    setConnectedExportRunning(true);
+    setConnectedExportStatus('Uploading export ZIP to connected storage...');
+    try {
+      const data = exportAllNotes();
+      const result = await exportWorkspaceArchiveToConnectedStorage(data, connectedExportRetention);
+      setConnectedExportStatus(`Saved ${result.fileName} to connected storage.`);
+      updateSettings({ lastBackupAt: new Date().toISOString() });
+    } catch (error) {
+      setConnectedExportStatus(error instanceof Error ? error.message : 'Export to connected storage failed.');
+    } finally {
+      setConnectedExportRunning(false);
+    }
+  };
+
+  const handleSnapshotBackup = async () => {
+    setSnapshotRunning(true);
+    setSnapshotStatus(null);
+    try {
+      const meta = await createCloudBackup('manual');
+      setSnapshotStatus({
+        tone: 'ok',
+        text: `Snapshot saved — ${meta.noteCount} note${meta.noteCount === 1 ? '' : 's'} backed up.`,
+      });
+    } catch (err) {
+      console.error('Cloud snapshot backup failed', err);
+      setSnapshotStatus({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Cloud snapshot backup failed.',
+      });
+    } finally {
+      setSnapshotRunning(false);
     }
   };
 
@@ -256,17 +357,28 @@ export default function SettingsView() {
   };
 
   const sections = [
-    { id: 'profile', icon: User, label: 'Profile' },
-    { id: 'appearance', icon: Palette, label: 'Appearance' },
-    { id: 'editor', icon: Type, label: 'Editor' },
-    { id: 'tags', icon: Tag, label: 'Tag Manager' },
-    { id: 'analytics', icon: TrendingUp, label: 'Analytics' },
-    { id: 'shortcuts', icon: Keyboard, label: 'Shortcuts' },
-    { id: 'notifications', icon: BellRing, label: 'Notifications' },
-    { id: 'sync', icon: ShieldCheck, label: 'Sync & Safety' },
-    { id: 'data', icon: Download, label: 'Data & Backup' },
-    { id: 'about', icon: Info, label: 'About' },
-  ];
+    { id: 'profile', icon: User, label: 'Your profile', group: 'everyday', keywords: 'name email account identity avatar photo' },
+    { id: 'ai', icon: Sparkles, label: 'NTK AI', group: 'everyday', keywords: 'ai assistant writing connection provider guest storage api' },
+    { id: 'appearance', icon: Palette, label: 'Look & feel', group: 'everyday', keywords: 'dark light system theme color colour accent layout grid list kanban spacing' },
+    { id: 'editor', icon: Type, label: 'Writing', group: 'everyday', keywords: 'font size spell check autosave word count default note notebook markdown checklist' },
+    { id: 'notifications', icon: BellRing, label: 'Alerts & reminders', group: 'everyday', keywords: 'notification reminder browser quiet hours snooze celebration collaboration' },
+    { id: 'sync', icon: ShieldCheck, label: 'Sync & offline', group: 'everyday', keywords: 'sync manual cloud offline install pwa conflict device' },
+    { id: 'data', icon: Download, label: 'Backups & data', group: 'everyday', keywords: 'backup restore export import drive storage cleanup reset' },
+    { id: 'tags', icon: Tag, label: 'Tags', group: 'advanced', keywords: 'tag merge delete organize' },
+    { id: 'analytics', icon: TrendingUp, label: 'Insights', group: 'advanced', keywords: 'analytics statistics productivity words tasks' },
+    { id: 'shortcuts', icon: Keyboard, label: 'Keyboard shortcuts', group: 'advanced', keywords: 'keyboard ctrl hotkeys commands' },
+    { id: 'about', icon: Info, label: 'Help & about', group: 'advanced', keywords: 'about version app help guide getting started tour beginner novice' },
+  ] as const;
+
+  const normalizedSettingsQuery = settingsQuery.trim().toLowerCase();
+  const matchingSections = normalizedSettingsQuery
+    ? sections.filter(section => `${section.label} ${section.keywords}`.toLowerCase().includes(normalizedSettingsQuery))
+    : sections.filter(section => showAdvancedSettings || section.group === 'everyday' || section.id === activeSection);
+  const resolvedTheme = settings.theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : settings.theme;
+  const recommendedFonts = ['Inter', 'DM Sans', 'Manrope', 'Georgia', 'System Default'];
+  const displayedFonts = showAllFonts
+    ? premiumFontFamilies
+    : premiumFontFamilies.filter(font => recommendedFonts.includes(font.label) || font.value === settings.editorFontFamily);
 
   const shortcuts = [
     { keys: 'Ctrl + B', desc: 'Bold text' },
@@ -285,34 +397,64 @@ export default function SettingsView() {
   return (
     <div className="flex-1 overflow-y-auto" style={{ backgroundColor: 'var(--app-bg)' }}>
       <div className="max-w-3xl mx-auto p-4 md:p-8">
-        <h2 className="text-2xl font-bold text-theme-primary mb-6">Settings</h2>
-
-        {/* Section tabs */}
-        <div className="flex gap-1 mb-6 overflow-x-auto pb-2">
-          {sections.map(sec => (
-            <button
-              key={sec.id}
-              onClick={() => setActiveSection(sec.id)}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors"
-              style={{
-                backgroundColor: activeSection === sec.id ? 'var(--active-bg)' : 'transparent',
-                color: activeSection === sec.id ? 'var(--badge-text)' : 'var(--text-tertiary)',
-              }}
-            >
-              <sec.icon className="w-4 h-4 no-transition" />
-              {sec.label}
-            </button>
-          ))}
+        <div className="mb-6">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl accent-soft accent-text"><Sparkles className="h-5 w-5 no-transition" /></div>
+            <div>
+              <h2 className="text-2xl font-bold text-theme-primary">Settings</h2>
+              <p className="mt-1 text-sm leading-6 text-theme-tertiary">Make NTK Note comfortable for you. Everyday choices are simple and changes apply immediately; technical controls stay out of the way until you need them.</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            <SettingsStatus label="Appearance" value={`${resolvedTheme === 'dark' ? 'Dark' : 'Light'} · ${settings.accent}`} />
+            <SettingsStatus label="Writing" value={`${settings.editorFontSize}px · ${premiumFontFamilies.find(font => font.value === settings.editorFontFamily)?.label || 'Custom font'}`} />
+            <SettingsStatus label="Sync" value={uid ? (online ? 'Signed in · Online' : 'Signed in · Offline') : 'Local on this device'} />
+          </div>
         </div>
+
+        <label className="mb-4 flex min-h-11 items-center gap-2 rounded-xl border theme-border theme-input px-3">
+          <Search className="h-4 w-4 shrink-0 text-theme-tertiary no-transition" />
+          <span className="sr-only">Search settings</span>
+          <input value={settingsQuery} onChange={event => setSettingsQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary outline-none placeholder:text-theme-muted" placeholder="Find a setting — dark mode, font, backup, reminders…" />
+        </label>
+
+        <div className="mb-6 space-y-3">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {matchingSections.map(sec => (
+              <button
+                key={sec.id}
+                onClick={() => { setActiveSection(sec.id); setSettingsQuery(''); }}
+                className="flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm font-medium transition-colors"
+                style={{
+                  borderColor: activeSection === sec.id ? 'var(--accent-primary)' : 'var(--card-border)',
+                  backgroundColor: activeSection === sec.id ? 'var(--active-bg)' : 'var(--card-bg)',
+                  color: activeSection === sec.id ? 'var(--badge-text)' : 'var(--text-secondary)',
+                }}
+              >
+                <sec.icon className="h-4 w-4 shrink-0 no-transition" /><span>{sec.label}</span>
+              </button>
+            ))}
+          </div>
+          {!normalizedSettingsQuery && (
+            <button type="button" onClick={() => setShowAdvancedSettings(value => !value)} className="rounded-lg px-2 py-1.5 text-xs font-semibold accent-text theme-hover">
+              {showAdvancedSettings ? 'Hide extra settings' : 'Show more settings'}
+            </button>
+          )}
+          {normalizedSettingsQuery && matchingSections.length === 0 && <p className="rounded-xl border border-dashed theme-border px-4 py-3 text-sm text-theme-tertiary">No setting matched that search. Try “backup”, “dark”, “font”, “reminder”, or “sync”.</p>}
+        </div>
+
+        {activeSection === 'ai' && (
+          <div className="animate-fade-in">
+            <AiSettingsPanel />
+          </div>
+        )}
 
         {/* Profile Section */}
         {activeSection === 'profile' && (
           <div className="space-y-6 animate-fade-in">
             <SettingCard title="Profile Information">
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-16 h-16 rounded-2xl accent-gradient flex items-center justify-center text-white text-xl font-bold shadow-lg">
-                  {profile.initials}
-                </div>
+                <UserAvatar profile={profile} size="xl" />
                 <div>
                   <h3 className="font-semibold text-theme-primary">{profile.name}</h3>
                   <p className="text-sm text-theme-tertiary">{profile.email || 'No email set'}</p>
@@ -333,14 +475,97 @@ export default function SettingsView() {
                   <label htmlFor="settings-profile-email" className="block text-sm font-medium text-theme-secondary mb-1">Email</label>
                   <input
                     id="settings-profile-email"
-                    type="text"
-                    inputMode="email"
-                    autoComplete="email"
+                    type="email"
                     value={profile.email}
-                    onChange={e => setProfile({ email: e.target.value })}
-                    placeholder="your@email.com"
-                    className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
+                    readOnly
+                    aria-readonly="true"
+                    className="w-full px-3 py-2 rounded-lg theme-input border text-sm text-theme-tertiary cursor-not-allowed"
                   />
+                  <p className="mt-1 text-xs text-theme-tertiary">This is the email you signed in with. NTK Note uses it for secure sharing, so it can’t be changed here.</p>
+                </div>
+                <div>
+                  <p className="mb-2 text-sm font-medium text-theme-secondary">Profile picture</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {auth.currentUser?.photoURL && (
+                      <button
+                        type="button"
+                        onClick={() => setProfile({ avatar: auth.currentUser?.photoURL || undefined, avatarSource: 'google' })}
+                        className="rounded-full p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+                        title="Use my Google profile photo"
+                      >
+                        <UserAvatar profile={{ name: profile.name, avatar: auth.currentUser.photoURL }} size="md" />
+                      </button>
+                    )}
+                    {builtinAvatarIds.map(id => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setProfile({ avatar: builtinAvatarValue(id), avatarSource: 'builtin' })}
+                        className="rounded-full p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70"
+                        title="Use this avatar"
+                      >
+                        <UserAvatar profile={{ name: profile.name, avatar: builtinAvatarValue(id) }} size="md" />
+                      </button>
+                    ))}
+                    <input
+                      ref={profilePhotoInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleProfilePhotoFileChange}
+                      disabled={uploadingProfilePhoto}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => profilePhotoInputRef.current?.click()}
+                      disabled={uploadingProfilePhoto}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border theme-border theme-hover text-xs font-medium text-theme-secondary disabled:opacity-50"
+                      title="Upload custom photo"
+                    >
+                      {uploadingProfilePhoto ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Uploading…
+                        </>
+                      ) : (
+                        <>
+                          <Camera className="w-3.5 h-3.5" />
+                          Upload my own photo
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-theme-tertiary">Google accounts use your profile photo when available. You can also upload your own photo or choose one of NTK Note’s built-in avatars.</p>
+                </div>
+
+                <div className="pt-4 border-t theme-border space-y-3">
+                  <h4 className="text-xs uppercase font-bold tracking-wider text-theme-tertiary">Messaging & Privacy</h4>
+
+                  <label className="flex items-center justify-between p-3 rounded-xl border theme-border cursor-pointer theme-hover">
+                    <div>
+                      <p className="text-sm font-semibold text-theme-primary">Allow people to find me</p>
+                      <p className="text-xs text-theme-tertiary">Show your name and avatar when collaborators search for people</p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={profile.discoverable !== false}
+                      onChange={e => setProfile({ discoverable: e.target.checked })}
+                      className="w-4 h-4 rounded accent-indigo-600 cursor-pointer"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3 rounded-xl border theme-border cursor-pointer theme-hover">
+                    <div>
+                      <p className="text-sm font-semibold text-theme-primary">Allow message requests</p>
+                      <p className="text-xs text-theme-tertiary">Let new people send you a private message request</p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={profile.allowMessageRequests !== false}
+                      onChange={e => setProfile({ allowMessageRequests: e.target.checked })}
+                      className="w-4 h-4 rounded accent-indigo-600 cursor-pointer"
+                    />
+                  </label>
                 </div>
               </div>
             </SettingCard>
@@ -368,218 +593,78 @@ export default function SettingsView() {
         {/* Appearance Section */}
         {activeSection === 'appearance' && (
           <div className="space-y-6 animate-fade-in">
-            <SettingCard title="Theme">
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setTheme('light')}
-                  className="flex-1 p-4 rounded-xl border-2 transition-all"
-                  style={{
-                    borderColor: settings.theme === 'light' ? 'var(--accent-primary)' : 'var(--card-border)',
-                    backgroundColor: settings.theme === 'light' ? 'var(--active-bg)' : 'transparent',
-                  }}
-                >
-                  <Sun className="w-6 h-6 text-amber-500 mx-auto mb-2 no-transition" />
-                  <p className="text-sm font-medium text-center text-theme-secondary">Light</p>
-                </button>
-                <button
-                  onClick={() => setTheme('dark')}
-                  className="flex-1 p-4 rounded-xl border-2 transition-all"
-                  style={{
-                    borderColor: settings.theme === 'dark' ? 'var(--accent-primary)' : 'var(--card-border)',
-                    backgroundColor: settings.theme === 'dark' ? 'var(--active-bg)' : 'transparent',
-                  }}
-                >
-                  <Moon className="w-6 h-6 accent-text mx-auto mb-2 no-transition" />
-                  <p className="text-sm font-medium text-center text-theme-secondary">Dark</p>
-                </button>
+            <SettingCard title="App appearance" description="Choose how NTK Note looks. The preview changes immediately so you can see what each option does.">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <ThemeChoice label="Light" description="Bright and clean" selected={settings.theme === 'light'} onClick={() => setTheme('light')} preview="light" icon={<Sun className="h-5 w-5 no-transition" />} />
+                <ThemeChoice label="Dark" description="Low-glare at night" selected={settings.theme === 'dark'} onClick={() => setTheme('dark')} preview="dark" icon={<Moon className="h-5 w-5 no-transition" />} />
+                <ThemeChoice label="Use device setting" description={`Currently ${systemPrefersDark ? 'dark' : 'light'}`} selected={settings.theme === 'system'} onClick={() => setTheme('system')} preview="system" icon={<Monitor className="h-5 w-5 no-transition" />} />
               </div>
+              <p className="mt-3 text-xs leading-5 text-theme-tertiary">{settings.theme === 'system' ? `NTK Note is following this device and is currently showing ${systemPrefersDark ? 'dark' : 'light'} mode.` : `${settings.theme === 'dark' ? 'Dark' : 'Light'} mode is fixed until you change it here.`}</p>
             </SettingCard>
 
-            <SettingCard title="Accent Color">
-              <div className="grid grid-cols-6 gap-3">
+            <SettingCard title="Accent colour" description="This changes buttons, highlights, selected items, links, and focus rings. It adapts automatically in dark mode so it stays visible.">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 {(Object.keys(accentColors) as ThemeAccent[]).map(color => (
-                  <button
-                    key={color}
-                    onClick={() => setAccent(color)}
-                    aria-label={`Set accent color to ${color}`}
-                    className={`w-full aspect-square rounded-xl ${accentColors[color].bg} ${
-                      settings.accent === color ? 'ring-2 ring-offset-2 scale-110' : ''
-                    } hover:scale-105 transition-all`}
-                    style={settings.accent === color ? {
-                      '--tw-ring-offset-color': 'var(--card-bg)',
-                      '--tw-ring-color': 'var(--accent-primary)',
-                    } as React.CSSProperties : {}}
-                    title={color}
-                  />
-                ))}
-              </div>
-            </SettingCard>
-
-            <SettingCard title="Default Note Theme">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {(Object.entries(noteThemes) as [NoteTheme, typeof noteThemes.canvas][]).map(([key, theme]) => (
-                  <button
-                    key={key}
-                    onClick={() => updateSettings({ defaultNoteTheme: key })}
-                    className="text-left rounded-xl border p-3 transition-all theme-hover"
-                    style={{
-                      borderColor: settings.defaultNoteTheme === key ? 'var(--accent-primary)' : 'var(--card-border)',
-                      backgroundColor: settings.defaultNoteTheme === key ? 'var(--active-bg)' : 'transparent',
-                    }}
-                  >
-                    <span className="block h-10 rounded-lg mb-2 border" style={{ background: theme.preview, borderColor: 'var(--card-border)' }} />
-                    <span className="block text-sm font-semibold text-theme-primary">{theme.label}</span>
-                    <span className="block text-xs text-theme-tertiary mt-0.5">{theme.description}</span>
+                  <button key={color} type="button" onClick={() => setAccent(color)} aria-pressed={settings.accent === color} className="flex min-h-11 items-center gap-2 rounded-xl border px-3 text-left text-sm font-medium transition-all" style={{ borderColor: settings.accent === color ? 'var(--accent-primary)' : 'var(--card-border)', backgroundColor: settings.accent === color ? 'var(--active-bg)' : 'var(--card-bg)', color: 'var(--text-secondary)' }}>
+                    <span className={`h-5 w-5 shrink-0 rounded-full ${accentColors[color].bg}`} aria-hidden="true" /><span className="capitalize">{color}</span>{settings.accent === color && <CheckCircle2 className="ml-auto h-4 w-4 accent-text no-transition" />}
                   </button>
                 ))}
               </div>
             </SettingCard>
 
-            <SettingCard title="Layout">
-              <ToggleSetting
-                label="Default view mode"
-                description="Grid or list view for notes"
-                value={settings.noteViewMode}
-                options={[{ value: 'grid', label: 'Grid' }, { value: 'list', label: 'List' }]}
-                onChange={(v) => updateSettings({ noteViewMode: v as 'grid' | 'list' })}
-              />
-              <ToggleSetting
-                label="Density"
-                description="Content density"
-                value={settings.density}
-                options={[
-                  { value: 'compact', label: 'Compact' },
-                  { value: 'comfortable', label: 'Comfortable' },
-                  { value: 'spacious', label: 'Spacious' },
-                ]}
-                onChange={(v) => updateSettings({ density: v as 'compact' | 'comfortable' | 'spacious' })}
-              />
-              <div className="border-t theme-divider pt-4 space-y-4">
-                <div className="flex items-center justify-between py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Collapse sidebar</p>
-                    <p className="text-xs text-theme-tertiary">Use an icon rail for the main menu on desktop</p>
-                  </div>
-                  <Switch
-                    label="Collapse sidebar"
-                    checked={settings.sidebarCollapsed}
-                    onChange={() => updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })}
-                  />
-                </div>
-                <div className="flex items-center justify-between py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Collapse notes list</p>
-                    <p className="text-xs text-theme-tertiary">Hide the list panel and keep a drawer handle</p>
-                  </div>
-                  <Switch
-                    label="Collapse notes list"
-                    checked={settings.noteListCollapsed}
-                    onChange={() => updateSettings({
-                      noteListCollapsed: !settings.noteListCollapsed,
-                      editorPanelCollapsed: !settings.noteListCollapsed ? false : settings.editorPanelCollapsed,
-                    })}
-                  />
-                </div>
-                <div className="flex items-center justify-between py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Collapse editor panel</p>
-                    <p className="text-xs text-theme-tertiary">Hide the preview/editor panel and keep a drawer handle</p>
-                  </div>
-                  <Switch
-                    label="Collapse editor panel"
-                    checked={settings.editorPanelCollapsed}
-                    onChange={() => updateSettings({
-                      editorPanelCollapsed: !settings.editorPanelCollapsed,
-                      noteListCollapsed: !settings.editorPanelCollapsed ? false : settings.noteListCollapsed,
-                    })}
-                  />
-                </div>
+            <SettingCard title="Default note style" description="This is the background style new notes start with. Existing notes keep their own style unless you change them individually.">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {(Object.entries(noteThemes) as [NoteTheme, typeof noteThemes.canvas][]).map(([key, theme]) => (
+                  <button key={key} type="button" onClick={() => updateSettings({ defaultNoteTheme: key })} className="text-left rounded-xl border p-3 transition-all theme-hover" style={{ borderColor: settings.defaultNoteTheme === key ? 'var(--accent-primary)' : 'var(--card-border)', backgroundColor: settings.defaultNoteTheme === key ? 'var(--active-bg)' : 'var(--card-bg)' }}>
+                    <span data-note-theme={key} className="note-theme-editor block h-12 rounded-lg mb-2 border p-2" style={{ backgroundColor: 'var(--note-theme-bg)', borderColor: 'var(--note-theme-border)' }}>
+                      <span className="block h-1.5 w-2/3 rounded-full" style={{ backgroundColor: theme.accent, opacity: 0.8 }} /><span className="mt-2 block h-1 w-4/5 rounded-full" style={{ backgroundColor: 'var(--text-muted)', opacity: 0.45 }} />
+                    </span>
+                    <span className="block text-sm font-semibold text-theme-primary">{theme.label}</span><span className="block text-xs text-theme-tertiary mt-0.5">{theme.description}</span>
+                  </button>
+                ))}
               </div>
+            </SettingCard>
+
+            <SettingCard title="Notes layout" description="These controls change how your notes are displayed. They do not change the content inside your notes.">
+              <ToggleSetting label="Default notes view" description="How All Notes opens" value={settings.noteViewMode} options={[{ value: 'grid', label: 'Cards' }, { value: 'list', label: 'List' }, { value: 'kanban', label: 'Board' }]} onChange={v => updateSettings({ noteViewMode: v as 'grid' | 'list' | 'kanban' })} />
+              <ToggleSetting label="Note card spacing" description="How much space note cards use" value={settings.density} options={[{ value: 'compact', label: 'Compact' }, { value: 'comfortable', label: 'Comfortable' }, { value: 'spacious', label: 'Spacious' }]} onChange={v => updateSettings({ density: v as 'compact' | 'comfortable' | 'spacious' })} />
+              <div className="mt-4 rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--app-bg-subtle)' }}><p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-theme-muted">Spacing preview</p><div className={`rounded-xl border theme-card ${settings.density === 'compact' ? 'p-2.5' : settings.density === 'spacious' ? 'p-5' : 'p-3.5'}`}><p className="text-sm font-semibold text-theme-primary">Example note</p><p className="mt-1 text-xs text-theme-tertiary">This preview shows how much room each note card will use.</p></div></div>
+
+              <details className="mt-4 rounded-xl border theme-border p-3.5">
+                <summary className="cursor-pointer text-sm font-semibold text-theme-secondary">Desktop panel controls</summary><p className="mt-1 text-xs leading-5 text-theme-tertiary">These options only matter on wide desktop screens. On phones and tablets, NTK Note arranges panels automatically.</p>
+                <div className="mt-3 space-y-1 border-t pt-3 theme-divider">
+                  <FriendlySwitch label="Use a smaller sidebar" description="Show an icon rail instead of the full desktop menu." checked={settings.sidebarCollapsed} onChange={() => updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })} />
+                  <FriendlySwitch label="Hide the notes list panel" description="Keep the editor wider and leave a control to reopen the list." checked={settings.noteListCollapsed} onChange={() => updateSettings({ noteListCollapsed: !settings.noteListCollapsed, editorPanelCollapsed: !settings.noteListCollapsed ? false : settings.editorPanelCollapsed })} />
+                  <FriendlySwitch label="Hide the editor panel" description="Focus on the notes list and reopen the editor when needed." checked={settings.editorPanelCollapsed} onChange={() => updateSettings({ editorPanelCollapsed: !settings.editorPanelCollapsed, noteListCollapsed: !settings.editorPanelCollapsed ? false : settings.noteListCollapsed })} />
+                </div>
+              </details>
+              <button type="button" onClick={() => { setTheme('system'); setAccent('indigo'); updateSettings({ defaultNoteTheme: 'canvas', noteViewMode: 'grid', density: 'comfortable', sidebarCollapsed: false, noteListCollapsed: false, editorPanelCollapsed: false }); }} className="mt-4 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-theme-secondary theme-hover"><RotateCcw className="h-3.5 w-3.5 no-transition" />Reset look & layout to recommended</button>
             </SettingCard>
           </div>
         )}
 
-        {/* Editor Section */}
+        {/* Writing Section */}
         {activeSection === 'editor' && (
           <div className="space-y-6 animate-fade-in">
-            <SettingCard title="Editor Settings">
-              <div className="space-y-4">
-                <div>
-                  <label htmlFor="settings-editor-font-size" className="block text-sm font-medium text-theme-secondary mb-2">
-                    Font Size: {settings.editorFontSize}px
-                  </label>
-                  <input
-                    id="settings-editor-font-size"
-                    aria-label="Editor font size"
-                    type="range"
-                    min="12"
-                    max="24"
-                    value={settings.editorFontSize}
-                    onChange={e => updateSettings({ editorFontSize: parseInt(e.target.value) })}
-                    className="w-full accent-range"
-                  />
-                  <div className="flex justify-between text-xs text-theme-tertiary mt-1">
-                    <span>12px</span>
-                    <span>24px</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="settings-editor-font-family" className="block text-sm font-medium text-theme-secondary mb-2">Font Family</label>
-                  <select
-                    id="settings-editor-font-family"
-                    value={settings.editorFontFamily}
-                    onChange={e => updateSettings({ editorFontFamily: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                  >
-                    {['Modern Sans', 'Editorial Serif', 'Mono', 'System'].map(category => (
-                      <optgroup key={category} label={category}>
-                        {premiumFontFamilies.filter(font => font.category === category).map(font => (
-                          <option key={font.value} value={font.value}>{font.label}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Show word count</p>
-                    <p className="text-xs text-theme-tertiary">Display word and character count in status bar</p>
-                  </div>
-                  <Switch label="Show word count" checked={settings.showWordCount} onChange={() => updateSettings({ showWordCount: !settings.showWordCount })} />
-                </div>
-
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Spell check</p>
-                    <p className="text-xs text-theme-tertiary">Enable browser spell checking</p>
-                  </div>
-                  <Switch label="Spell check" checked={settings.spellCheck} onChange={() => updateSettings({ spellCheck: !settings.spellCheck })} />
-                </div>
-
-                <div className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Auto-save</p>
-                    <p className="text-xs text-theme-tertiary">Automatically save notes as you type</p>
-                  </div>
-                  <Switch label="Auto-save" checked={settings.autoSave} onChange={() => updateSettings({ autoSave: !settings.autoSave })} />
-                </div>
-
-                <div>
-                  <label htmlFor="settings-default-note-type" className="block text-sm font-medium text-theme-secondary mb-2">Default note type</label>
-                  <select
-                    id="settings-default-note-type"
-                    value={settings.defaultNoteType}
-                    onChange={e => updateSettings({ defaultNoteType: e.target.value as 'note' | 'checklist' | 'markdown' })}
-                    className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                  >
-                    <option value="note">Rich Text Note</option>
-                    <option value="checklist">Checklist</option>
-                    <option value="markdown">Markdown</option>
-                  </select>
-                </div>
+            <SettingCard title="Writing comfort" description="Make the editor comfortable to read and write in. The sample below changes immediately so you can see the effect before opening a note.">
+              <div className="mb-5 rounded-xl border theme-border p-4" style={{ backgroundColor: 'var(--input-bg)', fontFamily: settings.editorFontFamily, fontSize: `${settings.editorFontSize}px` }} aria-label="Writing settings preview">
+                <p className="font-semibold text-theme-primary">This is how your writing will feel.</p><p className="mt-1 leading-7 text-theme-secondary">A clear, comfortable editor helps you focus on your ideas instead of the controls around them.</p>{settings.showWordCount && <p className="mt-3 text-xs text-theme-tertiary">18 words · word count is visible</p>}
               </div>
+              <div><div className="mb-2 flex items-center justify-between gap-3"><label htmlFor="settings-editor-font-size" className="text-sm font-medium text-theme-secondary">Writing text size</label><span className="rounded-lg px-2 py-1 text-xs font-semibold accent-soft accent-text">{settings.editorFontSize}px</span></div><input id="settings-editor-font-size" type="range" min="12" max="24" value={settings.editorFontSize} onChange={e => updateSettings({ editorFontSize: parseInt(e.target.value) })} className="w-full accent-range" /><div className="mt-1 flex justify-between text-xs text-theme-tertiary"><span>Smaller</span><span>Larger</span></div></div>
+              <div className="mt-5"><label htmlFor="settings-editor-font-family" className="mb-2 block text-sm font-medium text-theme-secondary">Writing font</label><select id="settings-editor-font-family" value={settings.editorFontFamily} onChange={e => updateSettings({ editorFontFamily: e.target.value })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none">{displayedFonts.map(font => <option key={font.value} value={font.value}>{font.label}</option>)}</select><button type="button" onClick={() => setShowAllFonts(value => !value)} className="mt-2 text-xs font-semibold accent-text">{showAllFonts ? 'Show recommended fonts only' : `Show all ${premiumFontFamilies.length} fonts`}</button></div>
+              <div className="mt-5 space-y-1 border-t pt-3 theme-divider">
+                <FriendlySwitch label="Show word count" description="Shows words and characters at the bottom of the editor." checked={settings.showWordCount} onChange={() => updateSettings({ showWordCount: !settings.showWordCount })} />
+                <FriendlySwitch label="Check spelling" description="Let your browser underline words that may be misspelled." checked={settings.spellCheck} onChange={() => updateSettings({ spellCheck: !settings.spellCheck })} />
+                <FriendlySwitch label="Save while I type" description={settings.autoSave ? 'Recommended. NTK Note saves your changes automatically while you write.' : 'Off. Your note still saves when you leave the field or press Ctrl/Cmd + S.'} checked={settings.autoSave} onChange={() => updateSettings({ autoSave: !settings.autoSave })} />
+              </div>
+            </SettingCard>
+
+            <SettingCard title="When I create a new note" description="Choose sensible defaults so you do not have to make the same choices every time. You can still change an individual note later.">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block"><span className="mb-1 block text-sm font-medium text-theme-secondary">Start with</span><select value={settings.defaultNoteType} onChange={e => updateSettings({ defaultNoteType: e.target.value as 'note' | 'checklist' | 'markdown' })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none"><option value="note">Normal note</option><option value="checklist">Checklist</option><option value="markdown">Markdown note (advanced)</option></select><span className="mt-1 block text-xs text-theme-tertiary">For most people, Normal note is the easiest choice.</span></label>
+                <label className="block"><span className="mb-1 block text-sm font-medium text-theme-secondary">Put new notes in</span><select value={settings.defaultNotebook || 'default'} onChange={e => updateSettings({ defaultNotebook: e.target.value || 'default' })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none"><option value="default">My Notebook</option>{notebooks.filter(notebook => !notebook.trashed && notebook.id !== 'default').map(notebook => <option key={notebook.id} value={notebook.id}>{notebook.name}</option>)}</select><span className="mt-1 block text-xs text-theme-tertiary">Useful if most of your notes belong in one notebook.</span></label>
+              </div>
+              <button type="button" onClick={() => { const inter = premiumFontFamilies.find(font => font.label === 'Inter'); updateSettings({ editorFontSize: 16, editorFontFamily: inter?.value || 'Inter, ui-sans-serif, system-ui, sans-serif', showWordCount: true, autoSave: true, spellCheck: true, defaultNoteType: 'note', defaultNotebook: 'default' }); }} className="mt-5 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-theme-secondary theme-hover"><RotateCcw className="h-3.5 w-3.5 no-transition" />Reset writing settings to recommended</button>
             </SettingCard>
           </div>
         )}
@@ -887,138 +972,31 @@ export default function SettingsView() {
         {/* Notifications Section */}
         {activeSection === 'notifications' && (
           <div className="space-y-6 animate-fade-in">
-            <SettingCard title="Notification Center">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Synced in-app notifications</p>
-                    <p className="text-xs text-theme-tertiary">Show reminders, celebrations, and collaboration updates in the app inbox.</p>
-                  </div>
-                  <Switch
-                    label="Synced in-app notifications"
-                    checked={settings.notificationsEnabled}
-                    onChange={() => updateSettings({ notificationsEnabled: !settings.notificationsEnabled })}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Browser alerts on this device</p>
-                    <p className="text-xs text-theme-tertiary">
-                      Permission: {notificationPermission === 'unsupported' ? 'not supported' : notificationPermission}
-                    </p>
-                  </div>
-                  <Switch
-                    label="Browser alerts on this device"
-                    checked={settings.browserNotificationsEnabled}
-                    onChange={() => void handleBrowserNotificationToggle()}
-                  />
-                </div>
-
-                {notificationStatus && (
-                  <p className="rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }}>
-                    {notificationStatus}
-                  </p>
-                )}
+            <SettingCard title="Alerts on this device" description="Choose whether NTK Note should show reminders and updates inside the app and, when your browser allows it, as system alerts.">
+              <div className="space-y-1">
+                <FriendlySwitch label="Use notifications in NTK Note" description="Keeps reminder and collaboration messages in the NTK Note notification inbox." checked={settings.notificationsEnabled} onChange={() => updateSettings({ notificationsEnabled: !settings.notificationsEnabled })} />
+                <FriendlySwitch label="Show browser alerts on this device" description={notificationPermission === 'unsupported' ? 'This browser does not support system notifications.' : notificationPermission === 'denied' ? 'Blocked by your browser. Change the site permission in your browser if you want system alerts.' : notificationPermission === 'granted' ? 'Allowed on this device. Quiet hours and the choices below still apply.' : 'Your browser will ask permission the first time you turn this on.'} checked={settings.browserNotificationsEnabled} onChange={() => void handleBrowserNotificationToggle()} disabled={notificationPermission === 'unsupported'} />
               </div>
+              {notificationStatus && <p className="mt-3 rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }} role="status">{notificationStatus}</p>}
             </SettingCard>
 
-            <SettingCard title="Notify Me About">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Note reminders</p>
-                    <p className="text-xs text-theme-tertiary">Alerts from reminders set inside notes.</p>
-                  </div>
-                  <Switch
-                    label="Note reminders"
-                    checked={settings.reminderNotificationsEnabled}
-                    onChange={() => updateSettings({ reminderNotificationsEnabled: !settings.reminderNotificationsEnabled })}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Calendar celebrations</p>
-                    <p className="text-xs text-theme-tertiary">Daily celebration reminders from the calendar.</p>
-                  </div>
-                  <Switch
-                    label="Calendar celebrations"
-                    checked={settings.celebrationNotificationsEnabled}
-                    onChange={() => updateSettings({ celebrationNotificationsEnabled: !settings.celebrationNotificationsEnabled })}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Collaboration activity</p>
-                    <p className="text-xs text-theme-tertiary">Shared note and team-space activity notifications.</p>
-                  </div>
-                  <Switch
-                    label="Collaboration activity"
-                    checked={settings.collaborationNotificationsEnabled}
-                    onChange={() => updateSettings({ collaborationNotificationsEnabled: !settings.collaborationNotificationsEnabled })}
-                  />
-                </div>
+            <SettingCard title="What should alert me?" description="Turn off anything you do not want to be interrupted by. These choices control alerts; they do not delete reminders or shared activity.">
+              <div className={`space-y-1 ${settings.notificationsEnabled ? '' : 'opacity-60'}`}>
+                <FriendlySwitch label="Reminders" description="Standalone reminders and reminders attached to notes." checked={settings.reminderNotificationsEnabled} onChange={() => updateSettings({ reminderNotificationsEnabled: !settings.reminderNotificationsEnabled })} disabled={!settings.notificationsEnabled} />
+                <FriendlySwitch label="Calendar celebrations" description="Your daily celebration message from the calendar." checked={settings.celebrationNotificationsEnabled} onChange={() => updateSettings({ celebrationNotificationsEnabled: !settings.celebrationNotificationsEnabled })} disabled={!settings.notificationsEnabled} />
+                <FriendlySwitch label="Shared-note activity" description="Updates about notes and team spaces shared with you." checked={settings.collaborationNotificationsEnabled} onChange={() => updateSettings({ collaborationNotificationsEnabled: !settings.collaborationNotificationsEnabled })} disabled={!settings.notificationsEnabled} />
               </div>
+              {!settings.notificationsEnabled && <p className="mt-2 text-xs text-theme-tertiary">Turn on “Use notifications in NTK Note” to change these choices.</p>}
             </SettingCard>
 
-            <SettingCard title="Timing">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div>
-                    <p className="text-sm font-medium text-theme-secondary">Quiet hours</p>
-                    <p className="text-xs text-theme-tertiary">Silence browser alerts while keeping items in the synced inbox.</p>
-                  </div>
-                  <Switch
-                    label="Quiet hours"
-                    checked={settings.quietHoursEnabled}
-                    onChange={() => updateSettings({ quietHoursEnabled: !settings.quietHoursEnabled })}
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="block text-sm font-medium text-theme-secondary mb-1">Quiet starts</span>
-                    <input
-                      type="time"
-                      value={settings.quietHoursStart}
-                      onChange={e => updateSettings({ quietHoursStart: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block text-sm font-medium text-theme-secondary mb-1">Quiet ends</span>
-                    <input
-                      type="time"
-                      value={settings.quietHoursEnd}
-                      onChange={e => updateSettings({ quietHoursEnd: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                    />
-                  </label>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label className="block">
-                    <span className="block text-sm font-medium text-theme-secondary mb-1">Celebration reminder time</span>
-                    <input
-                      type="time"
-                      value={settings.celebrationReminderTime}
-                      onChange={e => updateSettings({ celebrationReminderTime: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="block text-sm font-medium text-theme-secondary mb-1">Default snooze minutes</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={240}
-                      value={settings.defaultSnoozeMinutes}
-                      onChange={e => updateSettings({ defaultSnoozeMinutes: Math.max(1, Number(e.target.value) || 1) })}
-                      className="w-full px-3 py-2 rounded-lg theme-input accent-focus border text-sm focus:outline-none"
-                    />
-                  </label>
-                </div>
+            <SettingCard title="When should alerts stay quiet?" description="Quiet hours stop browser pop-ups during the times you choose. Your reminders remain visible in NTK Note.">
+              <FriendlySwitch label="Use quiet hours" description={settings.quietHoursEnabled ? `Browser alerts stay quiet from ${settings.quietHoursStart} to ${settings.quietHoursEnd}.` : 'Off. Browser alerts may appear at any time if you have allowed them.'} checked={settings.quietHoursEnabled} onChange={() => updateSettings({ quietHoursEnabled: !settings.quietHoursEnabled })} />
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block"><span className="mb-1 block text-sm font-medium text-theme-secondary">Quiet time starts</span><input type="time" value={settings.quietHoursStart} disabled={!settings.quietHoursEnabled} onChange={e => updateSettings({ quietHoursStart: e.target.value })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none disabled:cursor-not-allowed disabled:opacity-50" /></label>
+                <label className="block"><span className="mb-1 block text-sm font-medium text-theme-secondary">Quiet time ends</span><input type="time" value={settings.quietHoursEnd} disabled={!settings.quietHoursEnabled} onChange={e => updateSettings({ quietHoursEnd: e.target.value })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none disabled:cursor-not-allowed disabled:opacity-50" /></label>
               </div>
+              <div className="mt-5"><ToggleSetting label="Default snooze" description="You can still choose a different snooze time on an individual reminder." value={String(settings.defaultSnoozeMinutes)} options={[{ value: '5', label: '5 min' }, { value: '10', label: '10 min' }, { value: '30', label: '30 min' }, { value: '60', label: '1 hour' }]} onChange={value => updateSettings({ defaultSnoozeMinutes: Number(value) })} /></div>
+              <label className={`mt-4 block ${settings.celebrationNotificationsEnabled ? '' : 'opacity-60'}`}><span className="mb-1 block text-sm font-medium text-theme-secondary">Daily calendar reminder time</span><input type="time" value={settings.celebrationReminderTime} disabled={!settings.celebrationNotificationsEnabled} onChange={e => updateSettings({ celebrationReminderTime: e.target.value })} className="w-full rounded-lg border theme-input accent-focus px-3 py-2.5 text-sm focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-xs" /><span className="mt-1 block text-xs text-theme-tertiary">Used only when Calendar celebrations are turned on.</span></label>
             </SettingCard>
           </div>
         )}
@@ -1026,93 +1004,60 @@ export default function SettingsView() {
         {/* Sync Section */}
         {activeSection === 'sync' && (
           <div className="space-y-6 animate-fade-in">
-            <SettingCard title="Sync Status">
-              <QuotaDashboard />
-            </SettingCard>
-
-            <SettingCard title="Offline & PWA">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-4 py-1">
-                  <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-lg accent-soft flex items-center justify-center shrink-0">
-                      <Wifi className="w-4 h-4 no-transition" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-theme-secondary">Optional offline mode</p>
-                      <p className="text-xs text-theme-tertiary">
-                        {online ? 'Local queue is ready for network interruptions.' : 'You are offline; changes will stay queued locally.'}
-                      </p>
-                    </div>
-                  </div>
-                  <Switch
-                    label="Optional offline mode"
-                    checked={settings.offlineModeEnabled}
-                    onChange={() => {
-                      setOfflineStatus(settings.offlineModeEnabled ? 'Turning offline app cache off...' : 'Turning offline app cache on...');
-                      updateSettings({ offlineModeEnabled: !settings.offlineModeEnabled });
-                    }}
-                  />
-                </div>
-                <div className="rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }}>
-                  {offlineStatus}
-                </div>
-
+            <SettingCard title="Keep my devices up to date" description="NTK Note syncs automatically when you are signed in. Manual Sync is there when you want to check immediately — it does not replace automatic sync.">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border theme-border p-4" style={{ backgroundColor: 'var(--input-bg)' }}><p className="text-xs font-semibold uppercase tracking-wide text-theme-muted">Account</p><p className="mt-1 text-sm font-semibold text-theme-primary">{uid ? 'Signed in' : 'This device only'}</p><p className="mt-1 text-xs leading-5 text-theme-tertiary">{uid ? 'Your signed-in notes can sync with your other signed-in devices.' : 'Sign in when you want cross-device syncing. Local notes remain available on this device.'}</p></div>
+                <div className="rounded-xl border theme-border p-4" style={{ backgroundColor: 'var(--input-bg)' }}><p className="text-xs font-semibold uppercase tracking-wide text-theme-muted">Connection</p><p className={`mt-1 text-sm font-semibold ${online ? 'text-emerald-500' : 'text-amber-500'}`}>{online ? 'Online' : 'Offline'}</p><p className="mt-1 text-xs leading-5 text-theme-tertiary">{online ? 'Automatic sync can send and receive changes now.' : 'Safe edits stay local until your connection returns.'}</p></div>
+              </div>
+              <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                <div className="flex-1"><ManualSyncButton variant="full" /></div>
                 <button
-                  onClick={handleInstallPwa}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors theme-hover"
-                  style={{ backgroundColor: 'var(--input-bg)', color: 'var(--text-secondary)' }}
+                  type="button"
+                  onClick={() => setSyncCenterOpen(true)}
+                  className="px-4 py-3 rounded-xl border theme-border theme-hover text-xs font-semibold text-theme-secondary flex items-center justify-center gap-2 shrink-0 cursor-pointer"
                 >
-                  <DownloadCloud className="w-5 h-5 no-transition accent-text" />
-                  <div className="text-left">
-                    <p className="font-medium text-sm">Install app</p>
-                    <p className="text-xs text-theme-tertiary">
-                      {installPrompt ? 'Browser install is available.' : 'Checks whether this browser can install NTK Note.'}
-                    </p>
-                  </div>
-                  <ChevronRight className="w-4 h-4 ml-auto no-transition" />
+                  <ShieldCheck className="w-4 h-4 accent-text" />
+                  <span>Open Sync & Offline Center</span>
                 </button>
-                {installMessage && (
-                  <div className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs text-theme-tertiary" style={{ backgroundColor: 'var(--input-bg)' }}>
-                    <RefreshCw className="w-3.5 h-3.5 no-transition mt-0.5 accent-text shrink-0" />
-                    <span>{installMessage}</span>
-                  </div>
-                )}
               </div>
             </SettingCard>
 
-            <SettingCard title="Sync Conflicts">
+            <SettingCard title="Offline & install" description="Offline support works automatically where your browser supports it. There is no technical switch you need to manage.">
+              <div className="flex items-start gap-3 rounded-xl border theme-border p-4" style={{ backgroundColor: 'var(--input-bg)' }}><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg accent-soft accent-text"><Wifi className="h-4 w-4 no-transition" /></div><div><p className="text-sm font-semibold text-theme-primary">Offline support</p><p className="mt-1 text-xs leading-5 text-theme-tertiary">{offlineStatus}</p></div></div>
+              <button onClick={handleInstallPwa} className="mt-3 flex w-full items-center gap-3 rounded-xl border theme-border px-4 py-3 text-left transition-colors theme-hover"><DownloadCloud className="h-5 w-5 shrink-0 accent-text no-transition" /><div className="min-w-0"><p className="text-sm font-semibold text-theme-primary">Install NTK Note on this device</p><p className="text-xs leading-5 text-theme-tertiary">{installPrompt ? 'Ready to install as an app from this browser.' : 'If your browser supports installation, NTK Note can appear like an app on your home screen or desktop.'}</p></div><ChevronRight className="ml-auto h-4 w-4 shrink-0 text-theme-tertiary no-transition" /></button>
+              {installMessage && <p className="mt-2 text-xs text-theme-tertiary" role="status">{installMessage}</p>}
+            </SettingCard>
+
+            <SettingCard title="When two copies changed at once" description="This is rare. If NTK Note cannot safely decide which version to keep, it asks you instead of silently overwriting your work.">
               {syncConflicts.length === 0 ? (
-                <div className="flex items-center gap-3 rounded-xl p-4" style={{ backgroundColor: 'var(--input-bg)' }}>
-                  <ShieldCheck className="w-5 h-5 text-emerald-500 no-transition" />
+                <div className="flex items-start gap-3 rounded-xl p-4" style={{ backgroundColor: 'var(--input-bg)' }}>
+                  <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-emerald-500 no-transition" />
                   <div>
-                    <p className="text-sm font-semibold text-theme-primary">No conflicts</p>
-                    <p className="text-xs text-theme-tertiary">Local and cloud copies are aligned.</p>
+                    <p className="text-sm font-semibold text-theme-primary">Nothing needs your attention</p>
+                    <p className="mt-1 text-xs text-theme-tertiary">Your local and cloud copies are not reporting any unresolved conflicts.</p>
                   </div>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {syncConflicts.map(conflict => (
                     <div key={conflict.id} className="rounded-xl border theme-divider p-4" style={{ backgroundColor: 'var(--input-bg)' }}>
-                      <div className="flex items-start gap-3 mb-3">
-                        <AlertTriangle className="w-5 h-5 text-amber-500 no-transition shrink-0" />
+                      <div className="mb-3 flex items-start gap-3">
+                        <AlertTriangle className="h-5 w-5 shrink-0 text-amber-500 no-transition" />
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-theme-primary truncate">{conflict.local.title || conflict.remote.title || 'Untitled note'}</p>
-                          <p className="text-xs text-theme-tertiary">Detected {new Date(conflict.detectedAt).toLocaleString()}</p>
+                          <p className="truncate text-sm font-semibold text-theme-primary">{conflict.local.title || conflict.remote?.title || 'Untitled note'}</p>
+                          <p className="mt-1 text-xs text-theme-tertiary">
+                            {conflict.deletedRemotely
+                              ? 'This note was deleted on another device. Your unsynced edits are preserved as a new note.'
+                              : 'This note also changed on another device. NTK Note safely preserves both versions.'}
+                          </p>
                         </div>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => void resolveSyncConflict(conflict.id, 'local')}
-                          className="px-3 py-2 rounded-lg accent-button text-sm font-medium"
+                          onClick={() => void resolveSyncConflict(conflict.id, 'auto_safe')}
+                          className="rounded-lg accent-button px-4 py-2 text-xs sm:text-sm font-semibold cursor-pointer min-h-[44px]"
                         >
-                          Keep Local
-                        </button>
-                        <button
-                          onClick={() => void resolveSyncConflict(conflict.id, 'remote')}
-                          className="px-3 py-2 rounded-lg theme-hover text-sm font-medium text-theme-secondary"
-                          style={{ backgroundColor: 'var(--card-bg)' }}
-                        >
-                          Keep Cloud
+                          Safely preserve edits
                         </button>
                       </div>
                     </div>
@@ -1120,6 +1065,8 @@ export default function SettingsView() {
                 </div>
               )}
             </SettingCard>
+
+            <details className="rounded-xl border theme-border theme-card p-4"><summary className="cursor-pointer text-sm font-semibold text-theme-secondary">Technical sync details</summary><p className="mt-1 text-xs leading-5 text-theme-tertiary">Useful when troubleshooting. Most users do not need to change anything here.</p><div className="mt-4 border-t pt-4 theme-divider"><QuotaDashboard /></div></details>
           </div>
         )}
 
@@ -1144,7 +1091,117 @@ export default function SettingsView() {
               </button>
             </SettingCard>
 
-            <SettingCard title="Backup & Export">
+            <SettingCard title="Cloud backup" description="Save a restorable copy to your signed-in NTK Note account. NTK Note keeps a small recent history so this stays lightweight.">
+              <p className="text-sm text-theme-tertiary mb-4">
+                Use this before a major cleanup or whenever you want extra peace of mind. Restore it later from any signed-in device.
+              </p>
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={handleSnapshotBackup}
+                    disabled={!uid || snapshotRunning}
+                    title={uid ? undefined : 'Sign in to enable cloud backup'}
+                    className="flex items-center gap-3 px-4 py-3.5 rounded-xl accent-gradient text-white shadow-lg transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {snapshotRunning ? (
+                      <RefreshCw className="w-5 h-5 no-transition animate-spin" />
+                    ) : (
+                      <CloudUpload className="w-5 h-5 no-transition" />
+                    )}
+                    <div className="text-left">
+                      <p className="font-bold text-sm">Backup now</p>
+                      <p className="text-xs opacity-80">
+                        {snapshotRunning ? 'Creating snapshot...' : 'One click, fully automatic'}
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => setShowBackupCenter(true)}
+                    disabled={!uid}
+                    className="flex items-center gap-3 px-4 py-3.5 rounded-xl border theme-border theme-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <ArchiveRestore className="w-5 h-5 accent-text no-transition" />
+                    <div className="text-left">
+                      <p className="font-bold text-sm text-theme-primary">Restore backup</p>
+                      <p className="text-xs text-theme-tertiary">Browse snapshots and restore</p>
+                    </div>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs text-theme-tertiary">
+                  <DatabaseBackup className="w-3.5 h-3.5 no-transition" />
+                  {settings.lastBackupAt
+                    ? `Last snapshot: ${new Date(settings.lastBackupAt).toLocaleString()}`
+                    : 'No snapshot yet — your first backup is one click away.'}
+                </div>
+
+                <div className="rounded-xl border theme-border px-3 py-2">
+                  <ToggleSetting
+                    label="Remind me to make a backup"
+                    description="Shows a gentle reminder when it has been this long since your last backup."
+                    value={String(settings.backupReminderDays)}
+                    options={[{ value: '7', label: 'Weekly' }, { value: '14', label: '2 weeks' }, { value: '30', label: 'Monthly' }, { value: '90', label: '3 months' }]}
+                    onChange={value => updateSettings({ backupReminderDays: Number(value) })}
+                  />
+                </div>
+
+                <div className="pt-2 border-t theme-divider space-y-2">
+                  <p className="text-xs font-semibold text-theme-secondary">External storage backup</p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="external-backup-retention" className="text-xs text-theme-tertiary">Retention:</label>
+                      <select
+                        id="external-backup-retention"
+                        value={externalBackupRetention}
+                        onChange={e => setExternalBackupRetention(Number(e.target.value))}
+                        className="px-2 py-1 rounded-lg border theme-border bg-[var(--input-bg)] text-xs text-theme-primary"
+                      >
+                        <option value={3}>Latest 3</option>
+                        <option value={5}>Latest 5</option>
+                        <option value={10}>Latest 10</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleExternalStorageBackup}
+                      disabled={!uid || externalBackupRunning}
+                      aria-label={externalBackupRunning ? 'Saving backup to external storage' : 'Save backup to external storage'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border theme-border theme-hover text-xs font-medium text-theme-primary disabled:opacity-50"
+                    >
+                      {externalBackupRunning ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Saving…
+                        </>
+                      ) : (
+                        <>
+                          <HardDrive className="w-3.5 h-3.5 accent-text" />
+                          Save backup to external storage
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {externalBackupStatus && (
+                    <p className="text-xs text-theme-tertiary">{externalBackupStatus}</p>
+                  )}
+                </div>
+
+                {snapshotStatus && (
+                  <p
+                    className={`text-sm font-medium flex items-center gap-1.5 ${snapshotStatus.tone === 'ok' ? 'text-emerald-500' : 'text-red-500'}`}
+                    role="status"
+                  >
+                    {snapshotStatus.tone === 'ok'
+                      ? <CheckCircle2 className="w-4 h-4 no-transition" />
+                      : <AlertTriangle className="w-4 h-4 no-transition" />}
+                    {snapshotStatus.text}
+                  </p>
+                )}
+              </div>
+            </SettingCard>
+
+            <SettingCard title="Download, restore & cloud copies" description="Use a backup file when you want a copy you control, or send that same restore-ready ZIP to your cloud storage.">
               <div className="space-y-3">
                 <button
                   onClick={handleExport}
@@ -1153,8 +1210,8 @@ export default function SettingsView() {
                 >
                   <Download className="w-5 h-5 no-transition" />
                   <div className="text-left">
-                    <p className="font-medium text-sm">Export all notes</p>
-                    <p className="text-xs opacity-75">Download as JSON backup file</p>
+                    <p className="font-medium text-sm">Download backup ZIP</p>
+                    <p className="text-xs opacity-75">A restore-ready copy of your notes and workspace data</p>
                   </div>
                   <ChevronRight className="w-4 h-4 ml-auto no-transition" />
                 </button>
@@ -1196,21 +1253,56 @@ export default function SettingsView() {
                 </button>
 
                 <button
+                  onClick={handleConnectedStorageExport}
+                  disabled={connectedExportRunning || cloudExporting || cloudSharing}
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: 'rgba(168, 85, 247, 0.08)', color: '#a855f7' }}
+                >
+                  {connectedExportRunning ? (
+                    <RefreshCw className="w-5 h-5 no-transition animate-spin" />
+                  ) : (
+                    <HardDrive className="w-5 h-5 no-transition" />
+                  )}
+                  <div className="text-left">
+                    <p className="font-medium text-sm">Save export to connected storage</p>
+                    <p className="text-xs opacity-75">Send ZIP workspace export to configured storage (Retention: {connectedExportRetention} days)</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 ml-auto no-transition" />
+                </button>
+                <div className="flex items-center gap-2 px-2">
+                  <label className="text-xs text-theme-tertiary whitespace-nowrap">Retention</label>
+                  <select
+                    value={connectedExportRetention}
+                    onChange={e => setConnectedExportRetention(Number(e.target.value))}
+                    className="text-xs rounded-lg px-2 py-1 border theme-border bg-transparent text-theme-secondary"
+                  >
+                    <option value={7}>7 days</option>
+                    <option value={14}>14 days</option>
+                    <option value={30}>30 days</option>
+                    <option value={60}>60 days</option>
+                    <option value={90}>90 days</option>
+                  </select>
+                </div>
+                {connectedExportStatus && (
+                  <p className="text-xs text-theme-tertiary px-2">{connectedExportStatus}</p>
+                )}
+
+                <button
                   onClick={() => fileInputRef.current?.click()}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors"
                   style={{ backgroundColor: 'rgba(16, 185, 129, 0.08)', color: '#10b981' }}
                 >
                   <Upload className="w-5 h-5 no-transition" />
                   <div className="text-left">
-                    <p className="font-medium text-sm">Import NTK backup</p>
-                    <p className="text-xs opacity-75">Import from JSON backup file</p>
+                    <p className="font-medium text-sm">Restore from a backup file</p>
+                    <p className="text-xs opacity-75">Choose an NTK Note ZIP or JSON backup</p>
                   </div>
                   <ChevronRight className="w-4 h-4 ml-auto no-transition" />
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".json"
+                  accept=".zip,.json"
                   onChange={handleImport}
                   className="hidden"
                 />
@@ -1239,19 +1331,19 @@ export default function SettingsView() {
               </div>
             </SettingCard>
 
-            <SettingCard title="Cleanup & Storage Health">
+            <SettingCard title="Storage cleanup" description="Find unusually large notes and safely reduce storage when needed. You can ignore this section unless NTK Note warns that storage is getting heavy.">
               <div className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
-                    <p className="text-xs text-theme-tertiary">Oversized risk</p>
+                    <p className="text-xs text-theme-tertiary">Very large notes</p>
                     <p className={`text-xl font-bold ${oversizedNotes.length ? 'text-red-500' : 'text-emerald-500'}`}>{oversizedNotes.length}</p>
                   </div>
                   <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
-                    <p className="text-xs text-theme-tertiary">Inline image notes</p>
+                    <p className="text-xs text-theme-tertiary">Notes with images</p>
                     <p className="text-xl font-bold text-theme-primary">{imageHeavyNotes.length}</p>
                   </div>
                   <div className="rounded-xl border theme-border p-3" style={{ backgroundColor: 'var(--input-bg)' }}>
-                    <p className="text-xs text-theme-tertiary">Largest note</p>
+                    <p className="text-xs text-theme-tertiary">Largest note size</p>
                     <p className="text-xl font-bold text-theme-primary">{storageHeavyNotes[0] ? formatBytes(storageHeavyNotes[0].bytes) : '0 B'}</p>
                   </div>
                 </div>
@@ -1286,7 +1378,7 @@ export default function SettingsView() {
                     <RefreshCw className={`w-5 h-5 no-transition ${compressingImages ? 'animate-spin' : ''}`} />
                     <div className="text-left">
                       <p className="font-medium text-sm">Compress inline images</p>
-                      <p className="text-xs opacity-75">Reduce base64 image size before sync</p>
+                      <p className="text-xs opacity-75">Make embedded images smaller to save storage and data</p>
                     </div>
                   </button>
 
@@ -1321,7 +1413,7 @@ export default function SettingsView() {
               </div>
             </SettingCard>
 
-            <SettingCard title="Danger Zone">
+            <SettingCard title="Erase NTK Note data" description="Only use this when you intentionally want to start over. Make a backup first if there is anything you may want later.">
               {!showResetConfirm ? (
                 <button
                   onClick={() => setShowResetConfirm(true)}
@@ -1330,8 +1422,8 @@ export default function SettingsView() {
                 >
                   <Trash2 className="w-5 h-5 no-transition" />
                   <div className="text-left">
-                    <p className="font-medium text-sm">Reset app</p>
-                    <p className="text-xs opacity-75">Delete all data and start fresh</p>
+                    <p className="font-medium text-sm">Erase my NTK Note data</p>
+                    <p className="text-xs opacity-75">Permanently remove notes, notebooks and settings, then start fresh</p>
                   </div>
                 </button>
               ) : (
@@ -1368,15 +1460,29 @@ export default function SettingsView() {
                 <BrandMark className="w-16 h-16 mx-auto mb-4 rounded-2xl" />
                 <h3 className="text-xl font-bold text-theme-primary">NTK Note</h3>
                 <p className="text-theme-tertiary text-sm mt-1">Your Second Brain</p>
-                <p className="text-xs text-theme-muted mt-2">Version 1.0.0</p>
+                <p className="text-xs text-theme-muted mt-2">Version 2.1.0</p>
                 <p className="text-xs text-theme-tertiary mt-4 max-w-sm mx-auto">
-                  A premium note-taking app combining the best features of Evernote, Simplenote, Google Keep, and OneNote.
+                  A private, local-first note and reminder app designed to stay useful on phones, tablets and computers — without making everyday writing feel technical.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ hasSeenTour: false })}
+                  className="mt-5 inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border theme-border px-4 text-sm font-semibold text-theme-secondary theme-hover"
+                >
+                  <Sparkles className="h-4 w-4 accent-text no-transition" />
+                  Show the getting-started guide again
+                </button>
+                <p className="mt-2 text-xs text-theme-muted">Useful if you want a quick refresher on notes, templates, reminders, and navigation.</p>
               </div>
             </SettingCard>
           </div>
         )}
       </div>
+
+      {/* Backup & Restore Center */}
+      {showBackupCenter && (
+        <BackupCenterModal isOpen={showBackupCenter} onClose={() => setShowBackupCenter(false)} />
+      )}
 
       {/* Import Manager Modal */}
       {showImportManager && (
@@ -1386,58 +1492,50 @@ export default function SettingsView() {
   );
 }
 
-function SettingCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SettingCard({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl theme-card border p-5">
-      <h3 className="font-semibold text-theme-primary mb-4">{title}</h3>
+    <section className="rounded-xl theme-card border p-5">
+      <div className="mb-4">
+        <h3 className="font-semibold text-theme-primary">{title}</h3>
+        {description && <p className="mt-1 text-xs leading-5 text-theme-tertiary">{description}</p>}
+      </div>
       {children}
-    </div>
+    </section>
   );
 }
 
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
+function SettingsStatus({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl border theme-border theme-card px-3 py-2.5"><p className="text-[10px] font-bold uppercase tracking-wide text-theme-muted">{label}</p><p className="mt-0.5 truncate text-xs font-semibold text-theme-secondary" title={value}>{value}</p></div>;
+}
+
+function ThemeChoice({ label, description, selected, onClick, preview, icon }: { label: string; description: string; selected: boolean; onClick: () => void; preview: 'light' | 'dark' | 'system'; icon: React.ReactNode }) {
+  const surface = preview === 'dark'
+    ? { background: '#111827', foreground: '#f8fafc', muted: '#334155' }
+    : preview === 'light'
+      ? { background: '#ffffff', foreground: '#0f172a', muted: '#e2e8f0' }
+      : { background: 'linear-gradient(135deg, #ffffff 0 50%, #111827 50% 100%)', foreground: '#6366f1', muted: '#cbd5e1' };
   return (
-    <button
-      onClick={onChange}
-      className="relative w-10 h-6 rounded-full transition-colors"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      style={{ backgroundColor: checked ? 'var(--accent-primary)' : 'var(--text-muted)' }}
-    >
-      <div className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
+    <button type="button" onClick={onClick} aria-pressed={selected} className="rounded-xl border p-3 text-left transition-all" style={{ borderColor: selected ? 'var(--accent-primary)' : 'var(--card-border)', backgroundColor: selected ? 'var(--active-bg)' : 'var(--card-bg)' }}>
+      <span className="mb-3 block h-16 rounded-lg border p-2" style={{ background: surface.background, borderColor: preview === 'dark' ? '#334155' : '#dbe2ea' }} aria-hidden="true"><span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: surface.foreground }} /><span className="h-1.5 w-12 rounded-full" style={{ backgroundColor: surface.muted }} /></span><span className="mt-3 block h-1.5 w-3/4 rounded-full" style={{ backgroundColor: surface.foreground, opacity: 0.75 }} /><span className="mt-2 block h-1.5 w-1/2 rounded-full" style={{ backgroundColor: surface.muted }} /></span>
+      <span className="flex items-center gap-2 text-sm font-semibold text-theme-primary">{icon}{label}{selected && <CheckCircle2 className="ml-auto h-4 w-4 accent-text no-transition" />}</span><span className="mt-1 block text-xs text-theme-tertiary">{description}</span>
     </button>
   );
 }
 
-function ToggleSetting({ label, description, value, options, onChange }: {
-  label: string;
-  description: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
+function Switch({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: () => void; label: string; disabled?: boolean }) {
+  return <button type="button" onClick={onChange} disabled={disabled} className="relative h-6 w-10 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40" role="switch" aria-checked={checked} aria-label={label} style={{ backgroundColor: checked ? 'var(--accent-primary)' : 'var(--text-muted)' }}><span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : ''}`} /></button>;
+}
+
+function FriendlySwitch({ label, description, checked, onChange, disabled = false }: { label: string; description: string; checked: boolean; onChange: () => void; disabled?: boolean }) {
+  return <div className={`flex items-start justify-between gap-4 py-2.5 ${disabled ? 'opacity-60' : ''}`}><div className="min-w-0"><p className="text-sm font-medium text-theme-secondary">{label}</p><p className="mt-0.5 text-xs leading-5 text-theme-tertiary">{description}</p></div><Switch label={label} checked={checked} onChange={onChange} disabled={disabled} /></div>;
+}
+
+function ToggleSetting({ label, description, value, options, onChange }: { label: string; description: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void }) {
   return (
-    <div className="flex items-center justify-between py-3 border-b last:border-0 theme-divider">
-      <div>
-        <p className="text-sm font-medium text-theme-secondary">{label}</p>
-        <p className="text-xs text-theme-tertiary">{description}</p>
-      </div>
-      <div className="flex gap-1 rounded-lg p-0.5" style={{ backgroundColor: 'var(--input-bg)' }}>
-        {options.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className="px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            style={{
-              backgroundColor: value === opt.value ? 'var(--card-bg)' : 'transparent',
-              color: value === opt.value ? 'var(--text-primary)' : 'var(--text-tertiary)',
-              boxShadow: value === opt.value ? 'var(--card-shadow)' : 'none',
-            }}
-          >
-            {opt.label}
-          </button>
-        ))}
+    <div className="flex flex-col gap-2 border-b py-3 last:border-0 theme-divider sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="min-w-0"><p className="text-sm font-medium text-theme-secondary">{label}</p><p className="text-xs leading-5 text-theme-tertiary">{description}</p></div>
+      <div className="flex max-w-full flex-wrap gap-1 rounded-lg p-0.5" style={{ backgroundColor: 'var(--input-bg)' }}>
+        {options.map(opt => <button type="button" key={opt.value} onClick={() => onChange(opt.value)} aria-pressed={value === opt.value} className="min-h-9 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors" style={{ backgroundColor: value === opt.value ? 'var(--card-bg)' : 'transparent', color: value === opt.value ? 'var(--text-primary)' : 'var(--text-tertiary)', boxShadow: value === opt.value ? 'var(--card-shadow)' : 'none' }}>{opt.label}</button>)}
       </div>
     </div>
   );

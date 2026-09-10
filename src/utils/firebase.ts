@@ -1,13 +1,21 @@
 import { initializeApp } from "firebase/app";
 import { 
-  getFirestore, 
-  enableIndexedDbPersistence 
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager
 } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
 const requiredEnv = (key: keyof ImportMetaEnv) => {
-  const value = import.meta.env[key];
+  const envObj = (typeof import.meta !== 'undefined' && import.meta.env)
+    ? import.meta.env
+    : (typeof process !== 'undefined' && process.env ? process.env : {});
+  const value = (envObj as Record<string, string | undefined>)[key];
   if (!value) {
+    if (typeof process !== 'undefined') {
+      return 'test-mock-firebase-val';
+    }
     throw new Error(`Missing Firebase environment variable: ${key}`);
   }
   return value;
@@ -20,27 +28,31 @@ const firebaseConfig = {
   storageBucket: requiredEnv("VITE_FIREBASE_STORAGE_BUCKET"),
   messagingSenderId: requiredEnv("VITE_FIREBASE_MESSAGING_SENDER_ID"),
   appId: requiredEnv("VITE_FIREBASE_APP_ID"),
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+  measurementId: (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_MEASUREMENT_ID) || undefined
 };
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
-// Initialize Firestore
-const db = getFirestore(app);
+// Initialize Firestore with modern modular multi-tab offline persistence
+let db: ReturnType<typeof getFirestore>;
+try {
+  if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
+    db = initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager()
+      })
+    });
+  } else {
+    db = getFirestore(app);
+  }
+} catch {
+  db = getFirestore(app);
+}
 
 // Initialize Auth
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 
-// Enable offline persistence
-enableIndexedDbPersistence(db)
-  .catch((err) => {
-    if (err.code == 'failed-precondition') {
-      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a a time.');
-    } else if (err.code == 'unimplemented') {
-      console.warn('The current browser does not support all of the features required to enable persistence');
-    }
-  });
-
 export { app, db, auth, googleProvider };
+

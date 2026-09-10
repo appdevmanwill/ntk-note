@@ -8,6 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+**/node_modules
+.wrangler
+**/.wrangler
 dist
 dist-ssr
 *.local
@@ -26,6 +29,27 @@ dist-ssr
 # Firebase
 .firebase
 
-# Local environment
+# Local environment and secrets
+.env
+.env.*
+!.env.example
 .env.local
 .env.*.local
+.dev.vars
+.dev.vars.*
+active_oauth_url.txt
+active_callback_url.txt
+current_oauth_url.txt
+*oauth_url.txt
+.system_generated/
+
+# Local backups and archives
+backups/
+*.zip
+
+# Generated release artifacts
+RELEASE_MANIFEST.json
+
+
+.dev.vars*
+!.dev.vars.example

@@ -1,18 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { useStore } from '@/store';
 import {
   Home, FileText, Tag, Star, Archive, Trash2,
   Bell, BellRing, Search, Settings, Plus, ChevronDown, ChevronRight,
-  Moon, Sun, LayoutTemplate, LogOut, X, Share2,
+  Moon, Sun, LayoutTemplate, X, Share2,
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
-  Edit3, GripVertical, ArrowUpDown
+  Edit3, GripVertical, ArrowUpDown, Bot, MessageSquare
 } from 'lucide-react';
 import type { Notebook, NotebookSortBy, SidebarView, SortDirection } from '@/types';
 import ManageNotebooksModal from './ManageNotebooksModal';
-import { signOut } from 'firebase/auth';
-import { auth } from '@/utils/firebase';
 import BrandMark from './BrandMark';
+import UserAvatar from './UserAvatar';
+import AccountMenu from './AccountMenu';
+import { resolveThemeMode } from '@/utils/theme';
+import { auth } from '@/utils/firebase';
+import { subscribeToDirectChats, isChatUnread } from '@/utils/chatService';
 
 type NotebookDropPosition = 'before' | 'after' | 'inside';
 
@@ -45,10 +48,10 @@ const NOTEBOOK_EXPANSION_STORAGE_KEY = 'ntk-expanded-notebooks';
 
 export default function Sidebar() {
   const {
-    currentView, setCurrentView, profile, settings, setTheme,
+    currentView, setCurrentView, profile, settings, setTheme, openSettings,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
-    notes, notifications, getStats, updateSettings, clearAuth, reorderNotebook, moveNote,
+    notes, notifications, reminders, getStats, updateSettings, reorderNotebook, moveNote,
     selectedNotebookId, selectedTagId,
   } = useStore();
 
@@ -57,6 +60,7 @@ export default function Sidebar() {
   const [newNotebookName, setNewNotebookName] = useState('');
   const [showNewNotebook, setShowNewNotebook] = useState(false);
   const [showManageNotebooks, setShowManageNotebooks] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
   const [editNotebookName, setEditNotebookName] = useState('');
   const [draggedNotebookId, setDraggedNotebookId] = useState<string | null>(null);
@@ -78,11 +82,30 @@ export default function Sidebar() {
   });
 
   const stats = getStats();
-  const trashedCount = notes.filter(n => n.trashed).length;
+  const trashedNotesCount = notes.filter(n => n.trashed).length;
+  const trashedNotebooksCount = notebooks.filter(nb => nb.trashed).length;
+  const trashedCount = trashedNotesCount + trashedNotebooksCount;
   const archivedCount = notes.filter(n => n.archived && !n.trashed).length;
   const starredCount = notes.filter(n => n.starred && !n.trashed && !n.archived).length;
-  const remindersCount = notes.filter(n => n.reminder && !n.trashed).length;
+  const remindersCount = reminders.length > 0
+    ? reminders.filter(r => r.status === 'active').length
+    : notes.filter(n => n.reminder && !n.trashed).length;
   const unreadNotificationsCount = notifications.filter(notification => !notification.readAt && !notification.dismissedAt).length;
+  const [unreadChatsCount, setUnreadChatsCount] = useState(0);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      setUnreadChatsCount(0);
+      return;
+    }
+    const unsub = subscribeToDirectChats(uid, loadedChats => {
+      const unread = loadedChats.filter(c => isChatUnread(c, uid)).length;
+      setUnreadChatsCount(unread);
+    });
+    return () => unsub();
+  }, []);
+
   const collapsed = settings.sidebarCollapsed;
   const activeNotebookSortValue = `${settings.notebookSortBy}:${settings.notebookSortDir}`;
   const visibleNotebooks = useMemo(() => notebooks.filter(nb => !nb.trashed), [notebooks]);
@@ -135,6 +158,8 @@ export default function Sidebar() {
 
   const navItems: { view: SidebarView; icon: typeof Home; label: string; badge?: number }[] = [
     { view: 'home', icon: Home, label: 'Home' },
+    { view: 'ai', icon: Bot, label: 'NTK AI' },
+    { view: 'messages', icon: MessageSquare, label: 'Messages', badge: unreadChatsCount || undefined },
     { view: 'all-notes', icon: FileText, label: 'All Notes', badge: stats.notes },
     { view: 'search', icon: Search, label: 'Search' },
     { view: 'starred', icon: Star, label: 'Starred', badge: starredCount || undefined },
@@ -145,7 +170,7 @@ export default function Sidebar() {
     { view: 'graph', icon: GitBranch, label: 'Graph' },
     { view: 'templates', icon: LayoutTemplate, label: 'Templates' },
     { view: 'archived', icon: Archive, label: 'Archived', badge: archivedCount || undefined },
-    { view: 'trash', icon: Trash2, label: 'Trash', badge: trashedCount || undefined },
+    { view: 'trash', icon: Trash2, label: 'Recycle Bin', badge: trashedCount || undefined },
   ];
 
   const handleCreateNotebook = () => {
@@ -371,10 +396,47 @@ export default function Sidebar() {
     if (window.innerWidth < 1024) setSidebarOpen(false);
   };
 
-  const handleLogout = async () => {
-    await signOut(auth).catch(console.error);
-    clearAuth();
-  };
+  // Mobile drawer accessibility: focus moves into the drawer, Tab is trapped,
+  // Escape closes, focus returns to the opener, and the closed off-canvas
+  // panel is removed from the tab order via `invisible`.
+  const drawerRef = useRef<HTMLElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    openerRef.current = document.activeElement as HTMLElement | null;
+    const focusTimer = window.setTimeout(() => drawerRef.current?.focus(), 0);
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSidebarOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !drawerRef.current) return;
+      const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', handleKeyDown);
+      if (window.matchMedia('(max-width: 1023px)').matches) {
+        openerRef.current?.focus?.();
+      }
+    };
+  }, [sidebarOpen, setSidebarOpen]);
 
   return (
     <>
@@ -387,12 +449,17 @@ export default function Sidebar() {
       )}
 
       <aside
+        ref={drawerRef}
+        tabIndex={-1}
+        role={sidebarOpen ? 'dialog' : undefined}
+        aria-modal={sidebarOpen || undefined}
+        aria-label="Navigation menu"
         className={`
-          fixed lg:relative z-50 h-full flex flex-col w-72
-          ${collapsed ? 'lg:w-20' : 'lg:w-72'}
+          fixed lg:relative z-50 h-full flex min-h-0 flex-col w-72 outline-none
+          ${collapsed ? 'lg:w-24' : 'lg:w-72'}
           theme-sidebar
-          border-r transition-[width,transform] duration-300 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+          border-r transition-[width,transform,visibility] duration-300 ease-in-out
+          ${sidebarOpen ? 'visible translate-x-0' : 'invisible lg:visible -translate-x-full lg:translate-x-0'}
         `}
         style={{
           backgroundColor: 'var(--sidebar-bg)',
@@ -400,7 +467,9 @@ export default function Sidebar() {
         }}
       >
         {/* Header */}
-        <div className={`relative flex items-center justify-between p-4 theme-divider border-b ${collapsed ? 'lg:justify-center lg:px-3' : ''}`}>
+        <div
+          className={`relative flex items-center justify-between p-4 pt-[max(1rem,env(safe-area-inset-top))] theme-divider border-b ${collapsed ? 'lg:justify-center lg:px-3' : ''}`}
+        >
           <div className={`flex items-center gap-3 ${collapsed ? 'lg:justify-center' : ''}`}>
             <BrandMark className="w-9 h-9" />
             <div className={collapsed ? 'lg:hidden' : ''}>
@@ -427,7 +496,7 @@ export default function Sidebar() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-2 px-2">
+        <nav className="min-h-0 flex-1 overflow-y-auto py-2 px-2">
           {/* Main nav */}
           <div className="space-y-0.5">
             {navItems.map(item => (
@@ -437,8 +506,8 @@ export default function Sidebar() {
                 title={collapsed ? item.label : undefined}
                 aria-label={item.label}
                 className={`
-                  w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all
-                  ${collapsed ? 'lg:justify-center lg:px-0' : ''}
+                  relative w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all
+                  ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2.5' : ''}
                   ${currentView === item.view
                     ? 'theme-active'
                     : 'text-theme-secondary theme-hover'
@@ -447,10 +516,10 @@ export default function Sidebar() {
                 style={currentView === item.view ? { backgroundColor: 'var(--active-bg)' } : {}}
               >
                 <item.icon className="w-[18px] h-[18px] shrink-0 no-transition" />
-                <span className={`flex-1 text-left ${collapsed ? 'lg:hidden' : ''}`}>{item.label}</span>
+                <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px] lg:leading-tight' : ''}`}>{item.label}</span>
                 {item.badge !== undefined && item.badge > 0 && (
                   <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${collapsed ? 'lg:hidden' : ''}`}
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${collapsed ? 'lg:absolute lg:right-2 lg:top-1 lg:hidden' : ''}`}
                     style={{
                       backgroundColor: currentView === item.view ? 'var(--accent-glow)' : 'var(--input-bg)',
                       color: currentView === item.view ? 'var(--badge-text)' : 'var(--text-tertiary)',
@@ -794,22 +863,22 @@ export default function Sidebar() {
         <div className={`p-3 border-t theme-divider space-y-1 ${collapsed ? 'lg:px-2' : ''}`}>
           {/* Theme toggle */}
           <button
-            onClick={() => setTheme(settings.theme === 'light' ? 'dark' : 'light')}
+            onClick={() => setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light')}
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-theme-secondary theme-hover transition-all group ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}
-            title={settings.theme === 'light' ? 'Dark Mode' : 'Light Mode'}
-            aria-label={settings.theme === 'light' ? 'Dark Mode' : 'Light Mode'}
+            title={resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
+            aria-label={resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
           >
-            {settings.theme === 'light' ? (
+            {resolveThemeMode(settings.theme) === 'light' ? (
               <Moon className="w-[18px] h-[18px] no-transition" />
             ) : (
               <Sun className="w-[18px] h-[18px] no-transition group-hover:text-amber-400" />
             )}
-            <span className={`font-medium ${collapsed ? 'lg:hidden' : ''}`}>{settings.theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+            <span className={`font-medium ${collapsed ? 'lg:hidden' : ''}`}>{resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
           </button>
 
           {/* Settings */}
           <button
-            onClick={() => handleNavClick('settings')}
+            onClick={() => openSettings()}
             title="Settings"
             aria-label="Settings"
             className={`
@@ -826,22 +895,22 @@ export default function Sidebar() {
             <span className={collapsed ? 'lg:hidden' : ''}>Settings</span>
           </button>
 
-          {/* User profile */}
-          <div className={`flex items-center gap-3 px-3 py-2 mt-1 ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
-            <div className="w-8 h-8 rounded-full accent-gradient flex items-center justify-center text-white text-xs font-bold shadow-lg">
-              {profile.initials}
-            </div>
-            <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
-              <p className="text-sm font-medium text-theme-primary truncate">{profile.name}</p>
-              <p className="text-xs text-theme-tertiary truncate">{profile.email || 'Free Plan'}</p>
-            </div>
+          {/* User profile with AccountMenu */}
+          <div className="relative">
             <button
-              onClick={handleLogout}
-              className={`p-1.5 rounded-lg theme-hover text-theme-tertiary ${collapsed ? 'lg:hidden' : ''}`}
-              title="Log out"
+              type="button"
+              onClick={() => setShowAccountMenu(!showAccountMenu)}
+              className={`w-full flex items-center gap-3 px-3 py-2 mt-1 rounded-xl text-left theme-hover transition-colors ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}
+              title="Account & Profile Menu"
+              aria-label="Account & Profile Menu"
             >
-              <LogOut className="w-4 h-4 no-transition" />
+              <UserAvatar profile={profile} size="sm" />
+              <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
+                <p className="text-sm font-medium text-theme-primary truncate">{profile.name}</p>
+                <p className="text-xs text-theme-tertiary truncate">{profile.email || 'Free Plan'}</p>
+              </div>
             </button>
+            <AccountMenu isOpen={showAccountMenu} onClose={() => setShowAccountMenu(false)} />
           </div>
         </div>
       </aside>

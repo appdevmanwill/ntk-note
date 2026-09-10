@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { MessageSquare, Send, ShieldCheck, UserRound, Activity, LockKeyhole } from 'lucide-react';
-import { collection, doc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { collection, doc, limit, onSnapshot, orderBy, query, setDoc, where } from 'firebase/firestore';
 import { v4 as uuid } from 'uuid';
 import { db } from '@/utils/firebase';
 import { useStore } from '@/store';
@@ -35,12 +35,17 @@ export default function NoteCollaborationPanel({
       return;
     }
 
-    const commentsQuery = query(collection(db, 'note_comments'), where('participants', 'array-contains', email));
+    // Bounded query: scoped to this note's ID, fetch newest 50, reverse on client
+    const commentsQuery = query(
+      collection(db, 'note_comments'),
+      where('noteId', '==', note.id),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
     return onSnapshot(commentsQuery, snapshot => {
       const next = snapshot.docs
         .map(item => item.data() as NoteComment)
-        .filter(comment => comment.noteId === note.id)
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        .reverse(); // Reverse newest-first results for chronological display
       setComments(next);
     }, error => {
       console.error('Comment sync failed:', error);
@@ -55,10 +60,14 @@ export default function NoteCollaborationPanel({
     const body = commentText.trim();
     if (!uid || !email || !body || !canComment) return;
     setSaving(true);
+    
+    // Only valid collaborators on this note can be mentioned
+    const validCollaboratorSet = new Set(participants.map(normalizeEmail));
     const mentions = [...body.matchAll(mentionPattern)]
       .map(match => normalizeEmail(match[1]))
-      .filter(Boolean);
-    const commentParticipants = [...new Set([...participants, ...mentions, email])];
+      .filter(m => Boolean(m) && validCollaboratorSet.has(m));
+    const commentParticipants = [...new Set([...participants, email])];
+
     const comment: NoteComment = {
       id: uuid(),
       noteId: note.id,

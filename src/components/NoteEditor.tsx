@@ -30,16 +30,25 @@ import {
   Download, Share2, Mail, FileText, Type, Hash,
   X, Plus, Clock, AlertCircle, Eye, Edit3,
   Maximize2, Minimize2, Sparkles, PanelRightClose,
-  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode, FilePlus,
-  Undo2, Redo2, History, Cloud, Search, Check,
+  Lock, Unlock, ShieldCheck, Link2, Mic, PenTool, FileCode,
+  Undo2, Redo2, History, Cloud, Search, Check, Paperclip, File as FileIcon, Loader2,
+  Image as ImageIcon, Play, Pause, Volume2, Square, ChevronDown, MessageSquare,
   type LucideIcon
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { noteThemes } from '@/utils/noteThemes';
+import type { NoteAttachment, NoteImage, NoteVoiceNote } from '@/types';
+import { uploadStorageFile, openOrDownloadStorageFile, deleteStorageFile, downloadStorageFile, getAudioExtensionFromMime, compressImage } from '@/utils/cloudStorage';
+import { enqueueOfflineMedia, resolveOfflineMediaObjectUrl, removeOfflineMedia } from '@/utils/offlineMediaQueue';
+import { saveCrashJournal } from '@/utils/durableOutbox';
+import { transcribeAudio } from '@/utils/ntkAi';
 import SketchModal from './SketchModal';
 import ShareModal from './ShareModal';
 import NoteCollaborationPanel from './NoteCollaborationPanel';
 import VersionHistory, { saveCloudNoteCheckpoint, saveLocalNoteSnapshot, useVersionHistory, type NoteVersion } from './VersionHistory';
+import NtkAiPanel from './NtkAiPanel';
+import ListenPlayer from './ListenPlayer';
+import TranscriptReviewModal from './TranscriptReviewModal';
 
 const isMarkdown = (text: string): boolean => {
   if (!text) return false;
@@ -169,14 +178,14 @@ type ActionToast = {
 
 export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () => void }) {
   const {
-    uid, selectedNoteId, notes, updateNote, selectNote, trashNote, restoreNote,
+    uid, selectedNoteId, notes, updateNote, createNote, selectNote, trashNote, restoreNote,
     archiveNote, unarchiveNote, pinNote, starNote, duplicateNote,
     setNoteColor, setNotePriority, addNoteTag, removeNoteTag,
     addChecklistItem, updateChecklistItem, removeChecklistItem,
     setNoteReminder, settings, toggleZenMode, notebooks, moveNote,
     setEditingNote, setNoteTheme,
     lockNote, unlockNote, relockNote, updateUnlockedNote, unlockedNotes,
-    templates, profile,
+    profile,
   } = useStore();
 
   const note = notes.find(n => n.id === selectedNoteId);
@@ -213,14 +222,48 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [showSketchModal, setShowSketchModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const [aiSelection, setAiSelection] = useState<{ start: number; end: number; text: string }>({ start: 0, end: 0, text: '' });
   const [versionHistoryPresentation, setVersionHistoryPresentation] = useState<'modal' | 'panel'>('modal');
   const [versionStatus, setVersionStatus] = useState('');
   const [actionToast, setActionToast] = useState<ActionToast | null>(null);
   const [exportOptions, setExportOptions] = useState<NoteExportOptions>(() => loadNoteExportOptions());
   const [lastExportFormat, setLastExportFormat] = useState<NoteExportFormat | null>(() => loadLastExportFormat());
-  const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
+  const [showAdvancedFormats, setShowAdvancedFormats] = useState(false);
   const [activeFormat, setActiveFormat] = useState<'rich' | 'plain' | 'code' | 'html'>('plain');
   const recognitionRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const audioFileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [selectedLightboxImage, setSelectedLightboxImage] = useState<{ id: string; name: string; url: string; caption?: string } | null>(null);
+
+  // Audio Intelligence & UX state
+  const [listenPlayerOpen, setListenPlayerOpen] = useState(false);
+  const [listenText, setListenText] = useState('');
+  const [isListenSelection, setIsListenSelection] = useState(false);
+  const [transcribingVoiceId, setTranscribingVoiceId] = useState<string | null>(null);
+  const [transcribingFile, setTranscribingFile] = useState(false);
+  const [reviewTranscript, setReviewTranscript] = useState<{ text: string; audioName: string; voiceNoteId?: string } | null>(null);
+  const [isMediaExpanded, setIsMediaExpanded] = useState(true);
+  const [showAddMediaMenu, setShowAddMediaMenu] = useState(false);
+  const [isCollaborationExpanded, setIsCollaborationExpanded] = useState(false);
+  const [showMoreFormatting, setShowMoreFormatting] = useState(false);
+
+  // Voice Note Recorder & Player State
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [isVoicePaused, setIsVoicePaused] = useState(false);
+  const [voiceDuration, setVoiceDuration] = useState(0);
+  const [_voiceUploading, setVoiceUploading] = useState(false);
+  const [activeVoicePlayerId, setActiveVoicePlayerId] = useState<string | null>(null);
+  const [voicePlaybackRate, setVoicePlaybackRate] = useState<number>(1);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voiceAudioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const [resolvedImageUrls, setResolvedImageUrls] = useState<Record<string, string>>({});
+  const [resolvedVoiceUrls, setResolvedVoiceUrls] = useState<Record<string, string>>({});
 
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -237,6 +280,28 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const canEditNote = canEditRole(accessRole);
   useVersionHistory(note?.id || null, title, content);
 
+  const autoResizeTextarea = useCallback(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const minH = Math.max(window.innerHeight - 280, 320);
+    el.style.height = `${Math.max(minH, el.scrollHeight)}px`;
+  }, []);
+
+  useEffect(() => {
+    autoResizeTextarea();
+  }, [content, activeFormat, autoResizeTextarea]);
+
+  useEffect(() => {
+    const handleFocusKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && settings.zenMode) {
+        toggleZenMode();
+      }
+    };
+    window.addEventListener('keydown', handleFocusKey);
+    return () => window.removeEventListener('keydown', handleFocusKey);
+  }, [settings.zenMode, toggleZenMode]);
+
   const showActionToast = useCallback((message: string, undo?: () => void) => {
     const id = Date.now();
     setActionToast({ id, message, undo });
@@ -244,6 +309,63 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       setActionToast(current => current?.id === id ? null : current);
     }, 5000);
   }, []);
+
+  // Lazy-resolve images into Blob URLs (with IndexedDB fallback for offline items)
+  useEffect(() => {
+    if (!note?.images || note.images.length === 0) return;
+    let active = true;
+    const currentUid = uid || 'guest';
+    note.images.forEach(img => {
+      if (resolvedImageUrls[img.id]) return;
+      if (img.objectId && img.objectId.startsWith('local-')) {
+        resolveOfflineMediaObjectUrl(img.id, currentUid)
+          .then(url => {
+            if (active && url) {
+              setResolvedImageUrls(prev => ({ ...prev, [img.id]: url }));
+            }
+          })
+          .catch(() => undefined);
+      } else if (img.objectId) {
+        downloadStorageFile('images', img.objectId, img.name)
+          .then(blob => {
+            if (!active) return;
+            const url = URL.createObjectURL(blob);
+            setResolvedImageUrls(prev => ({ ...prev, [img.id]: url }));
+          })
+          .catch(() => {
+            // Try IndexedDB as fallback
+            resolveOfflineMediaObjectUrl(img.id, currentUid).then(url => {
+              if (active && url) setResolvedImageUrls(prev => ({ ...prev, [img.id]: url }));
+            }).catch(() => undefined);
+          });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [note?.images, uid, resolvedImageUrls]);
+
+  // Lazy-resolve offline voice notes into in-memory Blob URLs
+  useEffect(() => {
+    if (!note?.voiceNotes || note.voiceNotes.length === 0) return;
+    let active = true;
+    const currentUid = uid || 'guest';
+    note.voiceNotes.forEach(vn => {
+      if (resolvedVoiceUrls[vn.id]) return;
+      if (vn.objectId && vn.objectId.startsWith('local-')) {
+        resolveOfflineMediaObjectUrl(vn.id, currentUid)
+          .then(url => {
+            if (active && url) {
+              setResolvedVoiceUrls(prev => ({ ...prev, [vn.id]: url }));
+            }
+          })
+          .catch(() => undefined);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [note?.voiceNotes, uid, resolvedVoiceUrls]);
 
   const updateExportOption = useCallback((key: keyof NoteExportOptions, value: boolean) => {
     const next = { ...exportOptions, [key]: value };
@@ -363,6 +485,17 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       redoStackRef.current = [];
       refreshHistoryStatus();
       setIsPreview(false);
+      if (note.reminder?.time) {
+        const d = new Date(note.reminder.time);
+        if (Number.isFinite(d.getTime())) {
+          setReminderDate(format(d, 'yyyy-MM-dd'));
+          setReminderTime(format(d, 'HH:mm'));
+        }
+      } else {
+        const d = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        setReminderDate(format(d, 'yyyy-MM-dd'));
+        setReminderTime('09:00');
+      }
       if (note.type === 'markdown') {
         setActiveFormat('rich');
       } else {
@@ -373,7 +506,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   // Flush any pending changes when component unmounts
   useEffect(() => {
-    return () => {
+    const flushCurrentEdits = () => {
       if (noteIdRef.current) {
         const { title: currentTitle, content: currentContent, notes: currentNotes, unlockedNotes: currentUnlockedNotes } = stateRef.current;
         const prevNote = currentNotes.find(n => n.id === noteIdRef.current);
@@ -389,9 +522,24 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             } else {
               updateNote(prevNote.id, { title: currentTitle, content: currentContent }, true);
             }
+            saveCrashJournal(uid || 'guest', prevNote.id, {
+              title: currentTitle,
+              content: currentContent,
+              updatedAt: new Date().toISOString(),
+              baseUpdatedAt: prevNote.updatedAt,
+            });
           }
         }
       }
+    };
+
+    window.addEventListener('beforeunload', flushCurrentEdits);
+    window.addEventListener('pagehide', flushCurrentEdits);
+
+    return () => {
+      flushCurrentEdits();
+      window.removeEventListener('beforeunload', flushCurrentEdits);
+      window.removeEventListener('pagehide', flushCurrentEdits);
     };
   }, [updateNote, updateUnlockedNote]);
 
@@ -545,9 +693,573 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     saveNote(val, content);
   };
 
+  const handleAddAttachmentClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleAttachmentFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !note || !canEditNote) return;
+    const file = files[0];
+    setUploadingAttachment(true);
+    const tempId = uuid();
+    const currentUid = uid || 'guest';
+    try {
+      const res = await uploadStorageFile(file, 'attachments', file.name, note.id);
+      const newAttachment: NoteAttachment = {
+        id: tempId,
+        name: res.fileName,
+        size: res.size,
+        mimeType: res.mimeType,
+        objectId: res.objectId,
+        url: res.url,
+        createdAt: res.createdAt,
+      };
+      const nextAttachments = [...(note.attachments || []), newAttachment];
+      updateNote(note.id, { attachments: nextAttachments });
+      showActionToast(`Added attachment "${file.name}"`);
+    } catch {
+      // Durable offline persistence
+      await enqueueOfflineMedia({
+        id: tempId,
+        uid: currentUid,
+        noteId: note.id,
+        purpose: 'attachments',
+        blob: file,
+        mimeType: file.type || 'application/octet-stream',
+        fileName: file.name,
+      });
+      const offlineAtt: NoteAttachment = {
+        id: tempId,
+        name: file.name,
+        size: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        objectId: 'local-' + tempId,
+        url: '',
+        createdAt: new Date().toISOString(),
+        pendingUpload: true,
+      };
+      const nextAttachments = [...(note.attachments || []), offlineAtt];
+      updateNote(note.id, { attachments: nextAttachments });
+      showActionToast("Saved on this device. I'll upload it when you're back online.");
+    } finally {
+      setUploadingAttachment(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleOpenAttachment = async (att: NoteAttachment) => {
+    if (!att.objectId) {
+      showActionToast('Attachment reference is unavailable.');
+      return;
+    }
+    const currentUid = uid || 'guest';
+    if (att.objectId.startsWith('local-')) {
+      const localUrl = await resolveOfflineMediaObjectUrl(att.id, currentUid);
+      if (localUrl) {
+        window.open(localUrl, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    }
+    void openOrDownloadStorageFile('attachments', att.objectId, att.name).catch(error => {
+      showActionToast(error instanceof Error ? error.message : 'Failed to download file.');
+    });
+  };
+
+  const handleRemoveAttachment = async (att: NoteAttachment) => {
+    if (!note || !canEditNote) return;
+    const currentUid = uid || 'guest';
+    if (att.objectId && !att.objectId.startsWith('local-')) {
+      void deleteStorageFile('attachments', att.objectId).catch(() => undefined);
+    } else {
+      void removeOfflineMedia(att.id, currentUid);
+    }
+    const nextAttachments = (note.attachments || []).filter(a => a.id !== att.id);
+    updateNote(note.id, { attachments: nextAttachments });
+    showActionToast(`Removed "${att.name}"`);
+  };
+
+  // --- Image Handlers ---
+  const handleAddImageClick = () => {
+    imageInputRef.current?.click();
+  };
+
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !note || !canEditNote) return;
+    const file = files[0];
+    setUploadingImage(true);
+    const tempId = uuid();
+    const currentUid = uid || 'guest';
+    try {
+      const { blob, width, height, mimeType } = await compressImage(file);
+      const res = await uploadStorageFile(blob, 'images', file.name, note.id);
+      const newImage: NoteImage = {
+        id: tempId,
+        name: res.fileName,
+        size: res.size,
+        mimeType: res.mimeType || mimeType || 'image/webp',
+        objectId: res.objectId,
+        storageKey: res.path,
+        width,
+        height,
+        createdAt: res.createdAt,
+      };
+      const nextImages = [...(note.images || []), newImage];
+      updateNote(note.id, { images: nextImages });
+      showActionToast(`Added photo "${file.name}"`);
+    } catch {
+      // Durable offline persistence
+      try {
+        const { blob, width, height, mimeType } = await compressImage(file);
+        await enqueueOfflineMedia({
+          id: tempId,
+          uid: currentUid,
+          noteId: note.id,
+          purpose: 'images',
+          blob,
+          mimeType: mimeType || 'image/webp',
+          fileName: file.name,
+          metadata: { width, height },
+        });
+        const localBlobUrl = URL.createObjectURL(blob);
+        setResolvedImageUrls(prev => ({ ...prev, [tempId]: localBlobUrl }));
+        const offlineImage: NoteImage = {
+          id: tempId,
+          name: file.name,
+          size: blob.size,
+          mimeType: mimeType || 'image/webp',
+          objectId: 'local-' + tempId,
+          width,
+          height,
+          createdAt: new Date().toISOString(),
+          pendingUpload: true,
+        };
+        const nextImages = [...(note.images || []), offlineImage];
+        updateNote(note.id, { images: nextImages });
+        showActionToast("Saved on this device. I'll upload it when you're back online.");
+      } catch (innerErr) {
+        showActionToast(innerErr instanceof Error ? innerErr.message : 'Could not save image.');
+      }
+    } finally {
+      setUploadingImage(false);
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveImage = (img: NoteImage) => {
+    if (!note || !canEditNote) return;
+    const currentUid = uid || 'guest';
+    if (img.objectId && !img.objectId.startsWith('local-')) {
+      void deleteStorageFile('images', img.objectId).catch(() => undefined);
+    } else {
+      void removeOfflineMedia(img.id, currentUid);
+    }
+    const nextImages = (note.images || []).filter(i => i.id !== img.id);
+    updateNote(note.id, { images: nextImages });
+    showActionToast(`Removed photo "${img.name}"`);
+  };
+
+  const handleUpdateImageCaption = (imgId: string, caption: string) => {
+    if (!note || !canEditNote) return;
+    const nextImages = (note.images || []).map(img => img.id === imgId ? { ...img, caption } : img);
+    updateNote(note.id, { images: nextImages });
+  };
+
+  // --- Voice Note Handlers ---
+  const voiceDurationTick = useCallback(() => {
+    setVoiceDuration(prev => {
+      const maxSec = (settings.voiceNoteMaxDurationMinutes || 15) * 60;
+      if (prev + 1 >= maxSec) {
+        stopVoiceRecording();
+        return prev + 1;
+      }
+      return prev + 1;
+    });
+  }, [settings.voiceNoteMaxDurationMinutes]);
+
+  const startVoiceRecording = async () => {
+    if (!canEditNote) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/ogg';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        stream.getTracks().forEach(track => track.stop());
+        const durationSec = voiceDuration;
+        const noteId = note?.id;
+        if (!noteId) return;
+
+        setVoiceUploading(true);
+        const ext = getAudioExtensionFromMime(mimeType);
+        const baseTitle = `Voice Note ${format(new Date(), 'MMM d, h.mm a')}`;
+        const fileName = `${baseTitle}${ext}`;
+        const tempId = uuid();
+        const currentUid = uid || 'guest';
+
+        try {
+          const res = await uploadStorageFile(audioBlob, 'voiceNotes', fileName, noteId);
+          const newVoiceNote: NoteVoiceNote = {
+            id: tempId,
+            title: baseTitle,
+            durationSeconds: durationSec || 1,
+            size: res.size,
+            mimeType: res.mimeType || mimeType,
+            objectId: res.objectId,
+            storageKey: res.path,
+            createdAt: res.createdAt,
+          };
+          const currentNote = useStore.getState().notes.find(n => n.id === noteId);
+          const nextVoiceNotes = [...(currentNote?.voiceNotes || []), newVoiceNote];
+          updateNote(noteId, { voiceNotes: nextVoiceNotes });
+          showActionToast(`Voice note saved.`);
+        } catch {
+          // Durable offline persistence in IndexedDB
+          await enqueueOfflineMedia({
+            id: tempId,
+            uid: currentUid,
+            noteId,
+            purpose: 'voiceNotes',
+            blob: audioBlob,
+            mimeType,
+            fileName,
+            metadata: { durationSeconds: durationSec || 1, title: baseTitle },
+          });
+          const localBlobUrl = URL.createObjectURL(audioBlob);
+          setResolvedVoiceUrls(prev => ({ ...prev, [tempId]: localBlobUrl }));
+          const offlineVoiceNote: NoteVoiceNote = {
+            id: tempId,
+            title: baseTitle,
+            durationSeconds: durationSec || 1,
+            size: audioBlob.size,
+            mimeType,
+            objectId: 'local-' + tempId,
+            createdAt: new Date().toISOString(),
+            pendingUpload: true,
+          };
+          const currentNote = useStore.getState().notes.find(n => n.id === noteId);
+          const nextVoiceNotes = [...(currentNote?.voiceNotes || []), offlineVoiceNote];
+          updateNote(noteId, { voiceNotes: nextVoiceNotes });
+          showActionToast("Saved on this device. I'll upload it when you're back online.");
+        } finally {
+          setVoiceUploading(false);
+          setIsRecordingVoice(false);
+          setIsVoicePaused(false);
+          setVoiceDuration(0);
+        }
+      };
+
+      recorder.start(1000);
+      setIsRecordingVoice(true);
+      setIsVoicePaused(false);
+      setVoiceDuration(0);
+
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = setInterval(voiceDurationTick, 1000);
+    } catch {
+      showActionToast('Could not access microphone. Please check permissions.');
+    }
+  };
+
+  const pauseVoiceRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.pause();
+      setIsVoicePaused(true);
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    }
+  };
+
+  const resumeVoiceRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+      setIsVoicePaused(false);
+      if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = setInterval(voiceDurationTick, 1000);
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const cancelVoiceRecording = () => {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.onstop = null;
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecordingVoice(false);
+    setIsVoicePaused(false);
+    setVoiceDuration(0);
+    showActionToast('Voice recording discarded.');
+  };
+
+  const handleRemoveVoiceNote = (voiceNote: NoteVoiceNote) => {
+    if (!note || !canEditNote) return;
+    const currentUid = uid || 'guest';
+    if (voiceNote.objectId && !voiceNote.objectId.startsWith('local-')) {
+      void deleteStorageFile('voiceNotes', voiceNote.objectId).catch(() => undefined);
+    } else {
+      void removeOfflineMedia(voiceNote.id, currentUid);
+    }
+    const nextVoiceNotes = (note.voiceNotes || []).filter(v => v.id !== voiceNote.id);
+    updateNote(note.id, { voiceNotes: nextVoiceNotes });
+    showActionToast(`Removed voice note "${voiceNote.title}"`);
+  };
+
+  const handleRenameVoiceNote = (voiceNoteId: string, newTitle: string) => {
+    if (!note || !canEditNote || !newTitle.trim()) return;
+    const nextVoiceNotes = (note.voiceNotes || []).map(v => v.id === voiceNoteId ? { ...v, title: newTitle.trim() } : v);
+    updateNote(note.id, { voiceNotes: nextVoiceNotes });
+  };
+
+  const togglePlayVoiceNote = async (voiceNote: NoteVoiceNote) => {
+    if (activeVoicePlayerId === voiceNote.id) {
+      const existing = voiceAudioElementsRef.current.get(voiceNote.id);
+      if (existing) {
+        existing.pause();
+        existing.currentTime = 0;
+      }
+      setActiveVoicePlayerId(null);
+      return;
+    }
+
+    // Stop any existing playing audio
+    voiceAudioElementsRef.current.forEach(audio => {
+      audio.pause();
+      audio.currentTime = 0;
+    });
+
+    let src = resolvedVoiceUrls[voiceNote.id];
+    const currentUid = uid || 'guest';
+    if (!src && voiceNote.id) {
+      const localUrl = await resolveOfflineMediaObjectUrl(voiceNote.id, currentUid);
+      if (localUrl) {
+        src = localUrl;
+        setResolvedVoiceUrls(prev => ({ ...prev, [voiceNote.id]: src }));
+      }
+    }
+    if (!src && voiceNote.objectId && !voiceNote.objectId.startsWith('local-')) {
+      try {
+        const ext = getAudioExtensionFromMime(voiceNote.mimeType || 'audio/webm');
+        const blob = await downloadStorageFile('voiceNotes', voiceNote.objectId, `${voiceNote.title}${ext}`);
+        src = URL.createObjectURL(blob);
+        setResolvedVoiceUrls(prev => ({ ...prev, [voiceNote.id]: src }));
+      } catch {
+        showActionToast('Could not load voice recording audio.');
+        return;
+      }
+    }
+
+    if (!src) return;
+
+    let audio = voiceAudioElementsRef.current.get(voiceNote.id);
+    if (!audio) {
+      audio = new Audio(src);
+      audio.playbackRate = voicePlaybackRate;
+      audio.onended = () => setActiveVoicePlayerId(null);
+      voiceAudioElementsRef.current.set(voiceNote.id, audio);
+    } else {
+      audio.src = src;
+      audio.playbackRate = voicePlaybackRate;
+    }
+
+    try {
+      await audio.play();
+      setActiveVoicePlayerId(voiceNote.id);
+    } catch {
+      showActionToast('Could not play audio.');
+    }
+  };
+
+  const cyclePlaybackRate = (voiceNoteId: string) => {
+    const rates = [1, 1.5, 2];
+    const nextRate = rates[(rates.indexOf(voicePlaybackRate) + 1) % rates.length];
+    setVoicePlaybackRate(nextRate);
+    const audio = voiceAudioElementsRef.current.get(voiceNoteId);
+    if (audio) audio.playbackRate = nextRate;
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   const handleContentChange = (val: string) => {
     if (!canEditNote) return;
     updateContentWithHistory(val);
+  };
+
+  const openAiPanel = () => {
+    if (!settings.aiEnabled || isLocked) return;
+    const el = contentRef.current;
+    const start = el?.selectionStart ?? 0;
+    const end = el?.selectionEnd ?? 0;
+    setAiSelection({ start, end, text: content.slice(start, end) });
+    setShowAiPanel(true);
+  };
+
+  const replaceAiSelection = (value: string) => {
+    if (!canEditNote) return;
+    const before = content.slice(0, aiSelection.start);
+    const after = content.slice(aiSelection.end);
+    updateContentWithHistory(`${before}${value}${after}`);
+  };
+
+  const insertAiBelow = (value: string) => {
+    if (!canEditNote) return;
+    const suffix = content.trim() ? `\n\n${value}` : value;
+    updateContentWithHistory(`${content}${suffix}`);
+  };
+
+  const handleListenClick = () => {
+    if (isLocked) return;
+    const el = contentRef.current;
+    const start = el?.selectionStart ?? 0;
+    const end = el?.selectionEnd ?? 0;
+    const selected = (end > start) ? content.slice(start, end).trim() : '';
+    const textToListen = selected || content.trim() || title;
+    if (!textToListen) {
+      alert('There is no text in this note to listen to.');
+      return;
+    }
+    setListenText(textToListen);
+    setIsListenSelection(!!selected);
+    setListenPlayerOpen(true);
+  };
+
+  const handleSaveListenAudio = async (blob: Blob, durationSeconds: number) => {
+    if (!note) return;
+    const fileName = `listen-${Date.now()}.mp3`;
+    const voiceId = uuid();
+    let objectId: string | undefined;
+    let pendingUpload = false;
+
+    try {
+      const res = await uploadStorageFile(blob, 'voiceNotes', fileName, note.id);
+      objectId = res.objectId;
+    } catch {
+      await enqueueOfflineMedia({
+        id: voiceId,
+        noteId: note.id,
+        uid: uid || 'guest',
+        purpose: 'voiceNotes',
+        fileName,
+        blob,
+        mimeType: 'audio/mp3',
+      });
+      objectId = `local-${voiceId}`;
+      pendingUpload = true;
+    }
+
+    const newVoiceNote: NoteVoiceNote = {
+      id: voiceId,
+      title: `Spoken: ${(title || 'Note').slice(0, 25)}`,
+      durationSeconds: Math.round(durationSeconds),
+      createdAt: new Date().toISOString(),
+      size: blob.size,
+      mimeType: 'audio/mp3',
+      objectId: objectId || `local-${voiceId}`,
+      pendingUpload,
+      source: 'generated-tts',
+    };
+
+    const nextVoiceNotes = [...(note.voiceNotes || []), newVoiceNote];
+    updateNote(note.id, { voiceNotes: nextVoiceNotes });
+  };
+
+  const handleTranscribeVoiceNote = async (vn: NoteVoiceNote) => {
+    if (!note) return;
+    setTranscribingVoiceId(vn.id);
+    try {
+      let result;
+      if (vn.objectId && !vn.objectId.startsWith('local-')) {
+        result = await transcribeAudio({ objectId: vn.objectId, purpose: 'voiceNotes' });
+      } else {
+        const localUrl = resolvedVoiceUrls[vn.id] || vn.localBlobUrl;
+        if (localUrl) {
+          const resp = await fetch(localUrl);
+          const blob = await resp.blob();
+          result = await transcribeAudio({ file: blob });
+        } else {
+          throw new Error('Local audio file could not be read.');
+        }
+      }
+      setReviewTranscript({
+        text: result.text,
+        audioName: vn.title,
+        voiceNoteId: vn.id,
+      });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Transcription could not be completed.');
+    } finally {
+      setTranscribingVoiceId(null);
+    }
+  };
+
+  const handleTranscribeAudioFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setTranscribingFile(true);
+    try {
+      const result = await transcribeAudio({ file });
+      setReviewTranscript({
+        text: result.text,
+        audioName: file.name,
+      });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Transcription could not be completed.');
+    } finally {
+      setTranscribingFile(false);
+    }
+  };
+
+  const handleSaveTranscriptToVoiceNote = (transcriptText: string, voiceNoteId?: string) => {
+    if (!note || !voiceNoteId || !note.voiceNotes) return;
+    const updated = note.voiceNotes.map(vn =>
+      vn.id === voiceNoteId
+        ? { ...vn, transcript: transcriptText, transcribedAt: Date.now() }
+        : vn
+    );
+    updateNote(note.id, { voiceNotes: updated });
+  };
+
+  const handleCreateNoteFromTranscript = async (transcriptText: string) => {
+    if (!note) return;
+    const newNote = await createNote({
+      notebookId: note.notebookId || 'default',
+      title: `Transcript: ${(reviewTranscript?.audioName || 'Audio').slice(0, 30)}`,
+      content: transcriptText,
+      type: 'note',
+    });
+    selectNote(newNote.id);
   };
 
   // Toolbar actions for rich text in textarea
@@ -602,21 +1314,21 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const handleSetReminder = async () => {
     if (!canEditNote) return;
-    if (note && reminderDate && reminderTime) {
+    if (note) {
+      const targetDate = reminderDate || format(new Date(Date.now() + 24 * 60 * 60 * 1000), 'yyyy-MM-dd');
+      const targetTime = reminderTime || '09:00';
       if ('Notification' in window && Notification.permission === 'default') {
         await Notification.requestPermission().catch(() => undefined);
       }
-      const time = new Date(`${reminderDate}T${reminderTime}`).toISOString();
-      setNoteReminder(note.id, {
-        id: uuid(),
+      const time = new Date(`${targetDate}T${targetTime}`).toISOString();
+      await setNoteReminder(note.id, {
+        id: note.reminder?.id || uuid(),
         noteId: note.id,
         time,
         title: note.title || 'Reminder',
         triggered: false,
       });
       setShowReminder(false);
-      setReminderDate('');
-      setReminderTime('');
     }
   };
 
@@ -760,7 +1472,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     const noteId = note.id;
     runSyncedAction(
       () => trashNote(noteId),
-      'Note moved to trash.',
+      'Note moved to Recycle Bin.',
       () => {
         void restoreNote(noteId);
         selectNote(noteId);
@@ -962,11 +1674,6 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [note, content, title, saveNote, undoNoteChange, redoNoteChange]);
 
-  const insertTemplate = (templateContent: string) => {
-    insertFormatting(templateContent);
-    setShowTemplatesDropdown(false);
-  };
-
   if (!note) {
     return (
       <div className="relative flex-1 flex items-center justify-center" style={{ backgroundColor: 'var(--app-bg)' }}>
@@ -1032,35 +1739,6 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
     .sort((a, b) => getNotebookRecentTime(b.notebook.id) - getNotebookRecentTime(a.notebook.id))
     .slice(0, 3);
 
-  const toolbarButtons = [
-    { icon: Bold, action: () => insertFormatting('**', '**'), title: 'Bold (Ctrl+B)' },
-    { icon: Italic, action: () => insertFormatting('*', '*'), title: 'Italic (Ctrl+I)' },
-    { icon: Underline, action: () => insertFormatting('<u>', '</u>'), title: 'Underline (Ctrl+U)' },
-    { icon: Strikethrough, action: () => insertFormatting('~~', '~~'), title: 'Strikethrough' },
-    null, // separator
-    { icon: Heading1, action: () => insertAtLineStart('# '), title: 'Heading 1' },
-    { icon: Heading2, action: () => insertAtLineStart('## '), title: 'Heading 2' },
-    { icon: Heading3, action: () => insertAtLineStart('### '), title: 'Heading 3' },
-    null,
-    { icon: List, action: () => insertAtLineStart('- '), title: 'Bullet list' },
-    { icon: ListOrdered, action: () => insertAtLineStart('1. '), title: 'Numbered list' },
-    { icon: CheckSquare, action: () => insertAtLineStart('- [ ] '), title: 'Task list' },
-    null,
-    { icon: Quote, action: () => insertAtLineStart('> '), title: 'Blockquote' },
-    { icon: Code, action: () => insertFormatting('`', '`'), title: 'Inline code' },
-    { icon: Minus, action: () => insertFormatting('\n---\n'), title: 'Horizontal rule' },
-    { icon: Link, action: () => insertFormatting('[', '](url)'), title: 'Link (Ctrl+K)' },
-    null,
-    { icon: Type, action: () => {
-      const url = prompt('Enter image URL:');
-      if (url) insertFormatting(`![Image](${url})`);
-    }, title: 'Insert image URL' },
-    { icon: Hash, action: () => {
-      const table = `\n| Header 1 | Header 2 | Header 3 |\n| --- | --- | --- |\n| Cell 1 | Cell 2 | Cell 3 |\n| Cell 4 | Cell 5 | Cell 6 |\n`;
-      insertFormatting(table);
-    }, title: 'Insert table' },
-  ];
-
   return (
     <div
       className={`note-theme-editor flex-1 min-w-0 overflow-hidden flex flex-col h-full ${settings.zenMode ? 'zen-mode' : ''}`}
@@ -1068,26 +1746,99 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       style={{ backgroundColor: 'var(--note-theme-bg, var(--editor-bg))' }}
     >
       {/* Top bar */}
-      <div className="flex min-w-0 flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <button
-            onClick={() => { selectNote(null); setEditingNote(false); }}
-            className="p-1.5 rounded-lg theme-hover xl:hidden" style={{ color: 'var(--text-tertiary)' }}
-            aria-label="Close editor"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          {onCollapsePanel && (
+      {settings.zenMode ? (
+        <div className="flex items-center justify-between px-4 py-2.5 border-b theme-divider shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
-              onClick={onCollapsePanel}
-              className="hidden xl:inline-flex p-1.5 rounded-lg theme-hover text-theme-tertiary"
-              title="Collapse editor panel"
-              aria-label="Collapse editor panel"
+              onClick={toggleZenMode}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border theme-border theme-hover text-xs font-bold text-theme-secondary"
+              title="Exit Focus Mode (Esc)"
+              aria-label="Exit Focus Mode"
             >
-              <PanelRightClose className="w-5 h-5 no-transition" />
+              <ArrowLeft className="w-4 h-4" />
+              <span>Exit Focus</span>
             </button>
-          )}
+            <h2 className="text-sm font-bold text-theme-primary truncate max-w-sm">
+              {title || 'Untitled Note'}
+            </h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {!isLocked && (
+              <button
+                type="button"
+                onClick={handleListenClick}
+                className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 border theme-border theme-hover text-xs font-bold text-theme-secondary shadow-sm"
+                title="Listen to note"
+                aria-label="Listen"
+              >
+                <Volume2 className="h-3.5 w-3.5 accent-text" />
+                <span>Listen</span>
+              </button>
+            )}
+            {settings.aiEnabled && !isLocked && (
+              <div className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={openAiPanel}
+                  className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 ai-button text-xs font-bold text-white shadow-sm"
+                  title="Open NTK AI note tools"
+                  aria-label="Open NTK AI note tools"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span>NTK AI</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    useStore.getState().setAiNoteContext({
+                      noteId: note.id,
+                      noteTitle: title,
+                      noteContent: content.slice(0, 4000),
+                    });
+                    useStore.getState().setCurrentView('ai');
+                  }}
+                  className="hidden sm:inline-flex items-center gap-1 rounded-xl px-2 py-1.5 border theme-border theme-hover text-xs font-semibold text-theme-secondary"
+                  title="Chat about this note with conversational NTK AI"
+                  aria-label="Chat about this note with conversational NTK AI"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  <span>Chat</span>
+                </button>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowMenu(!showMenu)}
+              className="p-1.5 rounded-lg theme-hover text-theme-tertiary"
+              title="More actions"
+              aria-label="More actions"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-w-0 flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <button
+              onClick={() => { selectNote(null); setEditingNote(false); }}
+              className="p-1.5 rounded-lg theme-hover 2xl:hidden" style={{ color: 'var(--text-tertiary)' }}
+              aria-label="Close editor"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            {onCollapsePanel && (
+              <button
+                type="button"
+                onClick={onCollapsePanel}
+                className="hidden 2xl:inline-flex p-1.5 rounded-lg theme-hover text-theme-tertiary"
+                title="Collapse editor panel"
+                aria-label="Collapse editor panel"
+              >
+                <PanelRightClose className="w-5 h-5 no-transition" />
+              </button>
+            )}
           
           {notebook && (
             <button
@@ -1171,12 +1922,57 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             <Star className={`w-4 h-4 ${note.starred ? 'fill-amber-500' : ''}`} />
           </button>
 
-          {/* Zen mode */}
+          {!isLocked && (
+            <button
+              type="button"
+              onClick={handleListenClick}
+              className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 border theme-border theme-hover text-xs font-bold text-theme-secondary shadow-sm"
+              title="Listen to note or selected text"
+              aria-label="Listen"
+            >
+              <Volume2 className="h-3.5 w-3.5 accent-text" />
+              <span className="hidden sm:inline">Listen</span>
+            </button>
+          )}
+
+          {settings.aiEnabled && !isLocked && (
+            <div className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={openAiPanel}
+                className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 ai-button text-xs font-bold text-white shadow-sm"
+                title="Ask NTK AI to help with this note"
+                aria-label="Open NTK AI"
+              >
+                <Sparkles className="h-4 w-4 no-transition" />
+                <span className="hidden sm:inline">NTK AI</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  useStore.getState().setAiNoteContext({
+                    noteId: note.id,
+                    noteTitle: title,
+                    noteContent: content.slice(0, 4000),
+                  });
+                  useStore.getState().setCurrentView('ai');
+                }}
+                className="inline-flex items-center gap-1 rounded-xl px-2 py-1.5 border theme-border theme-hover text-xs font-semibold text-theme-secondary"
+                title="Chat about this note with conversational NTK AI"
+                aria-label="Chat about this note with conversational NTK AI"
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Chat</span>
+              </button>
+            </div>
+          )}
+
+          {/* Focus mode */}
           <button
             onClick={toggleZenMode}
             className="p-1.5 rounded-lg theme-hover" style={{ color: 'var(--text-tertiary)' }}
-            title="Zen mode"
-            aria-label="Zen mode"
+            title={settings.zenMode ? 'Exit Focus Mode (Esc)' : 'Focus Mode'}
+            aria-label={settings.zenMode ? 'Exit Focus Mode' : 'Focus Mode'}
           >
             {settings.zenMode ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
@@ -1269,7 +2065,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   <div className="my-1 border-t theme-divider" />
                   <MenuSectionLabel label="Cleanup" />
                   <MenuBtn icon={Archive} label={note.archived ? 'Unarchive' : 'Archive'} onClick={handleArchiveToggle} />
-                  <MenuBtn icon={Trash2} label="Move to trash" onClick={handleTrashNote} danger />
+                  <MenuBtn icon={Trash2} label="Move to Recycle Bin" onClick={handleTrashNote} danger />
                 </>
               )}
               
@@ -1498,59 +2294,77 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           )}
         </div>
       </div>
+      )}
 
-      {/* Format Switcher */}
+      {/* Beginner-friendly writing mode switcher */}
       {!isLocked && (
-        <div className="flex min-w-0 items-center justify-start gap-2 overflow-x-auto px-4 py-1.5 bg-[var(--app-bg-subtle)]/30 border-b theme-divider shrink-0 sm:justify-between">
-          <div className="flex min-w-max shrink-0 items-center gap-1 bg-[var(--card-bg)] border theme-border rounded-lg p-0.5 shadow-sm">
-            <button
-              onClick={() => setActiveFormat('plain')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                activeFormat === 'plain'
-                  ? 'accent-soft text-[var(--accent-primary)]'
-                  : 'text-theme-secondary hover:text-theme-primary'
-              }`}
-            >
-              <Edit3 className="w-3.5 h-3.5" />
-              Standard Text
-            </button>
-            <button
-              onClick={() => setActiveFormat('rich')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                activeFormat === 'rich'
-                  ? 'accent-soft text-[var(--accent-primary)]'
-                  : 'text-theme-secondary hover:text-theme-primary'
-              }`}
-            >
-              <Eye className="w-3.5 h-3.5" />
-              Reader (Rich)
-            </button>
-            <button
-              onClick={() => setActiveFormat('code')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                activeFormat === 'code'
-                  ? 'accent-soft text-[var(--accent-primary)]'
-                  : 'text-theme-secondary hover:text-theme-primary'
-              }`}
-            >
-              <Code className="w-3.5 h-3.5" />
-              Raw Source
-            </button>
-            <button
-              onClick={() => setActiveFormat('html')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-colors ${
-                activeFormat === 'html'
-                  ? 'accent-soft text-[var(--accent-primary)]'
-                  : 'text-theme-secondary hover:text-theme-primary'
-              }`}
-            >
-              <FileCode className="w-3.5 h-3.5" />
-              HTML Code
-            </button>
+        <div className="flex min-w-0 items-center justify-between gap-2 border-b theme-divider bg-[var(--app-bg-subtle)]/30 px-4 py-1.5 shrink-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border theme-border bg-[var(--card-bg)] p-0.5 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setActiveFormat('plain')}
+                title="Write and edit your note"
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeFormat === 'plain'
+                    ? 'accent-soft text-[var(--accent-primary)]'
+                    : 'text-theme-secondary hover:text-theme-primary'
+                }`}
+              >
+                <Edit3 className="h-3.5 w-3.5 no-transition" />
+                Write
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveFormat('rich')}
+                title="Preview how formatted text will read"
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-semibold transition-colors ${
+                  activeFormat === 'rich'
+                    ? 'accent-soft text-[var(--accent-primary)]'
+                    : 'text-theme-secondary hover:text-theme-primary'
+                }`}
+              >
+                <Eye className="h-3.5 w-3.5 no-transition" />
+                Preview
+              </button>
+            </div>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedFormats(value => !value)}
+                className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                  activeFormat === 'code' || activeFormat === 'html' ? 'accent-soft accent-text' : 'text-theme-tertiary theme-hover'
+                }`}
+                aria-expanded={showAdvancedFormats}
+              >
+                Advanced
+              </button>
+              {showAdvancedFormats && (
+                <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-xl border theme-card p-1.5 shadow-xl" style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}>
+                  <p className="px-2 py-1 text-[10px] leading-4 text-theme-muted">For users who need the note's underlying markup.</p>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveFormat('code'); setShowAdvancedFormats(false); }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-theme-secondary theme-hover"
+                  >
+                    <Code className="h-3.5 w-3.5 no-transition" />
+                    Source
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveFormat('html'); setShowAdvancedFormats(false); }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-theme-secondary theme-hover"
+                  >
+                    <FileCode className="h-3.5 w-3.5 no-transition" />
+                    HTML preview
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-          <span className="text-[10px] uppercase font-bold tracking-wider text-theme-tertiary">
-            View Format
-          </span>
+
+          <span className="hidden text-[10px] text-theme-muted md:block">Write is the normal editing mode</span>
         </div>
       )}
 
@@ -1723,28 +2537,146 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
       {/* Formatting Toolbar */}
       {showToolbar && canEditNote && !isPreview && !isLocked && note.type !== 'checklist' && (
-        <div className="flex items-center gap-0.5 px-3 py-1.5 border-b theme-divider overflow-x-auto shrink-0">
-          {toolbarButtons.map((btn, i) => {
-            if (!btn) return <div key={i} className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--divider)' }} />;
-            return (
-              <button
-                key={i}
-                onClick={btn.action}
-                title={btn.title}
-                className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b theme-divider overflow-x-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => insertFormatting('**', '**')}
+            title="Bold (Ctrl+B)"
+            aria-label="Bold"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <Bold className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertFormatting('*', '*')}
+            title="Italic (Ctrl+I)"
+            aria-label="Italic"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <Italic className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('# ')}
+            title="Heading 1"
+            aria-label="Heading"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <Heading1 className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('- ')}
+            title="Bullet list"
+            aria-label="Bullet list"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <List className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('- [ ] ')}
+            title="Task checklist"
+            aria-label="Task checklist"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <CheckSquare className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertFormatting('[', '](url)')}
+            title="Link (Ctrl+K)"
+            aria-label="Link"
+            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
+          >
+            <Link className="w-4 h-4" />
+          </button>
+
+          {/* More formatting dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMoreFormatting(!showMoreFormatting)}
+              title="More formatting"
+              aria-label="More formatting"
+              className={`p-1.5 rounded-md transition-colors shrink-0 ${showMoreFormatting ? 'accent-soft accent-text' : 'theme-hover text-theme-tertiary'}`}
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {showMoreFormatting && (
+              <div
+                className="absolute left-0 top-full mt-1 w-48 rounded-xl border theme-card shadow-xl p-1.5 z-50 animate-scale-in"
+                style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
               >
-                <btn.icon className="w-4 h-4" />
-              </button>
-            );
-          })}
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertAtLineStart('## '); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Heading2 className="w-3.5 h-3.5" /> Heading 2
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertAtLineStart('### '); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Heading3 className="w-3.5 h-3.5" /> Heading 3
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertFormatting('<u>', '</u>'); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Underline className="w-3.5 h-3.5" /> Underline
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertFormatting('~~', '~~'); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Strikethrough className="w-3.5 h-3.5" /> Strikethrough
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertAtLineStart('> '); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Quote className="w-3.5 h-3.5" /> Quote
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertFormatting('`', '`'); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Code className="w-3.5 h-3.5" /> Inline code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertAtLineStart('1. '); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <ListOrdered className="w-3.5 h-3.5" /> Numbered list
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowMoreFormatting(false); insertFormatting('\n---\n'); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-theme-secondary theme-hover"
+                >
+                  <Minus className="w-3.5 h-3.5" /> Divider
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="w-px h-5 mx-1" style={{ backgroundColor: 'var(--divider)' }} />
 
-          {/* Voice Dictation */}
+          {/* Voice Dictation (lightweight live browser dictation) */}
           {isSpeechSupported ? (
             <button
               onClick={toggleListening}
               title={isListening ? 'Stop Voice Dictation' : 'Start Voice Dictation'}
+              aria-label={isListening ? 'Stop voice dictation' : 'Start voice dictation'}
               className={`p-1.5 rounded-md transition-colors shrink-0 relative ${
                 isListening 
                   ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20' 
@@ -1756,54 +2688,60 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-red-500 rounded-full animate-ping" />
               )}
             </button>
-          ) : (
-            <button
-              disabled
-              title="Voice dictation unsupported in this browser"
-              className="p-1.5 rounded-md opacity-40 text-theme-tertiary shrink-0 cursor-not-allowed"
-            >
-              <Mic className="w-4 h-4" />
-            </button>
-          )}
+          ) : null}
 
-          {/* Sketchpad Whiteboard */}
-          <button
-            onClick={() => setShowSketchModal(true)}
-            title="Open Sketchpad Whiteboard"
-            className="p-1.5 rounded-md theme-hover text-theme-tertiary transition-colors shrink-0"
-          >
-            <PenTool className="w-4 h-4" />
-          </button>
-
-          <div className="relative">
+          {/* Compact + Add menu in toolbar */}
+          <div className="relative ml-auto sm:ml-0">
             <button
-              onClick={() => setShowTemplatesDropdown(!showTemplatesDropdown)}
-              title="Insert Template"
-              className={`p-1.5 rounded-md transition-colors shrink-0 ${showTemplatesDropdown ? 'bg-indigo-500/10 text-indigo-500' : 'theme-hover text-theme-tertiary'}`}
+              type="button"
+              onClick={() => setShowAddMediaMenu(!showAddMediaMenu)}
+              title="Add photo, audio, file or sketch"
+              aria-label="Add item"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border theme-border theme-hover text-xs font-bold text-theme-secondary"
             >
-              <FilePlus className="w-4 h-4" />
+              <Plus className="w-3.5 h-3.5 accent-text" />
+              <span>Add</span>
             </button>
-            {showTemplatesDropdown && (
-              <div 
-                className="absolute left-0 top-full mt-1 w-64 rounded-xl shadow-xl border theme-card z-50 py-2 max-h-64 overflow-y-auto"
+            {showAddMediaMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 w-52 rounded-2xl border theme-card shadow-xl p-1.5 z-50 animate-scale-in"
                 style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
               >
-                <div className="px-3 pb-2 mb-2 border-b theme-divider">
-                  <span className="text-xs font-semibold text-theme-secondary uppercase tracking-wider">Insert Template</span>
-                </div>
-                {templates.filter(tpl => tpl.type === 'note' && tpl.content).map(tpl => (
-                  <button
-                    key={tpl.id}
-                    onClick={() => insertTemplate(tpl.content)}
-                    className="w-full text-left px-4 py-2 hover:bg-indigo-500/10 transition-colors flex items-center gap-3"
-                  >
-                    <span className="text-lg">{tpl.icon}</span>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-theme-primary">{tpl.name}</span>
-                      <span className="text-xs text-theme-tertiary truncate max-w-[160px]">{tpl.description}</span>
-                    </div>
-                  </button>
-                ))}
+                <button
+                  type="button"
+                  onClick={() => { setShowAddMediaMenu(false); handleAddImageClick(); }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                >
+                  <ImageIcon className="w-4 h-4 accent-text" /> Photo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAddMediaMenu(false); void (isRecordingVoice ? stopVoiceRecording() : startVoiceRecording()); }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                >
+                  <Volume2 className="w-4 h-4 accent-text" /> Record memo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAddMediaMenu(false); handleAddAttachmentClick(); }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                >
+                  <Paperclip className="w-4 h-4 accent-text" /> Attach file
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAddMediaMenu(false); audioFileInputRef.current?.click(); }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                >
+                  <Sparkles className="w-4 h-4 accent-text" /> Transcribe audio
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShowAddMediaMenu(false); setShowSketchModal(true); }}
+                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                >
+                  <PenTool className="w-4 h-4 accent-text" /> Sketch
+                </button>
               </div>
             )}
           </div>
@@ -1823,6 +2761,27 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
             </div>
           ) : (
             <>
+              {/* Listen Player if active */}
+              {listenPlayerOpen && (
+                <div className="mb-4">
+                  <ListenPlayer
+                    text={listenText}
+                    isSelection={isListenSelection}
+                    title={title || noteDisplayTitle(note)}
+                    onClose={() => setListenPlayerOpen(false)}
+                    onSaveAudio={handleSaveListenAudio}
+                  />
+                </div>
+              )}
+
+              {/* Transcribing file banner if active */}
+              {transcribingFile && (
+                <div className="mb-4 flex items-center gap-3 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs font-semibold text-indigo-600 dark:text-indigo-400 animate-pulse">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Transcribing audio file… please wait a moment.</span>
+                </div>
+              )}
+
               {/* Title */}
               <input
                 type="text"
@@ -1940,7 +2899,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onPaste={handlePaste}
                   readOnly={!canEditNote}
                   placeholder="Raw note source code..."
-                  className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-auto bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
+                  className="w-full min-w-0 max-w-full overflow-x-auto overflow-y-hidden bg-transparent resize-none focus:outline-none editor-area font-mono text-sm border-l-2 border-amber-500/30 pl-3 focus:border-amber-500"
                   style={{
                     color: 'var(--text-primary)',
                     fontSize: `${settings.editorFontSize}px`,
@@ -1962,7 +2921,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                   onPaste={handlePaste}
                   readOnly={!canEditNote}
                   placeholder={note.type === 'markdown' ? 'Write in Markdown...' : 'Start writing...'}
-                  className="w-full min-w-0 max-w-full min-h-[calc(100vh-300px)] overflow-x-hidden bg-transparent resize-none focus:outline-none editor-area"
+                  className="w-full min-w-0 max-w-full overflow-hidden bg-transparent resize-none focus:outline-none editor-area"
                   style={{
                     color: 'var(--text-primary)',
                     fontSize: `${settings.editorFontSize}px`,
@@ -1995,7 +2954,493 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
                 </div>
               )}
 
-              <NoteCollaborationPanel note={note} accessRole={accessRole} />
+              {/* Active Voice Recording Bar */}
+              {isRecordingVoice && (
+                <div className="mt-6 p-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm animate-pulse-subtle">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="relative flex h-3.5 w-3.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-rose-500"></span>
+                      </span>
+                      <div>
+                        <p className="text-xs font-bold text-rose-600 dark:text-rose-400">
+                          {isVoicePaused ? 'Recording Paused' : 'Recording Voice Note…'}
+                        </p>
+                        <p className="text-[11px] font-mono text-theme-tertiary">
+                          {Math.floor(voiceDuration / 60).toString().padStart(2, '0')}:{(voiceDuration % 60).toString().padStart(2, '0')} / {settings.voiceNoteMaxDurationMinutes || 15}:00 max
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {isVoicePaused ? (
+                        <button
+                          type="button"
+                          onClick={resumeVoiceRecording}
+                          className="px-3 py-1.5 rounded-lg border theme-border theme-hover text-xs font-bold text-theme-primary inline-flex items-center gap-1"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" /> Resume
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={pauseVoiceRecording}
+                          className="px-3 py-1.5 rounded-lg border theme-border theme-hover text-xs font-bold text-theme-secondary inline-flex items-center gap-1"
+                        >
+                          <Pause className="w-3.5 h-3.5" /> Pause
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={stopVoiceRecording}
+                        className="px-3.5 py-1.5 rounded-lg bg-rose-500 text-white text-xs font-bold shadow-sm hover:bg-rose-600 inline-flex items-center gap-1"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-current" /> Stop & Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelVoiceRecording}
+                        className="p-1.5 rounded-lg theme-hover text-theme-tertiary hover:text-rose-500"
+                        title="Discard recording"
+                        aria-label="Discard recording"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Hidden file inputs for media & transcriptions */}
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleImageFileChange}
+                disabled={uploadingImage}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleAttachmentFileChange}
+                disabled={uploadingAttachment}
+              />
+              <input
+                ref={audioFileInputRef}
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                onChange={handleTranscribeAudioFileChange}
+                disabled={transcribingFile}
+              />
+
+              {/* Zero Media Empty State: Compact Add row without 3 permanent empty blocks */}
+              {canEditNote && ((note.images?.length || 0) + (note.voiceNotes?.length || 0) + (note.attachments?.length || 0)) === 0 && (
+                <div className="mt-8 pt-4 border-t theme-divider flex flex-wrap items-center justify-between gap-2" data-testid="empty-media-compact-row">
+                  <span className="text-xs text-theme-tertiary">No photos, voice memos or files attached yet.</span>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMediaMenu(!showAddMediaMenu)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border theme-border theme-hover text-xs font-bold text-theme-secondary"
+                    >
+                      <Plus className="w-3.5 h-3.5 accent-text" /> Add
+                    </button>
+                    {showAddMediaMenu && (
+                      <div
+                        className="absolute right-0 bottom-full mb-1 w-52 rounded-2xl border theme-card shadow-2xl p-1.5 z-50 animate-scale-in"
+                        style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddMediaMenu(false); handleAddImageClick(); }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                        >
+                          <ImageIcon className="w-4 h-4 accent-text" /> Photo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddMediaMenu(false); void (isRecordingVoice ? stopVoiceRecording() : startVoiceRecording()); }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                        >
+                          <Volume2 className="w-4 h-4 accent-text" /> Record voice memo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddMediaMenu(false); handleAddAttachmentClick(); }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                        >
+                          <Paperclip className="w-4 h-4 accent-text" /> Attach file
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddMediaMenu(false); audioFileInputRef.current?.click(); }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                        >
+                          <Sparkles className="w-4 h-4 accent-text" /> Transcribe audio
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowAddMediaMenu(false); setShowSketchModal(true); }}
+                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                        >
+                          <PenTool className="w-4 h-4 accent-text" /> Sketch
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Consolidated Media & Files (N) Section when media exists */}
+              {((note.images?.length || 0) + (note.voiceNotes?.length || 0) + (note.attachments?.length || 0)) > 0 && (
+                <div className="mt-8 pt-4 border-t theme-divider" data-testid="note-media-files-section">
+                  <div className="flex items-center justify-between mb-4">
+                    <button
+                      type="button"
+                      onClick={() => setIsMediaExpanded(!isMediaExpanded)}
+                      className="inline-flex items-center gap-2 text-sm font-bold text-theme-primary theme-hover p-1.5 -ml-1.5 rounded-xl"
+                    >
+                      <Paperclip className="w-4 h-4 accent-text" />
+                      <span>Media & Files ({(note.images?.length || 0) + (note.voiceNotes?.length || 0) + (note.attachments?.length || 0)})</span>
+                      <ChevronDown className={`w-4 h-4 text-theme-tertiary transition-transform ${isMediaExpanded ? 'rotate-180' : ''}`} />
+                    </button>
+                    {canEditNote && (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setShowAddMediaMenu(!showAddMediaMenu)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold accent-button"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Add
+                        </button>
+                        {showAddMediaMenu && (
+                          <div
+                            className="absolute right-0 top-full mt-1 w-52 rounded-2xl border theme-card shadow-2xl p-1.5 z-50 animate-scale-in"
+                            style={{ backgroundColor: 'var(--card-bg)', borderColor: 'var(--card-border)' }}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => { setShowAddMediaMenu(false); handleAddImageClick(); }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                            >
+                              <ImageIcon className="w-4 h-4 accent-text" /> Photo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowAddMediaMenu(false); void (isRecordingVoice ? stopVoiceRecording() : startVoiceRecording()); }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                            >
+                              <Volume2 className="w-4 h-4 accent-text" /> Record voice memo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowAddMediaMenu(false); handleAddAttachmentClick(); }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                            >
+                              <Paperclip className="w-4 h-4 accent-text" /> Attach file
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowAddMediaMenu(false); audioFileInputRef.current?.click(); }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                            >
+                              <Sparkles className="w-4 h-4 accent-text" /> Transcribe audio
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setShowAddMediaMenu(false); setShowSketchModal(true); }}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-theme-primary theme-hover"
+                            >
+                              <PenTool className="w-4 h-4 accent-text" /> Sketch
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {isMediaExpanded && (
+                    <div className="space-y-6 pt-1 animate-in fade-in duration-150">
+                      {/* Photos Gallery */}
+                      {note.images && note.images.length > 0 && (
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-theme-tertiary flex items-center gap-1.5">
+                              <ImageIcon className="w-3.5 h-3.5 accent-text" />
+                              Photos ({note.images.length})
+                            </h4>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                            {note.images.map(img => {
+                              const src = resolvedImageUrls[img.id] || img.localDataUrl;
+                              return (
+                                <div
+                                  key={img.id}
+                                  className="group relative rounded-xl border theme-border overflow-hidden theme-card transition-shadow hover:shadow-md flex flex-col"
+                                >
+                                  <div
+                                    onClick={() => {
+                                      if (src) setSelectedLightboxImage({ id: img.id, name: img.name, url: src, caption: img.caption });
+                                    }}
+                                    className="relative aspect-video w-full bg-[var(--app-bg-subtle)] overflow-hidden cursor-zoom-in flex items-center justify-center"
+                                  >
+                                    {src ? (
+                                      <img
+                                        src={src}
+                                        alt={img.name}
+                                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <Loader2 className="w-5 h-5 animate-spin text-theme-tertiary" />
+                                    )}
+                                    <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <Maximize2 className="w-5 h-5 text-white drop-shadow" />
+                                    </div>
+                                  </div>
+                                  <div className="p-2 flex-1 flex flex-col justify-between gap-1">
+                                    <input
+                                      type="text"
+                                      defaultValue={img.caption || ''}
+                                      placeholder="Add caption…"
+                                      disabled={!canEditNote}
+                                      onBlur={e => handleUpdateImageCaption(img.id, e.target.value)}
+                                      className="w-full bg-transparent text-[11px] text-theme-primary placeholder:text-theme-tertiary outline-none border-b border-transparent focus:border-purple-400/50 truncate"
+                                    />
+                                    <div className="flex items-center justify-between text-[10px] text-theme-tertiary">
+                                      <span>{formatFileSize(img.size)}</span>
+                                      {canEditNote && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveImage(img)}
+                                          className="p-1 rounded text-red-500/70 hover:text-red-500 hover:bg-red-500/10"
+                                          title="Remove photo"
+                                          aria-label={`Remove photo ${img.name}`}
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Voice Notes Section */}
+                      {note.voiceNotes && note.voiceNotes.length > 0 && (
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-theme-tertiary flex items-center gap-1.5">
+                              <Volume2 className="w-3.5 h-3.5 accent-text" />
+                              Voice Notes ({note.voiceNotes.length})
+                            </h4>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            {note.voiceNotes.map(vn => {
+                              const isPlaying = activeVoicePlayerId === vn.id;
+                              return (
+                                <div
+                                  key={vn.id}
+                                  className={`flex flex-col p-3 rounded-xl border transition-all ${
+                                    isPlaying ? 'border-purple-500/50 bg-purple-500/5 shadow-sm' : 'theme-border theme-card'
+                                  } gap-2`}
+                                >
+                                  <div className="flex items-center justify-between gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => void togglePlayVoiceNote(vn)}
+                                      className={`p-2.5 rounded-xl shrink-0 transition-transform active:scale-95 ${
+                                        isPlaying ? 'bg-purple-600 text-white shadow-md' : 'accent-soft accent-text theme-hover'
+                                      }`}
+                                      title={isPlaying ? 'Pause' : 'Play voice note'}
+                                      aria-label={isPlaying ? 'Pause voice note' : 'Play voice note'}
+                                    >
+                                      {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                                    </button>
+                                    <div className="min-w-0 flex-1">
+                                      <input
+                                        type="text"
+                                        defaultValue={vn.title}
+                                        disabled={!canEditNote}
+                                        onBlur={e => handleRenameVoiceNote(vn.id, e.target.value)}
+                                        className="w-full bg-transparent text-xs font-semibold text-theme-primary outline-none border-b border-transparent focus:border-purple-400/50 truncate"
+                                      />
+                                      <div className="flex items-center gap-2 mt-0.5 text-[10px] text-theme-tertiary">
+                                        <span>
+                                          {Math.floor((vn.durationSeconds || 0) / 60)}:{(vn.durationSeconds % 60).toString().padStart(2, '0')}
+                                        </span>
+                                        <span>•</span>
+                                        <span>{formatFileSize(vn.size)}</span>
+                                        {vn.source === 'generated-tts' && (
+                                          <span className="rounded bg-indigo-500/10 px-1 py-0.5 text-[9px] font-bold text-indigo-600">Spoken</span>
+                                        )}
+                                        {vn.pendingUpload && (
+                                          <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-bold text-amber-600">On device</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleTranscribeVoiceNote(vn)}
+                                        disabled={transcribingVoiceId === vn.id}
+                                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold accent-soft accent-text theme-hover disabled:opacity-50"
+                                        title="Transcribe voice note to text"
+                                        aria-label={`Transcribe ${vn.title}`}
+                                      >
+                                        {transcribingVoiceId === vn.id ? (
+                                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        ) : (
+                                          <Sparkles className="w-3.5 h-3.5" />
+                                        )}
+                                        <span className="hidden sm:inline">Transcribe</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => cyclePlaybackRate(vn.id)}
+                                        className="px-1.5 py-1 rounded text-[10px] font-bold theme-hover text-theme-secondary"
+                                        title="Playback speed"
+                                      >
+                                        {voicePlaybackRate}x
+                                      </button>
+                                      {vn.objectId && !vn.objectId.startsWith('local-') && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void openOrDownloadStorageFile('voiceNotes', vn.objectId, `${vn.title}.webm`, true)}
+                                          className="p-1.5 rounded-lg theme-hover text-theme-secondary"
+                                          title="Download audio"
+                                          aria-label={`Download ${vn.title}`}
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                      {canEditNote && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleRemoveVoiceNote(vn)}
+                                          className="p-1.5 rounded-lg text-red-500/70 hover:text-red-500 hover:bg-red-500/10"
+                                          title="Delete voice note"
+                                          aria-label={`Delete voice note ${vn.title}`}
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {vn.transcript && (
+                                    <div className="mt-1 rounded-lg bg-[var(--app-bg-subtle)] p-2 text-[11px] text-theme-secondary border theme-border">
+                                      <div className="flex items-center justify-between mb-1">
+                                        <span className="font-bold text-[10px] uppercase text-theme-tertiary">Transcript</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setReviewTranscript({ text: vn.transcript!, audioName: vn.title, voiceNoteId: vn.id })}
+                                          className="text-[10px] font-bold accent-text hover:underline"
+                                        >
+                                          Review & Insert
+                                        </button>
+                                      </div>
+                                      <p className="line-clamp-2 italic text-theme-primary">“{vn.transcript}”</p>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Attachments Section */}
+                      {note.attachments && note.attachments.length > 0 && (
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-theme-tertiary flex items-center gap-1.5">
+                              <Paperclip className="w-3.5 h-3.5 accent-text" />
+                              Attachments ({note.attachments.length})
+                            </h4>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {note.attachments.map(att => (
+                              <div
+                                key={att.id}
+                                className="flex items-center justify-between p-2.5 rounded-xl border theme-border theme-card gap-3 transition-colors"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                  <div className="p-2 rounded-lg bg-[var(--app-bg-subtle)] text-theme-secondary shrink-0">
+                                    <FileIcon className="w-4 h-4" />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-medium text-theme-primary truncate" title={att.name}>
+                                      {att.name}
+                                    </p>
+                                    <p className="text-[10px] text-theme-tertiary">
+                                      {formatFileSize(att.size)} • {format(new Date(att.createdAt), 'MMM d, yyyy')}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenAttachment(att)}
+                                    className="p-1.5 rounded-lg theme-hover text-theme-secondary hover:text-theme-primary"
+                                    title="Open or download file"
+                                    aria-label={`Open or download ${att.name}`}
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+                                  {canEditNote && (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleRemoveAttachment(att)}
+                                      className="p-1.5 rounded-lg text-red-500/80 hover:text-red-500 hover:bg-red-500/10"
+                                      title="Remove attachment"
+                                      aria-label={`Remove attachment ${att.name}`}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Collapsible Sharing & Activity Section */}
+              <div className="mt-8 pt-4 border-t theme-divider" data-testid="collaboration-summary-section">
+                <button
+                  type="button"
+                  onClick={() => setIsCollaborationExpanded(!isCollaborationExpanded)}
+                  className="w-full flex items-center justify-between p-3.5 rounded-2xl border theme-border theme-hover text-left transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-xl theme-muted-surface text-theme-secondary">
+                      <Share2 className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <p className="text-xs font-bold text-theme-primary">Sharing & Activity</p>
+                      <p className="text-[11px] text-theme-tertiary">
+                        {note.isShared ? `${roleLabels[accessRole]} access` : 'Private note'}
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-theme-tertiary transition-transform ${isCollaborationExpanded ? 'rotate-180' : ''}`} />
+                </button>
+                {isCollaborationExpanded && (
+                  <div className="mt-3 animate-in fade-in duration-150">
+                    <NoteCollaborationPanel note={note} accessRole={accessRole} />
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -2036,6 +3481,18 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         entityType="note"
         entityId={note.id}
       />
+      <NtkAiPanel
+        open={showAiPanel}
+        onClose={() => setShowAiPanel(false)}
+        noteTitle={title}
+        noteContent={content}
+        selectedText={aiSelection.text}
+        writingStyle={settings.aiWritingStyle}
+        onReplaceSelection={replaceAiSelection}
+        onInsertBelow={insertAiBelow}
+        onReplaceNote={value => updateContentWithHistory(value)}
+      />
+
       {showMoveMenu && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4 py-6 backdrop-blur-sm"
@@ -2099,6 +3556,80 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           presentation={versionHistoryPresentation}
         />
       )}
+      {/* Image Lightbox Modal */}
+      {selectedLightboxImage && (
+        <div
+          className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/85 backdrop-blur-md p-4 animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setSelectedLightboxImage(null)}
+        >
+          <div className="absolute top-4 right-4 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+            <a
+              href={selectedLightboxImage.url}
+              download={selectedLightboxImage.name}
+              className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+              title="Download image"
+              aria-label="Download image"
+            >
+              <Download className="w-5 h-5" />
+            </a>
+            <button
+              type="button"
+              onClick={() => setSelectedLightboxImage(null)}
+              className="p-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+              aria-label="Close photo preview"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="max-w-4xl max-h-[80vh] flex flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
+            <img
+              src={selectedLightboxImage.url}
+              alt={selectedLightboxImage.name}
+              className="max-h-[75vh] max-w-full rounded-2xl object-contain shadow-2xl"
+            />
+            {selectedLightboxImage.caption && (
+              <p className="mt-3 text-sm text-white/80 text-center font-medium">
+                {selectedLightboxImage.caption}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+
+      {/* Transcription Review Flow */}
+      {reviewTranscript && (
+        <TranscriptReviewModal
+          isOpen={true}
+          transcript={reviewTranscript.text}
+          audioName={reviewTranscript.audioName}
+          hasSelection={aiSelection.end > aiSelection.start}
+          onClose={() => setReviewTranscript(null)}
+          onInsertBelow={(t) => {
+            insertAiBelow(t);
+            setReviewTranscript(null);
+            showActionToast('Transcript inserted below.');
+          }}
+          onReplaceSelection={aiSelection.end > aiSelection.start ? (t) => {
+            replaceAiSelection(t);
+            setReviewTranscript(null);
+            showActionToast('Selection replaced with transcript.');
+          } : undefined}
+          onCreateNewNote={async (t) => {
+            await handleCreateNoteFromTranscript(t);
+            setReviewTranscript(null);
+            showActionToast('Created new note from transcript.');
+          }}
+          onKeepWithAudio={reviewTranscript.voiceNoteId ? (t) => {
+            handleSaveTranscriptToVoiceNote(t, reviewTranscript.voiceNoteId);
+            setReviewTranscript(null);
+            showActionToast('Transcript attached to audio recording.');
+          } : undefined}
+        />
+      )}
+
       <ActionToastView toast={actionToast} onClose={() => setActionToast(null)} />
     </div>
   );
