@@ -250,6 +250,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const [showAddMediaMenu, setShowAddMediaMenu] = useState(false);
   const [isCollaborationExpanded, setIsCollaborationExpanded] = useState(false);
   const [showMoreFormatting, setShowMoreFormatting] = useState(false);
+  const [showMobileFormatSheet, setShowMobileFormatSheet] = useState(false);
 
   // Voice Note Recorder & Player State
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -1819,7 +1820,8 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           </div>
         </div>
       ) : (
-        <div className="flex min-w-0 flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
+        <>
+        <div className="hidden sm:flex min-w-0 flex-col gap-2 px-4 py-2.5 border-b theme-divider shrink-0 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               onClick={() => { selectNote(null); setEditingNote(false); }}
@@ -2294,11 +2296,72 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
           )}
         </div>
       </div>
+
+      {/* Mobile-Native Top Header (phone viewports) */}
+      <div className="sm:hidden flex min-h-[52px] items-center justify-between px-3 py-1 border-b theme-divider shrink-0 bg-[var(--card-bg)] select-none">
+        <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onClick={() => { selectNote(null); setEditingNote(false); }}
+            className="flex h-11 w-11 items-center justify-center rounded-xl theme-hover text-theme-primary shrink-0 -ml-1"
+            aria-label="Back to notes list"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div className="min-w-0">
+            <h2 className="text-sm font-bold text-theme-primary truncate max-w-[170px]">
+              {title || noteDisplayTitle(note)}
+            </h2>
+            {notebook && (
+              <button
+                type="button"
+                onClick={openMoveDialog}
+                disabled={!canEditNote}
+                className="text-[10px] text-theme-tertiary truncate flex items-center gap-1 hover:underline text-left"
+                aria-label={`Notebook: ${notebook.name}`}
+              >
+                <span>{notebook.icon}</span>
+                <span className="truncate max-w-[140px]">{notebook.name}</span>
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={handleStarToggle}
+            disabled={!canEditNote}
+            className="flex h-10 w-10 items-center justify-center rounded-xl theme-hover text-theme-tertiary"
+            aria-label={note.starred ? 'Unstar note' : 'Star note'}
+          >
+            <Star className={`w-4 h-4 ${note.starred ? 'fill-amber-500 text-amber-500' : ''}`} />
+          </button>
+          {!isLocked && (
+            <button
+              type="button"
+              onClick={handleListenClick}
+              className="flex h-10 w-10 items-center justify-center rounded-xl theme-hover text-theme-secondary"
+              aria-label="Listen to note"
+            >
+              <Volume2 className="w-4 h-4 accent-text" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowMenu(!showMenu)}
+            className="flex h-10 w-10 items-center justify-center rounded-xl theme-hover text-theme-tertiary"
+            aria-label="More note actions"
+          >
+            <MoreHorizontal className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      </>
       )}
 
-      {/* Beginner-friendly writing mode switcher */}
+      {/* Beginner-friendly writing mode switcher — desktop only */}
       {!isLocked && (
-        <div className="flex min-w-0 items-center justify-between gap-2 border-b theme-divider bg-[var(--app-bg-subtle)]/30 px-4 py-1.5 shrink-0">
+        <div className="hidden sm:flex min-w-0 items-center justify-between gap-2 border-b theme-divider bg-[var(--app-bg-subtle)]/30 px-4 py-1.5 shrink-0">
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex shrink-0 items-center gap-1 rounded-lg border theme-border bg-[var(--card-bg)] p-0.5 shadow-sm">
               <button
@@ -2535,9 +2598,9 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         </div>
       )}
 
-      {/* Formatting Toolbar */}
+      {/* Formatting Toolbar — desktop only */}
       {showToolbar && canEditNote && !isPreview && !isLocked && note.type !== 'checklist' && (
-        <div className="flex items-center gap-1 px-3 py-1.5 border-b theme-divider overflow-x-auto shrink-0">
+        <div className="hidden sm:flex items-center gap-1 px-3 py-1.5 border-b theme-divider overflow-x-auto shrink-0">
           <button
             type="button"
             onClick={() => insertFormatting('**', '**')}
@@ -3446,9 +3509,153 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
         </div>
       </div>
 
-      {/* Status bar */}
+      {/* Mobile-Native Bottom Keyboard-Adjacent Action Bar (phone viewports) */}
+      {!isLocked && canEditNote && (
+        <div
+          className="sm:hidden flex items-center justify-between px-3 py-1.5 border-t theme-divider bg-[var(--card-bg)] shrink-0 z-20"
+          style={{ paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom))' }}
+        >
+          <div className="flex items-center gap-1">
+            {/* Quick formatting trigger */}
+            {note.type !== 'checklist' && (
+              <button
+                type="button"
+                onClick={() => setShowMobileFormatSheet(v => !v)}
+                className={`p-2 rounded-xl transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center ${
+                  showMobileFormatSheet ? 'accent-soft accent-text' : 'theme-hover text-theme-secondary'
+                }`}
+                aria-label="Text formatting"
+                title="Format text"
+              >
+                <Type className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* Checkbox toggle */}
+            <button
+              type="button"
+              onClick={() => insertAtLineStart('- [ ] ')}
+              className="p-2 rounded-xl theme-hover text-theme-secondary min-h-[44px] min-w-[44px] flex items-center justify-center"
+              aria-label="Add task checklist"
+              title="Add task checklist"
+            >
+              <CheckSquare className="w-5 h-5" />
+            </button>
+
+            {/* Attach media */}
+            <button
+              type="button"
+              onClick={() => setShowAddMediaMenu(v => !v)}
+              className="p-2 rounded-xl theme-hover text-theme-secondary min-h-[44px] min-w-[44px] flex items-center justify-center"
+              aria-label="Attach photo or audio"
+              title="Add media"
+            >
+              <Paperclip className="w-5 h-5" />
+            </button>
+
+            {/* NTK AI Assist */}
+            {settings.aiEnabled && (
+              <button
+                type="button"
+                onClick={openAiPanel}
+                className="p-2 rounded-xl theme-hover text-[var(--accent-primary)] min-h-[44px] min-w-[44px] flex items-center justify-center"
+                aria-label="NTK AI writing assistant"
+                title="NTK AI"
+              >
+                <Sparkles className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+
+          {/* Right side of mobile bar: Undo / Redo */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={undoNoteChange}
+              disabled={!historyStatus.canUndo}
+              className="p-2 rounded-xl theme-hover text-theme-secondary disabled:opacity-30 min-h-[44px] min-w-[44px] flex items-center justify-center"
+              aria-label="Undo note edit"
+            >
+              <Undo2 className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={redoNoteChange}
+              disabled={!historyStatus.canRedo}
+              className="p-2 rounded-xl theme-hover text-theme-secondary disabled:opacity-30 min-h-[44px] min-w-[44px] flex items-center justify-center"
+              aria-label="Redo note edit"
+            >
+              <Redo2 className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Mobile Formatting Sheet (slides up directly above keyboard) */}
+      {showMobileFormatSheet && !isLocked && canEditNote && (
+        <div className="sm:hidden border-t theme-divider bg-[var(--app-bg-subtle)] px-3 py-2 flex items-center gap-2 overflow-x-auto shrink-0 animate-slide-in">
+          <button
+            type="button"
+            onClick={() => insertFormatting('**', '**')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Bold"
+          >
+            Bold
+          </button>
+          <button
+            type="button"
+            onClick={() => insertFormatting('*', '*')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold italic text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Italic"
+          >
+            Italic
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('# ')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Heading"
+          >
+            H1
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('## ')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Subheading"
+          >
+            H2
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('- ')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Bullet list"
+          >
+            Bullet
+          </button>
+          <button
+            type="button"
+            onClick={() => insertFormatting('[', '](url)')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Insert link"
+          >
+            Link
+          </button>
+          <button
+            type="button"
+            onClick={() => insertAtLineStart('> ')}
+            className="px-3 py-1.5 rounded-lg border theme-border bg-[var(--card-bg)] text-xs font-bold text-theme-primary min-h-[38px] shrink-0"
+            aria-label="Quote"
+          >
+            Quote
+          </button>
+        </div>
+      )}
+
+      {/* Status bar — desktop only */}
       {settings.showWordCount && (
-        <div className="flex items-center justify-between px-4 py-1.5 border-t theme-divider text-xs text-theme-tertiary shrink-0">
+        <div className="hidden sm:flex items-center justify-between px-4 py-1.5 border-t theme-divider text-xs text-theme-tertiary shrink-0">
           <div className="flex items-center gap-4">
             <span>{note.wordCount} words</span>
             <span>{note.charCount} characters</span>

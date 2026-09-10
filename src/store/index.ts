@@ -805,6 +805,7 @@ interface AppState {
   
   // UI State
   currentView: SidebarView;
+  previousView: SidebarView | null;
   settingsSection: string;
   selectedNoteId: string | null;
   selectedNotebookId: string | null;
@@ -943,6 +944,7 @@ interface AppState {
   setSearchFilters: (filters: Partial<SearchFilters>) => void;
   clearSearch: () => void;
   setCurrentView: (view: SidebarView) => void;
+  navigateBack: () => void;
   openSettings: (section?: string) => void;
   selectNote: (id: string | null) => void;
   selectNotebook: (id: string | null) => void;
@@ -1389,6 +1391,7 @@ export const useStore = create<AppState>((set, get) => {
     profile: initialData.profile,
     settings: initialData.settings,
     currentView: 'home',
+    previousView: null,
     settingsSection: 'profile',
     selectedNoteId: null,
     selectedNotebookId: null,
@@ -3892,10 +3895,27 @@ export const useStore = create<AppState>((set, get) => {
       set(s => ({ searchFilters: { ...s.searchFilters, ...filters } }));
     },
     clearSearch: () => set({ searchFilters: defaultSearchFilters }),
-    setCurrentView: (view) => set({ currentView: view, selectedNoteId: null, editingNote: false }),
+    setCurrentView: (view) => set(s => ({
+      previousView: s.currentView !== view ? s.currentView : s.previousView,
+      currentView: view,
+      selectedNoteId: null,
+      editingNote: false,
+    })),
+    navigateBack: () => set(s => ({
+      currentView: s.previousView && s.previousView !== s.currentView ? s.previousView : 'home',
+      previousView: 'home',
+      selectedNoteId: null,
+      editingNote: false,
+    })),
     setActiveChatId: (chatId) => set({ activeChatId: chatId }),
     setAiNoteContext: (context) => set({ aiNoteContext: context }),
-    openSettings: (section = 'profile') => set({ settingsSection: section, currentView: 'settings', selectedNoteId: null, editingNote: false }),
+    openSettings: (section = 'profile') => set(s => ({
+      previousView: s.currentView !== 'settings' ? s.currentView : s.previousView,
+      settingsSection: section,
+      currentView: 'settings',
+      selectedNoteId: null,
+      editingNote: false,
+    })),
     selectNote: (id) => set({ selectedNoteId: id, editingNote: !!id }),
     selectNotebook: (id) => set({ selectedNotebookId: id }),
     selectTag: (id) => set({ selectedTagId: id }),

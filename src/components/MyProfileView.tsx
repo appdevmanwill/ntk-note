@@ -146,7 +146,7 @@ export default function MyProfileView() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto theme-bg p-4 sm:p-6 lg:p-8">
+    <div className="flex-1 overflow-y-auto theme-bg p-4 pb-24 sm:p-6 sm:pb-6 lg:p-8">
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Header card with Avatar & Quick stats */}
         <div className="rounded-3xl border theme-border theme-card p-6 shadow-sm flex flex-col sm:flex-row items-center sm:items-start gap-6">

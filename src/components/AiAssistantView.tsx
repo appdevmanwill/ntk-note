@@ -730,7 +730,7 @@ export default function AiAssistantView() {
         </div>
 
         {/* Input Composer area */}
-        <div className="p-3 sm:p-4 border-t theme-divider bg-[var(--card-bg)]">
+        <div className="p-3 sm:p-4 border-t theme-divider bg-[var(--card-bg)] pb-24 md:pb-4">
           <div className="max-w-3xl mx-auto">
             {!online && (
               <div className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 mb-2 px-1">

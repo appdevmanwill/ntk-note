@@ -9149,6 +9149,103 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     });
   });
 
+  describe('Stage 2 — Native Android/iOS-Like Mobile Experience & Whole-App Novice UX', () => {
+    test('Mobile bottom navigation contract: exactly 5 destinations/actions and auto-hides during active editing/chat', () => {
+      const mobileNavSource = fs.readFileSync(path.resolve('src/components/MobileNav.tsx'), 'utf8');
+      assert.ok(mobileNavSource.includes('aria-label="Mobile primary navigation"'));
+      assert.ok(mobileNavSource.includes('aria-label="Create new item"'));
+      assert.ok(mobileNavSource.includes('Home'));
+      assert.ok(mobileNavSource.includes('Notes'));
+      assert.ok(mobileNavSource.includes('Search'));
+      assert.ok(mobileNavSource.includes('More'));
+
+      // Check auto-hide rule to avoid keyboard collisions
+      assert.ok(mobileNavSource.includes('editingNote || activeChatId'));
+
+      // Verify safe-area support
+      assert.ok(mobileNavSource.includes('env(safe-area-inset-bottom'));
+    });
+
+    test('CreateSheet contains canonical creation actions: New Note, New Checklist, New Notebook', () => {
+      const createSheetSource = fs.readFileSync(path.resolve('src/components/CreateSheet.tsx'), 'utf8');
+      assert.ok(createSheetSource.includes('role="dialog"'));
+      assert.ok(createSheetSource.includes('aria-label="Create new item"'));
+      assert.ok(createSheetSource.includes('New Note'));
+      assert.ok(createSheetSource.includes('New Checklist'));
+      assert.ok(createSheetSource.includes('New Notebook'));
+    });
+
+    test('MoreView organizes destinations into Workspace and Account & App sections with badges', () => {
+      const moreViewSource = fs.readFileSync(path.resolve('src/components/MoreView.tsx'), 'utf8');
+      assert.ok(moreViewSource.includes('Workspace'));
+      assert.ok(moreViewSource.includes('Account & App'));
+      assert.ok(moreViewSource.includes('Notebooks'));
+      assert.ok(moreViewSource.includes('Reminders'));
+      assert.ok(moreViewSource.includes('Messages'));
+      assert.ok(moreViewSource.includes('NTK AI'));
+      assert.ok(moreViewSource.includes('Recycle Bin'));
+      assert.ok(moreViewSource.includes('Profile'));
+      assert.ok(moreViewSource.includes('Settings'));
+      assert.ok(moreViewSource.includes('Appearance'));
+      assert.ok(moreViewSource.includes('Help & Shortcuts'));
+    });
+
+    test('Store tracks navigation history and provides back navigation', () => {
+      const { setCurrentView, navigateBack } = useStore.getState();
+      
+      setCurrentView('home');
+      assert.equal(useStore.getState().currentView, 'home');
+
+      setCurrentView('settings');
+      assert.equal(useStore.getState().currentView, 'settings');
+      assert.equal(useStore.getState().previousView, 'home');
+
+      navigateBack();
+      assert.equal(useStore.getState().currentView, 'home');
+    });
+
+    test('TopBar provides contextual mobile headers with back navigation for sub-views', () => {
+      const topBarSource = fs.readFileSync(path.resolve('src/components/TopBar.tsx'), 'utf8');
+      assert.ok(topBarSource.includes('navigateBack'));
+      assert.ok(topBarSource.includes('useIsDesktop'));
+      assert.ok(topBarSource.includes('editingNote || (currentView === \'messages\' && activeChatId)'));
+    });
+
+    test('NoteEditor mobile-native composition: Back button, minimal top header, and keyboard-adjacent bottom toolbar', () => {
+      const noteEditorSource = fs.readFileSync(path.resolve('src/components/NoteEditor.tsx'), 'utf8');
+      assert.ok(noteEditorSource.includes('aria-label="Back to notes list"'));
+      assert.ok(noteEditorSource.includes('aria-label="Text formatting"'));
+      assert.ok(noteEditorSource.includes('aria-label="Add task checklist"'));
+      assert.ok(noteEditorSource.includes('aria-label="Attach photo or audio"'));
+      assert.ok(noteEditorSource.includes('aria-label="NTK AI writing assistant"'));
+    });
+
+    test('SettingsView mobile subscreen navigation: Category list with Back navigation and version 2.9.0', () => {
+      const settingsViewSource = fs.readFileSync(path.resolve('src/components/SettingsView.tsx'), 'utf8');
+      assert.ok(settingsViewSource.includes('selectedMobileSection'));
+      assert.ok(settingsViewSource.includes('Back to All Settings'));
+      assert.ok(settingsViewSource.includes('Version 2.9.0'));
+      assert.ok(settingsViewSource.includes('hidden md:block'));
+    });
+
+    test('Desktop and mobile layout separation: No double navigation on phones', () => {
+      const sidebarSource = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf8');
+      const mobileNavSource = fs.readFileSync(path.resolve('src/components/MobileNav.tsx'), 'utf8');
+      
+      // Desktop sidebar uses lg: breakpoint to stay off phones
+      assert.ok(sidebarSource.includes('lg:'));
+      // MobileNav uses lg:hidden to stay off desktop
+      assert.ok(mobileNavSource.includes('lg:hidden'));
+    });
+
+    test('Messages and AI Chat mobile viewport clearance prevents bottom nav collisions', () => {
+      const messagesSource = fs.readFileSync(path.resolve('src/components/MessagesView.tsx'), 'utf8');
+      const aiChatSource = fs.readFileSync(path.resolve('src/components/AiAssistantView.tsx'), 'utf8');
+      assert.ok(messagesSource.includes('pb-24 md:pb-0'));
+      assert.ok(aiChatSource.includes('pb-24 md:pb-4'));
+    });
+  });
+
   after(() => {
     setTimeout(() => process.exit(0), 100);
   });

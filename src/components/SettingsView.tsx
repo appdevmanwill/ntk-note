@@ -5,7 +5,7 @@ import { accentColors } from '@/utils/colors';
 import { noteThemes } from '@/utils/noteThemes';
 import { premiumFontFamilies } from '@/utils/fonts';
 import {
-  User, Palette, Type, Download, Upload,
+  User, Palette, Type, Download, Upload, ArrowLeft,
   Trash2, Moon, Sun, Keyboard, Info, BellRing,
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
   AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink,
@@ -50,6 +50,15 @@ export default function SettingsView() {
   } = useStore();
 
   const [activeSection, setActiveSection] = useState(settingsSection || 'profile');
+  const [selectedMobileSection, setSelectedMobileSection] = useState<string | null>(settingsSection || null);
+
+  useEffect(() => {
+    if (settingsSection) {
+      setActiveSection(settingsSection);
+      setSelectedMobileSection(settingsSection);
+    }
+  }, [settingsSection]);
+
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
   const [showImportManager, setShowImportManager] = useState(false);
@@ -489,53 +498,177 @@ export default function SettingsView() {
 
   return (
     <div className="flex-1 overflow-y-auto" style={{ backgroundColor: 'var(--app-bg)' }}>
-      <div className="max-w-3xl mx-auto p-4 md:p-8">
-        <div className="mb-6">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl accent-soft accent-text"><Sparkles className="h-5 w-5 no-transition" /></div>
-            <div>
-              <h2 className="text-2xl font-bold text-theme-primary">Settings</h2>
-              <p className="mt-1 text-sm leading-6 text-theme-tertiary">Make NTK Note comfortable for you. Everyday choices are simple and changes apply immediately; technical controls stay out of the way until you need them.</p>
+      <div className="max-w-3xl mx-auto p-4 md:p-8 pb-24 lg:pb-8">
+        {/* Mobile Header & List (When no subscreen is selected on mobile) */}
+        <div className="md:hidden">
+          {selectedMobileSection === null ? (
+            <div className="mb-6">
+              <div className="flex items-start gap-3 mb-4">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl accent-soft accent-text">
+                  <Sparkles className="h-5 w-5 no-transition" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-theme-primary">Settings</h2>
+                  <p className="mt-1 text-xs leading-5 text-theme-tertiary">
+                    Everyday choices are simple; changes apply immediately.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mb-4 grid grid-cols-3 gap-1.5">
+                <SettingsStatus label="Appearance" value={`${resolvedTheme === 'dark' ? 'Dark' : 'Light'} · ${settings.accent}`} />
+                <SettingsStatus label="Writing" value={`${settings.editorFontSize}px`} />
+                <SettingsStatus label="Sync" value={uid ? (online ? 'Online' : 'Offline') : 'Local'} />
+              </div>
+
+              <label className="mb-4 flex min-h-11 items-center gap-2 rounded-xl border theme-border theme-input px-3">
+                <Search className="h-4 w-4 shrink-0 text-theme-tertiary no-transition" />
+                <span className="sr-only">Search settings</span>
+                <input
+                  value={settingsQuery}
+                  onChange={event => setSettingsQuery(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary outline-none placeholder:text-theme-muted"
+                  placeholder="Find a setting…"
+                />
+              </label>
+
+              <div className="space-y-1.5">
+                {matchingSections.map(sec => (
+                  <button
+                    key={sec.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveSection(sec.id);
+                      setSelectedMobileSection(sec.id);
+                      setSettingsQuery('');
+                    }}
+                    className="w-full flex items-center justify-between p-3.5 rounded-xl border theme-border theme-card hover:border-theme transition-colors text-left"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg accent-soft accent-text">
+                        <sec.icon className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-sm font-semibold text-theme-primary block truncate">{sec.label}</span>
+                        <span className="text-xs text-theme-tertiary block capitalize">{sec.group}</span>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-theme-muted shrink-0" />
+                  </button>
+                ))}
+              </div>
+
+              {!normalizedSettingsQuery && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedSettings(value => !value)}
+                  className="mt-3 w-full py-2.5 text-center text-xs font-semibold accent-text rounded-xl border border-dashed theme-border"
+                >
+                  {showAdvancedSettings ? 'Hide extra settings' : 'Show more settings'}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="mb-6">
+              <button
+                type="button"
+                onClick={() => setSelectedMobileSection(null)}
+                className="flex items-center gap-2 text-sm font-semibold accent-text py-2 px-1 -ml-1 hover:underline"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span>Back to All Settings</span>
+              </button>
+              <div className="mt-2 flex items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl accent-soft accent-text">
+                  {(() => {
+                    const currentSec = sections.find(s => s.id === activeSection);
+                    const IconComponent = currentSec?.icon || Sparkles;
+                    return <IconComponent className="h-5 w-5" />;
+                  })()}
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-theme-primary">
+                    {sections.find(s => s.id === activeSection)?.label || 'Settings'}
+                  </h3>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Desktop Header & Category Grid (Preserved) */}
+        <div className="hidden md:block">
+          <div className="mb-6">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl accent-soft accent-text">
+                <Sparkles className="h-5 w-5 no-transition" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-theme-primary">Settings</h2>
+                <p className="mt-1 text-sm leading-6 text-theme-tertiary">
+                  Make NTK Note comfortable for you. Everyday choices are simple and changes apply immediately; technical controls stay out of the way until you need them.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <SettingsStatus label="Appearance" value={`${resolvedTheme === 'dark' ? 'Dark' : 'Light'} · ${settings.accent}`} />
+              <SettingsStatus label="Writing" value={`${settings.editorFontSize}px · ${premiumFontFamilies.find(font => font.value === settings.editorFontFamily)?.label || 'Custom font'}`} />
+              <SettingsStatus label="Sync" value={uid ? (online ? 'Signed in · Online' : 'Signed in · Offline') : 'Local on this device'} />
             </div>
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <SettingsStatus label="Appearance" value={`${resolvedTheme === 'dark' ? 'Dark' : 'Light'} · ${settings.accent}`} />
-            <SettingsStatus label="Writing" value={`${settings.editorFontSize}px · ${premiumFontFamilies.find(font => font.value === settings.editorFontFamily)?.label || 'Custom font'}`} />
-            <SettingsStatus label="Sync" value={uid ? (online ? 'Signed in · Online' : 'Signed in · Offline') : 'Local on this device'} />
-          </div>
-        </div>
 
-        <label className="mb-4 flex min-h-11 items-center gap-2 rounded-xl border theme-border theme-input px-3">
-          <Search className="h-4 w-4 shrink-0 text-theme-tertiary no-transition" />
-          <span className="sr-only">Search settings</span>
-          <input value={settingsQuery} onChange={event => setSettingsQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary outline-none placeholder:text-theme-muted" placeholder="Find a setting — dark mode, font, backup, reminders…" />
-        </label>
+          <label className="mb-4 flex min-h-11 items-center gap-2 rounded-xl border theme-border theme-input px-3">
+            <Search className="h-4 w-4 shrink-0 text-theme-tertiary no-transition" />
+            <span className="sr-only">Search settings</span>
+            <input
+              value={settingsQuery}
+              onChange={event => setSettingsQuery(event.target.value)}
+              className="min-w-0 flex-1 bg-transparent text-sm text-theme-primary outline-none placeholder:text-theme-muted"
+              placeholder="Find a setting — dark mode, font, backup, reminders…"
+            />
+          </label>
 
-        <div className="mb-6 space-y-3">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {matchingSections.map(sec => (
+          <div className="mb-6 space-y-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {matchingSections.map(sec => (
+                <button
+                  key={sec.id}
+                  onClick={() => {
+                    setActiveSection(sec.id);
+                    setSelectedMobileSection(sec.id);
+                    setSettingsQuery('');
+                  }}
+                  className="flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm font-medium transition-colors"
+                  style={{
+                    borderColor: activeSection === sec.id ? 'var(--accent-primary)' : 'var(--card-border)',
+                    backgroundColor: activeSection === sec.id ? 'var(--active-bg)' : 'var(--card-bg)',
+                    color: activeSection === sec.id ? 'var(--badge-text)' : 'var(--text-secondary)',
+                  }}
+                >
+                  <sec.icon className="h-4 w-4 shrink-0 no-transition" />
+                  <span>{sec.label}</span>
+                </button>
+              ))}
+            </div>
+            {!normalizedSettingsQuery && (
               <button
-                key={sec.id}
-                onClick={() => { setActiveSection(sec.id); setSettingsQuery(''); }}
-                className="flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-left text-sm font-medium transition-colors"
-                style={{
-                  borderColor: activeSection === sec.id ? 'var(--accent-primary)' : 'var(--card-border)',
-                  backgroundColor: activeSection === sec.id ? 'var(--active-bg)' : 'var(--card-bg)',
-                  color: activeSection === sec.id ? 'var(--badge-text)' : 'var(--text-secondary)',
-                }}
+                type="button"
+                onClick={() => setShowAdvancedSettings(value => !value)}
+                className="rounded-lg px-2 py-1.5 text-xs font-semibold accent-text theme-hover"
               >
-                <sec.icon className="h-4 w-4 shrink-0 no-transition" /><span>{sec.label}</span>
+                {showAdvancedSettings ? 'Hide extra settings' : 'Show more settings'}
               </button>
-            ))}
+            )}
+            {normalizedSettingsQuery && matchingSections.length === 0 && (
+              <p className="rounded-xl border border-dashed theme-border px-4 py-3 text-sm text-theme-tertiary">
+                No setting matched that search. Try “backup”, “dark”, “font”, “reminder”, or “sync”.
+              </p>
+            )}
           </div>
-          {!normalizedSettingsQuery && (
-            <button type="button" onClick={() => setShowAdvancedSettings(value => !value)} className="rounded-lg px-2 py-1.5 text-xs font-semibold accent-text theme-hover">
-              {showAdvancedSettings ? 'Hide extra settings' : 'Show more settings'}
-            </button>
-          )}
-          {normalizedSettingsQuery && matchingSections.length === 0 && <p className="rounded-xl border border-dashed theme-border px-4 py-3 text-sm text-theme-tertiary">No setting matched that search. Try “backup”, “dark”, “font”, “reminder”, or “sync”.</p>}
         </div>
 
+        {/* Section Contents: on mobile, rendered when a section is selected; on desktop, always rendered */}
+        <div className={selectedMobileSection === null ? 'hidden md:block' : 'block'}>
         {(activeSection === 'owner' || activeSection === 'ai') && isOwner && (
           <div className="animate-fade-in">
             <AiSettingsPanel />
@@ -1668,7 +1801,7 @@ export default function SettingsView() {
                 <BrandMark className="w-16 h-16 mx-auto mb-4 rounded-2xl" />
                 <h3 className="text-xl font-bold text-theme-primary">NTK Note</h3>
                 <p className="text-theme-tertiary text-sm mt-1">Your Second Brain</p>
-                <p className="text-xs text-theme-muted mt-2">Version 2.1.0</p>
+                <p className="text-xs text-theme-muted mt-2">Version 2.9.0</p>
                 <p className="text-xs text-theme-tertiary mt-4 max-w-sm mx-auto">
                   A private, local-first note and reminder app designed to stay useful on phones, tablets and computers — without making everyday writing feel technical.
                 </p>
@@ -1685,6 +1818,7 @@ export default function SettingsView() {
             </SettingCard>
           </div>
         )}
+        </div>
       </div>
 
       {/* Backup & Restore Center */}

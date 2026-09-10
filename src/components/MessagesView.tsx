@@ -283,7 +283,7 @@ export default function MessagesView() {
         </div>
 
         {/* Chats list */}
-        <div className="flex-1 overflow-y-auto divide-y theme-divider">
+        <div className="flex-1 overflow-y-auto divide-y theme-divider pb-24 md:pb-0">
           {loadingChats ? (
             <div className="p-8 flex flex-col items-center justify-center text-theme-tertiary">
               <LoaderCircle className="w-6 h-6 animate-spin mb-2" />
