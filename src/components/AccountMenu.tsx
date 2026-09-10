@@ -1,18 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Bell,
   ChevronRight,
-  HelpCircle,
-  Laptop,
   LogOut,
-  Moon,
   RefreshCw,
-  Settings,
   Shield,
   ShieldCheck,
-  Sun,
   User,
-  Volume2,
 } from 'lucide-react';
 import { useStore } from '@/store';
 import { getAiGatewayStatus, type AiGatewayStatus } from '@/utils/ntkAi';
@@ -30,14 +23,12 @@ export interface AccountMenuProps {
 export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
   const {
     profile,
-    settings,
-    setTheme,
     setCurrentView,
+    openSettings,
     syncStatus,
     manualSync,
     online,
     clearAuth,
-    setCommandPaletteOpen,
     setSyncCenterOpen,
   } = useStore();
 
@@ -65,14 +56,6 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
-
-  const currentTheme = settings.theme || 'system';
-
-  const cycleTheme = () => {
-    const order: Array<'light' | 'dark' | 'system'> = ['light', 'dark', 'system'];
-    const next = order[(order.indexOf(currentTheme) + 1) % order.length];
-    setTheme(next);
-  };
 
   const isOwner = aiStatus?.isOwner;
 
@@ -121,9 +104,8 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
 
       <div className="h-px theme-divider my-1" />
 
-      {/* Menu items */}
+      {/* Primary Account Action: View Profile */}
       <div className="space-y-0.5">
-        {/* My Profile */}
         <button
           type="button"
           onClick={() => {
@@ -133,37 +115,9 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
           className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
         >
           <User className="w-4 h-4 text-theme-tertiary" />
-          <span className="flex-1 text-left">My Profile</span>
+          <span className="flex-1 text-left">View Profile</span>
         </button>
 
-        {/* Listening & Voice Quick Link */}
-        <button
-          type="button"
-          onClick={() => {
-            setCurrentView('profile');
-            onClose();
-          }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
-        >
-          <Volume2 className="w-4 h-4 text-theme-tertiary" />
-          <span className="flex-1 text-left">Listening & Voice</span>
-          <span className="text-[10px] font-bold accent-text">Configure</span>
-        </button>
-
-        {/* Settings */}
-        <button
-          type="button"
-          onClick={() => {
-            setCurrentView('settings');
-            onClose();
-          }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
-        >
-          <Settings className="w-4 h-4 text-theme-tertiary" />
-          <span className="flex-1 text-left">Settings</span>
-        </button>
-
-        {/* Sync & Offline Center */}
         <button
           type="button"
           onClick={() => {
@@ -173,52 +127,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
           className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
         >
           <ShieldCheck className="w-4 h-4 accent-text" />
-          <span className="flex-1 text-left">Sync & Offline Center</span>
-        </button>
-
-        {/* Appearance Quick Toggle */}
-        <button
-          type="button"
-          onClick={cycleTheme}
-          className="flex w-full items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
-        >
-          <div className="flex items-center gap-2.5">
-            {currentTheme === 'dark' ? (
-              <Moon className="w-4 h-4 text-theme-tertiary" />
-            ) : currentTheme === 'light' ? (
-              <Sun className="w-4 h-4 text-amber-500" />
-            ) : (
-              <Laptop className="w-4 h-4 text-theme-tertiary" />
-            )}
-            <span>Appearance</span>
-          </div>
-          <span className="capitalize text-[11px] text-theme-tertiary font-bold">{currentTheme}</span>
-        </button>
-
-        {/* Notifications */}
-        <button
-          type="button"
-          onClick={() => {
-            setCurrentView('notifications');
-            onClose();
-          }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
-        >
-          <Bell className="w-4 h-4 text-theme-tertiary" />
-          <span className="flex-1 text-left">Notifications</span>
-        </button>
-
-        {/* Help & Shortcuts */}
-        <button
-          type="button"
-          onClick={() => {
-            setCommandPaletteOpen(true);
-            onClose();
-          }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
-        >
-          <HelpCircle className="w-4 h-4 text-theme-tertiary" />
-          <span className="flex-1 text-left">Help & Shortcuts</span>
+          <span className="flex-1 text-left">Sync & Offline Status</span>
         </button>
       </div>
 
@@ -234,7 +143,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
             <button
               type="button"
               onClick={() => {
-                setCurrentView('settings');
+                openSettings('owner');
                 onClose();
               }}
               className="flex w-full items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs font-medium hover:bg-amber-500/20 transition-colors"

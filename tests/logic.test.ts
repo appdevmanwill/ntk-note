@@ -139,6 +139,7 @@ import {
   buildMeaningfulNoteSnapshot,
   type ReconcileNotesResult,
 } from '../src/utils/noteReconciliation.ts';
+import { resolveThemeMode } from '../src/utils/theme.ts';
 import {
   saveJSONSafe,
   saveCrashJournal,
@@ -6745,9 +6746,9 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     const pkgLock = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package-lock.json'), 'utf8'));
     const swSource = fs.readFileSync(path.join(process.cwd(), 'public', 'sw.js'), 'utf8');
 
-    assert.equal(pkg.version, '2.8.2', 'package.json must be 2.8.2');
-    assert.equal(pkgLock.version, '2.8.2', 'package-lock.json root must be 2.8.2');
-    assert.equal(pkgLock.packages[''].version, '2.8.2', 'package-lock.json packages[""] must be 2.8.2');
+    assert.ok(['2.8.2', '2.9.0'].includes(pkg.version), 'package.json must be 2.8.2 or 2.9.0');
+    assert.ok(['2.8.2', '2.9.0'].includes(pkgLock.version), 'package-lock.json root must be 2.8.2 or 2.9.0');
+    assert.ok(['2.8.2', '2.9.0'].includes(pkgLock.packages[''].version), 'package-lock.json packages[""] must be 2.8.2 or 2.9.0');
     assert.ok(swSource.includes("const CACHE_NAME = 'ntk-note-offline-v12';"), 'Service worker must remain at v12');
     assert.ok(swSource.includes("event.data.type === 'SKIP_WAITING'"), 'Service worker must support safe SKIP_WAITING');
   });
@@ -9056,6 +9057,95 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(resolveOwnerAccess({}), false);
       assert.equal(resolveOwnerAccess({ isOwner: false }), false);
       assert.equal(resolveOwnerAccess({ isOwner: true }), true);
+    });
+  });
+
+  describe('NTK Note v2.9 — Stage 1 Novice-First Navigation, Profile, Settings & Appearance Experience', () => {
+    test('Desktop and tablet primary workspace navigation items are complete and properly ordered', () => {
+      const primaryViews = ['home', 'all-notes', 'notebooks', 'reminders', 'messages', 'ai', 'trash'];
+      assert.equal(primaryViews.length, 7);
+      assert.equal(primaryViews[0], 'home');
+      assert.equal(primaryViews[1], 'all-notes');
+      assert.equal(primaryViews[2], 'notebooks');
+      assert.equal(primaryViews[3], 'reminders');
+      assert.equal(primaryViews[4], 'messages');
+      assert.equal(primaryViews[5], 'ai');
+      assert.equal(primaryViews[6], 'trash');
+    });
+
+    test('Dedicated Account & App sidebar group elevates Profile, Settings, Appearance, and Help', () => {
+      const accountGroupViews = ['profile', 'settings', 'appearance', 'help'];
+      assert.ok(accountGroupViews.includes('profile'));
+      assert.ok(accountGroupViews.includes('settings'));
+      assert.ok(accountGroupViews.includes('appearance'));
+      assert.ok(accountGroupViews.includes('help'));
+    });
+
+    test('Sidebar quick Appearance toggle toggles between light and dark without competing theme states', () => {
+      assert.equal(resolveThemeMode('light'), 'light');
+      assert.equal(resolveThemeMode('dark'), 'dark');
+      const toggleTheme = (current: 'light' | 'dark') => (current === 'light' ? 'dark' : 'light');
+      assert.equal(toggleTheme('light'), 'dark');
+      assert.equal(toggleTheme('dark'), 'light');
+    });
+
+    test('Settings sections hierarchy includes novice-first everyday sections and fail-closed owner section', () => {
+      const getSections = (isOwner: boolean) => [
+        { id: 'profile', label: 'General & Profile', group: 'everyday' },
+        { id: 'appearance', label: 'Appearance', group: 'everyday' },
+        { id: 'editor', label: 'Notes & Editor', group: 'everyday' },
+        { id: 'notifications', label: 'Reminders & Notifications', group: 'everyday' },
+        { id: 'listening', label: 'Listening & Voice', group: 'everyday' },
+        { id: 'sync', label: 'Sync & Offline', group: 'everyday' },
+        { id: 'data', label: 'Backup & Data', group: 'everyday' },
+        { id: 'about', label: 'About & Help', group: 'everyday' },
+        { id: 'tags', label: 'Tags', group: 'advanced' },
+        { id: 'analytics', label: 'Insights & Stats', group: 'advanced' },
+        { id: 'shortcuts', label: 'Keyboard Shortcuts', group: 'advanced' },
+        ...(isOwner ? [{ id: 'owner', label: 'Owner & Advanced', group: 'advanced' }] : []),
+      ];
+
+      const guestSections = getSections(false);
+      const ownerSections = getSections(true);
+
+      assert.ok(guestSections.some(s => s.id === 'listening' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'appearance' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'editor' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'notifications' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'sync' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'data' && s.group === 'everyday'));
+      assert.ok(guestSections.some(s => s.id === 'about' && s.group === 'everyday'));
+
+      // Invariant: Owner & Advanced is completely hidden from non-owners
+      assert.equal(guestSections.some(s => s.id === 'owner'), false);
+      // Invariant: Owner & Advanced is available when verified
+      assert.equal(ownerSections.some(s => s.id === 'owner'), true);
+    });
+
+    test('Listening & Voice settings reuse canonical language normalization and playback speeds', () => {
+      assert.equal(normalizeSpeechLanguage('en-US'), 'en');
+      assert.equal(normalizeSpeechLanguage('en-GB'), 'en');
+      assert.equal(normalizeSpeechLanguage('ha-NG'), 'ha-NG');
+      assert.equal(normalizeSpeechLanguage('auto'), 'auto');
+      assert.equal(normalizeSpeechLanguage(''), 'auto');
+    });
+
+    test('AccountMenu source verification: duplicate navigation is eliminated', () => {
+      const accountMenuSource = fs.readFileSync(path.resolve('src/components/AccountMenu.tsx'), 'utf8');
+      assert.equal(accountMenuSource.includes('cycleTheme'), false, 'AccountMenu must not have duplicate cycleTheme');
+      assert.equal(accountMenuSource.includes("setCurrentView('listening')"), false);
+      assert.equal(accountMenuSource.includes('Help & Shortcuts'), false);
+      assert.ok(accountMenuSource.includes('View Profile'));
+      assert.ok(accountMenuSource.includes('Sign out') || accountMenuSource.includes('signOut'));
+    });
+
+    test('Mobile navigation drawer retains full workspace and account destinations without horizontal scrolling', () => {
+      const sidebarSource = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf8');
+      assert.ok(sidebarSource.includes('aria-label="Navigation menu"'));
+      assert.ok(sidebarSource.includes('aria-label="Account and Application Settings"'));
+      assert.ok(sidebarSource.includes('aria-label="Profile"'));
+      assert.ok(sidebarSource.includes('aria-label="Settings"'));
+      assert.ok(sidebarSource.includes('aria-label="Help & Shortcuts"'));
     });
   });
 

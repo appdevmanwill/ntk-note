@@ -6,7 +6,8 @@ import {
   Bell, BellRing, Search, Settings, Plus, ChevronDown, ChevronRight,
   Moon, Sun, LayoutTemplate, X, Share2,
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
-  Edit3, GripVertical, ArrowUpDown, Bot, MessageSquare
+  Edit3, GripVertical, ArrowUpDown, Bot, MessageSquare,
+  FolderOpen, HelpCircle, User
 } from 'lucide-react';
 import type { Notebook, NotebookSortBy, SidebarView, SortDirection } from '@/types';
 import ManageNotebooksModal from './ManageNotebooksModal';
@@ -48,7 +49,7 @@ const NOTEBOOK_EXPANSION_STORAGE_KEY = 'ntk-expanded-notebooks';
 
 export default function Sidebar() {
   const {
-    currentView, setCurrentView, profile, settings, setTheme, openSettings,
+    currentView, setCurrentView, profile, settings, setTheme, setCommandPaletteOpen,
     notebooks, tags, sidebarOpen, setSidebarOpen,
     createNotebook, selectNotebook, selectTag,
     notes, notifications, reminders, getStats, updateSettings, reorderNotebook, moveNote,
@@ -61,6 +62,7 @@ export default function Sidebar() {
   const [showNewNotebook, setShowNewNotebook] = useState(false);
   const [showManageNotebooks, setShowManageNotebooks] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
+  const [moreToolsExpanded, setMoreToolsExpanded] = useState(false);
   const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
   const [editNotebookName, setEditNotebookName] = useState('');
   const [draggedNotebookId, setDraggedNotebookId] = useState<string | null>(null);
@@ -156,21 +158,25 @@ export default function Sidebar() {
     [visibleNotebooks, settings.notebookSortBy, settings.notebookSortDir, notes]
   );
 
-  const navItems: { view: SidebarView; icon: typeof Home; label: string; badge?: number }[] = [
+  const primaryNavItems: { view: SidebarView; icon: typeof Home; label: string; badge?: number }[] = [
     { view: 'home', icon: Home, label: 'Home' },
-    { view: 'ai', icon: Bot, label: 'NTK AI' },
+    { view: 'all-notes', icon: FileText, label: 'Notes', badge: stats.notes },
+    { view: 'notebooks', icon: FolderOpen, label: 'Notebooks', badge: visibleNotebooks.length || undefined },
+    { view: 'reminders', icon: Bell, label: 'Reminders', badge: remindersCount || undefined },
     { view: 'messages', icon: MessageSquare, label: 'Messages', badge: unreadChatsCount || undefined },
-    { view: 'all-notes', icon: FileText, label: 'All Notes', badge: stats.notes },
+    { view: 'ai', icon: Bot, label: 'NTK AI' },
+    { view: 'trash', icon: Trash2, label: 'Recycle Bin', badge: trashedCount || undefined },
+  ];
+
+  const secondaryNavItems: { view: SidebarView; icon: typeof Home; label: string; badge?: number }[] = [
     { view: 'search', icon: Search, label: 'Search' },
     { view: 'starred', icon: Star, label: 'Starred', badge: starredCount || undefined },
-    { view: 'reminders', icon: Bell, label: 'Reminders', badge: remindersCount || undefined },
-    { view: 'notifications', icon: BellRing, label: 'Notifications', badge: unreadNotificationsCount || undefined },
     { view: 'shared', icon: Share2, label: 'Share Center' },
-    { view: 'smart-folders', icon: FolderSearch, label: 'Smart Folders' },
-    { view: 'graph', icon: GitBranch, label: 'Graph' },
+    { view: 'notifications', icon: BellRing, label: 'Notifications', badge: unreadNotificationsCount || undefined },
     { view: 'templates', icon: LayoutTemplate, label: 'Templates' },
     { view: 'archived', icon: Archive, label: 'Archived', badge: archivedCount || undefined },
-    { view: 'trash', icon: Trash2, label: 'Recycle Bin', badge: trashedCount || undefined },
+    { view: 'smart-folders', icon: FolderSearch, label: 'Smart Folders' },
+    { view: 'graph', icon: GitBranch, label: 'Graph' },
   ];
 
   const handleCreateNotebook = () => {
@@ -497,14 +503,15 @@ export default function Sidebar() {
 
         {/* Navigation */}
         <nav className="min-h-0 flex-1 overflow-y-auto py-2 px-2">
-          {/* Main nav */}
-          <div className="space-y-0.5">
-            {navItems.map(item => (
+          {/* Primary workspace nav */}
+          <div className="space-y-0.5" role="list" aria-label="Primary Workspace">
+            {primaryNavItems.map(item => (
               <button
                 key={item.view}
                 onClick={() => handleNavClick(item.view)}
                 title={collapsed ? item.label : undefined}
                 aria-label={item.label}
+                aria-current={currentView === item.view ? 'page' : undefined}
                 className={`
                   relative w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all
                   ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2.5' : ''}
@@ -530,6 +537,63 @@ export default function Sidebar() {
                 )}
               </button>
             ))}
+          </div>
+
+          {/* Secondary workspace tools */}
+          <div className={`mt-2 ${collapsed ? 'lg:space-y-0.5' : ''}`}>
+            {!collapsed && (
+              <button
+                type="button"
+                onClick={() => setMoreToolsExpanded(prev => !prev)}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-xs font-semibold text-theme-tertiary uppercase tracking-wider rounded-lg theme-hover transition-colors"
+                aria-expanded={moreToolsExpanded || secondaryNavItems.some(i => i.view === currentView)}
+                aria-label="Toggle more workspace tools"
+              >
+                <span>More Tools</span>
+                {(moreToolsExpanded || secondaryNavItems.some(i => i.view === currentView)) ? (
+                  <ChevronDown className="w-3.5 h-3.5 no-transition" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5 no-transition" />
+                )}
+              </button>
+            )}
+
+            {(moreToolsExpanded || secondaryNavItems.some(i => i.view === currentView) || collapsed) && (
+              <div className="space-y-0.5 mt-0.5" role="list" aria-label="Additional Tools">
+                {secondaryNavItems.map(item => (
+                  <button
+                    key={item.view}
+                    onClick={() => handleNavClick(item.view)}
+                    title={collapsed ? item.label : undefined}
+                    aria-label={item.label}
+                    aria-current={currentView === item.view ? 'page' : undefined}
+                    className={`
+                      relative w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all
+                      ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
+                      ${currentView === item.view
+                        ? 'theme-active'
+                        : 'text-theme-secondary theme-hover'
+                      }
+                    `}
+                    style={currentView === item.view ? { backgroundColor: 'var(--active-bg)' } : {}}
+                  >
+                    <item.icon className="w-[18px] h-[18px] shrink-0 no-transition" />
+                    <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px] lg:leading-tight' : ''}`}>{item.label}</span>
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span
+                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${collapsed ? 'lg:absolute lg:right-2 lg:top-1 lg:hidden' : ''}`}
+                        style={{
+                          backgroundColor: currentView === item.view ? 'var(--accent-glow)' : 'var(--input-bg)',
+                          color: currentView === item.view ? 'var(--badge-text)' : 'var(--text-tertiary)',
+                        }}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Notebooks */}
@@ -859,50 +923,111 @@ export default function Sidebar() {
           </div>
         </nav>
 
-        {/* Footer */}
-        <div className={`p-3 border-t theme-divider space-y-1 ${collapsed ? 'lg:px-2' : ''}`}>
-          {/* Theme toggle */}
+        {/* Account & App Group (visually separated) */}
+        <div
+          className={`p-2 border-t theme-divider space-y-1 ${collapsed ? 'lg:px-1' : ''}`}
+          role="navigation"
+          aria-label="Account and Application Settings"
+        >
+          {/* Profile */}
           <button
-            onClick={() => setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-theme-secondary theme-hover transition-all group ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}
-            title={resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
-            aria-label={resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
+            type="button"
+            onClick={() => handleNavClick('profile')}
+            title={collapsed ? 'Profile' : undefined}
+            aria-label="Profile"
+            aria-current={currentView === 'profile' ? 'page' : undefined}
+            className={`
+              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all
+              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
+              ${currentView === 'profile'
+                ? 'theme-active'
+                : 'text-theme-secondary theme-hover'
+              }
+            `}
+            style={currentView === 'profile' ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
           >
-            {resolveThemeMode(settings.theme) === 'light' ? (
-              <Moon className="w-[18px] h-[18px] no-transition" />
-            ) : (
-              <Sun className="w-[18px] h-[18px] no-transition group-hover:text-amber-400" />
-            )}
-            <span className={`font-medium ${collapsed ? 'lg:hidden' : ''}`}>{resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+            <User className="w-[18px] h-[18px] shrink-0 no-transition" />
+            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Profile</span>
           </button>
 
           {/* Settings */}
           <button
-            onClick={() => openSettings()}
-            title="Settings"
+            type="button"
+            onClick={() => handleNavClick('settings')}
+            title={collapsed ? 'Settings' : undefined}
             aria-label="Settings"
+            aria-current={currentView === 'settings' ? 'page' : undefined}
             className={`
-              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all
-              ${collapsed ? 'lg:justify-center lg:px-0' : ''}
+              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all
+              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
               ${currentView === 'settings'
-                ? 'font-medium'
+                ? 'theme-active'
                 : 'text-theme-secondary theme-hover'
               }
             `}
             style={currentView === 'settings' ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
           >
-            <Settings className="w-[18px] h-[18px] no-transition" />
-            <span className={collapsed ? 'lg:hidden' : ''}>Settings</span>
+            <Settings className="w-[18px] h-[18px] shrink-0 no-transition" />
+            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Settings</span>
           </button>
 
-          {/* User profile with AccountMenu */}
+          {/* Appearance / Theme Toggle */}
+          <button
+            type="button"
+            onClick={() => setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light')}
+            title={collapsed ? (resolveThemeMode(settings.theme) === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode') : undefined}
+            aria-label={resolveThemeMode(settings.theme) === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+            className={`
+              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-theme-secondary theme-hover transition-all
+              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
+            `}
+          >
+            {resolveThemeMode(settings.theme) === 'light' ? (
+              <Moon className="w-[18px] h-[18px] shrink-0 no-transition" />
+            ) : (
+              <Sun className="w-[18px] h-[18px] shrink-0 no-transition text-amber-500" />
+            )}
+            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>
+              {resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
+            </span>
+            <span
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${collapsed ? 'lg:hidden' : ''}`}
+              style={{ backgroundColor: 'var(--input-bg)', color: 'var(--text-tertiary)' }}
+            >
+              {resolveThemeMode(settings.theme)}
+            </span>
+          </button>
+
+          {/* Help & Shortcuts */}
+          <button
+            type="button"
+            onClick={() => {
+              setCommandPaletteOpen(true);
+              if (window.innerWidth < 1024) setSidebarOpen(false);
+            }}
+            title={collapsed ? 'Help & Shortcuts' : undefined}
+            aria-label="Help & Shortcuts"
+            className={`
+              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-theme-secondary theme-hover transition-all
+              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
+            `}
+          >
+            <HelpCircle className="w-[18px] h-[18px] shrink-0 no-transition" />
+            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Help</span>
+          </button>
+        </div>
+
+        {/* User Profile Card with Simplified AccountMenu */}
+        <div className={`p-2 border-t theme-divider ${collapsed ? 'lg:px-1' : ''}`}>
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowAccountMenu(!showAccountMenu)}
-              className={`w-full flex items-center gap-3 px-3 py-2 mt-1 rounded-xl text-left theme-hover transition-colors ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}
-              title="Account & Profile Menu"
-              aria-label="Account & Profile Menu"
+              className={`w-full flex items-center gap-3 p-2 rounded-xl text-left theme-hover transition-colors ${collapsed ? 'lg:justify-center lg:p-1.5' : ''}`}
+              title="Account & Sign out"
+              aria-label="Account & Sign out"
+              aria-haspopup="menu"
+              aria-expanded={showAccountMenu}
             >
               <UserAvatar profile={profile} size="sm" />
               <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>

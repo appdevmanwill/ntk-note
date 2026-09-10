@@ -10,7 +10,7 @@ import {
   ChevronRight, FolderInput, ShieldCheck, Wifi, DownloadCloud,
   AlertTriangle, RefreshCw, Tag, TrendingUp, Cloud, ExternalLink,
   ArchiveRestore, CheckCircle2, CloudUpload, DatabaseBackup, Monitor, Search, Sparkles, RotateCcw,
-  Camera, HardDrive, Loader2
+  Camera, HardDrive, Loader2, Volume2, Globe2
 } from 'lucide-react';
 import ImportManager from './ImportManager';
 import BackupCenterModal from './BackupCenterModal';
@@ -20,6 +20,9 @@ import BrandMark from './BrandMark';
 import AiSettingsPanel from './AiSettingsPanel';
 import UserAvatar, { builtinAvatarIds, builtinAvatarValue } from './UserAvatar';
 import { auth } from '@/utils/firebase';
+import { getAiGatewayStatus, textToSpeech } from '@/utils/ntkAi';
+import { normalizeSpeechLanguage } from '@/utils/listenOrchestrator';
+import { LANGUAGE_OPTIONS, SPEED_OPTIONS } from './ListenPlayer';
 import {
   createWorkspaceArchive,
   exportWorkspaceArchiveToGoogleDrive,
@@ -81,11 +84,100 @@ export default function SettingsView() {
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [showAllFonts, setShowAllFonts] = useState(false);
   const [systemPrefersDark, setSystemPrefersDark] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const [isOwner, setIsOwner] = useState(false);
+  const [previewingVoice, setPreviewingVoice] = useState(false);
+  const previewAbortControllerRef = useRef<AbortController | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
 
   const stats = getStats();
   const storageHeavyNotes = getStorageHeavyNotes(notes.filter(note => !note.trashed), 6);
   const oversizedNotes = getOversizedNotes(notes.filter(note => !note.trashed));
   const imageHeavyNotes = notes.filter(note => !note.trashed && countInlineImages(note.content) > 0);
+
+  useEffect(() => {
+    let mounted = true;
+    void getAiGatewayStatus()
+      .then(st => {
+        if (mounted) setIsOwner(Boolean(st?.isOwner));
+      })
+      .catch(() => {
+        if (mounted) setIsOwner(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const cleanupVoicePreview = () => {
+    if (previewAbortControllerRef.current) {
+      previewAbortControllerRef.current.abort();
+      previewAbortControllerRef.current = null;
+    }
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.src = '';
+      previewAudioRef.current = null;
+    }
+    if (previewUrlRef.current) {
+      try {
+        URL.revokeObjectURL(previewUrlRef.current);
+      } catch {
+        /* ignore */
+      }
+      previewUrlRef.current = null;
+    }
+    setPreviewingVoice(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      cleanupVoicePreview();
+    };
+  }, []);
+
+  const handlePreviewVoice = async () => {
+    if (previewingVoice) {
+      cleanupVoicePreview();
+      return;
+    }
+    cleanupVoicePreview();
+    const controller = new AbortController();
+    previewAbortControllerRef.current = controller;
+    setPreviewingVoice(true);
+
+    try {
+      const normalizedLang = normalizeSpeechLanguage(settings.listenLanguage || 'auto');
+      const sampleText = normalizedLang === 'ha-NG'
+        ? 'Barka da zuwa NTK Note. Wannan samfurin murya ne.'
+        : 'Welcome to NTK Note. Your notes, voice recordings, and thoughts are kept private, safe, and ready whenever you need them.';
+      const audioBlob = await textToSpeech(
+        {
+          text: sampleText,
+          language: normalizedLang,
+          allowClosestMatch: true,
+          format: 'mp3',
+        },
+        controller.signal
+      );
+      if (controller.signal.aborted || previewAbortControllerRef.current !== controller) return;
+      const url = URL.createObjectURL(audioBlob);
+      previewUrlRef.current = url;
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.playbackRate = settings.listenSpeed || 1;
+      audio.onended = () => {
+        cleanupVoicePreview();
+      };
+      audio.onerror = () => {
+        cleanupVoicePreview();
+      };
+      await audio.play();
+    } catch (error) {
+      console.warn('Voice preview could not be played:', error);
+      cleanupVoicePreview();
+    }
+  };
 
   // Requested section arrives through application state (store.settingsSection)
   // so navigation can never race component mounting.
@@ -357,18 +449,19 @@ export default function SettingsView() {
   };
 
   const sections = [
-    { id: 'profile', icon: User, label: 'Your profile', group: 'everyday', keywords: 'name email account identity avatar photo' },
-    { id: 'ai', icon: Sparkles, label: 'NTK AI', group: 'everyday', keywords: 'ai assistant writing connection provider guest storage api' },
-    { id: 'appearance', icon: Palette, label: 'Look & feel', group: 'everyday', keywords: 'dark light system theme color colour accent layout grid list kanban spacing' },
-    { id: 'editor', icon: Type, label: 'Writing', group: 'everyday', keywords: 'font size spell check autosave word count default note notebook markdown checklist' },
-    { id: 'notifications', icon: BellRing, label: 'Alerts & reminders', group: 'everyday', keywords: 'notification reminder browser quiet hours snooze celebration collaboration' },
-    { id: 'sync', icon: ShieldCheck, label: 'Sync & offline', group: 'everyday', keywords: 'sync manual cloud offline install pwa conflict device' },
-    { id: 'data', icon: Download, label: 'Backups & data', group: 'everyday', keywords: 'backup restore export import drive storage cleanup reset' },
+    { id: 'profile', icon: User, label: 'General & Profile', group: 'everyday', keywords: 'general profile name email account identity avatar photo privacy sharing' },
+    { id: 'appearance', icon: Palette, label: 'Appearance', group: 'everyday', keywords: 'dark light system theme color colour accent layout grid list kanban spacing look feel' },
+    { id: 'editor', icon: Type, label: 'Notes & Editor', group: 'everyday', keywords: 'font size writing spell check autosave word count default note notebook markdown checklist' },
+    { id: 'notifications', icon: BellRing, label: 'Reminders & Notifications', group: 'everyday', keywords: 'notification reminder browser quiet hours snooze celebration collaboration alerts' },
+    { id: 'listening', icon: Volume2, label: 'Listening & Voice', group: 'everyday', keywords: 'listen voice speech language speed audio tts reader reading sound' },
+    { id: 'sync', icon: ShieldCheck, label: 'Sync & Offline', group: 'everyday', keywords: 'sync manual cloud offline install pwa conflict device' },
+    { id: 'data', icon: Download, label: 'Backup & Data', group: 'everyday', keywords: 'backup restore export import drive storage cleanup reset' },
+    { id: 'about', icon: Info, label: 'About & Help', group: 'everyday', keywords: 'about version app help guide getting started tour beginner novice manual shortcuts' },
     { id: 'tags', icon: Tag, label: 'Tags', group: 'advanced', keywords: 'tag merge delete organize' },
-    { id: 'analytics', icon: TrendingUp, label: 'Insights', group: 'advanced', keywords: 'analytics statistics productivity words tasks' },
-    { id: 'shortcuts', icon: Keyboard, label: 'Keyboard shortcuts', group: 'advanced', keywords: 'keyboard ctrl hotkeys commands' },
-    { id: 'about', icon: Info, label: 'Help & about', group: 'advanced', keywords: 'about version app help guide getting started tour beginner novice' },
-  ] as const;
+    { id: 'analytics', icon: TrendingUp, label: 'Insights & Stats', group: 'advanced', keywords: 'analytics statistics productivity words tasks' },
+    { id: 'shortcuts', icon: Keyboard, label: 'Keyboard Shortcuts', group: 'advanced', keywords: 'keyboard ctrl hotkeys commands' },
+    ...(isOwner ? [{ id: 'owner', icon: ShieldCheck, label: 'Owner & Advanced', group: 'advanced', keywords: 'owner gateway ai connections storage routes admin worker cloudflare' }] : []),
+  ];
 
   const normalizedSettingsQuery = settingsQuery.trim().toLowerCase();
   const matchingSections = normalizedSettingsQuery
@@ -443,9 +536,124 @@ export default function SettingsView() {
           {normalizedSettingsQuery && matchingSections.length === 0 && <p className="rounded-xl border border-dashed theme-border px-4 py-3 text-sm text-theme-tertiary">No setting matched that search. Try “backup”, “dark”, “font”, “reminder”, or “sync”.</p>}
         </div>
 
-        {activeSection === 'ai' && (
+        {(activeSection === 'owner' || activeSection === 'ai') && isOwner && (
           <div className="animate-fade-in">
             <AiSettingsPanel />
+          </div>
+        )}
+
+        {/* Listening & Voice Section */}
+        {activeSection === 'listening' && (
+          <div className="space-y-6 animate-fade-in">
+            <SettingCard title="Listening & Voice" description="Configure natural speech reading and playback speed for your notes.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Default Language */}
+                <div>
+                  <label htmlFor="settings-listen-language" className="block text-xs font-bold text-theme-secondary mb-1.5 flex items-center gap-1.5">
+                    <Globe2 className="w-3.5 h-3.5 text-theme-tertiary" />
+                    Default Language
+                  </label>
+                  <select
+                    id="settings-listen-language"
+                    value={normalizeSpeechLanguage(settings.listenLanguage || 'auto')}
+                    onChange={e => updateSettings({ listenLanguage: normalizeSpeechLanguage(e.target.value) })}
+                    className="w-full rounded-xl border theme-input px-3 py-2 text-sm text-theme-primary"
+                  >
+                    {LANGUAGE_OPTIONS.map(opt => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label} {opt.badge ? `(${opt.badge})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] text-theme-tertiary">
+                    Selects the natural speech engine suited for your chosen language.
+                  </p>
+                </div>
+
+                {/* Default Playback Speed */}
+                <div>
+                  <label className="block text-xs font-bold text-theme-secondary mb-1.5">
+                    Default Playback Speed
+                  </label>
+                  <div className="flex gap-2">
+                    {SPEED_OPTIONS.map(s => {
+                      const active = (settings.listenSpeed || 1) === s;
+                      return (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => updateSettings({ listenSpeed: s })}
+                          className={`flex-1 py-1.5 rounded-xl text-xs font-bold border transition-all ${
+                            active
+                              ? 'accent-button shadow-sm'
+                              : 'theme-border theme-hover text-theme-secondary'
+                          }`}
+                        >
+                          {s}x
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[11px] text-theme-tertiary">
+                    Adjusts how fast notes are read. Can also be adjusted anytime inside the note player.
+                  </p>
+                </div>
+              </div>
+
+              {/* Truthful Engine Capability Notice */}
+              <div className="mt-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300">
+                <p className="font-bold">Speech Engine Notice</p>
+                <p className="mt-0.5 text-amber-700 dark:text-amber-400 leading-relaxed">
+                  Speech synthesis operates with zero-cost edge models and browser fallbacks. Synthesis preserves your note text and reads cleanly without requiring third-party audio subscriptions.
+                </p>
+              </div>
+
+              {/* Truthful Regional Language Guidance */}
+              <div className="mt-4 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🇳🇬</span>
+                  <p className="font-bold text-xs text-emerald-800 dark:text-emerald-300">
+                    Nigerian & Regional Languages
+                  </p>
+                </div>
+                <ul className="text-xs text-emerald-700 dark:text-emerald-400 space-y-1.5 leading-relaxed list-disc list-inside">
+                  <li>
+                    <span className="font-semibold text-emerald-800 dark:text-emerald-300">Nigerian English:</span> Uses clear English pronunciation while preserving Nigerian names, locations, and Naira currency notation.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-emerald-800 dark:text-emerald-300">Hausa:</span> Uses native Hausa speech synthesis.
+                  </li>
+                  <li>
+                    <span className="font-semibold text-emerald-800 dark:text-emerald-300">Yoruba & Igbo:</span> Uses the closest available voice while preserving original text characters.
+                  </li>
+                </ul>
+              </div>
+
+              {/* Voice Preview Button */}
+              <div className="mt-4 flex items-center justify-between pt-3 border-t theme-border">
+                <div>
+                  <p className="text-xs font-bold text-theme-primary">Voice Sample</p>
+                  <p className="text-[11px] text-theme-tertiary">Listen to a test sample with your current language and speed.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handlePreviewVoice()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold accent-button shadow-sm"
+                >
+                  {previewingVoice ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Stop Sample</span>
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5" />
+                      <span>Play Sample</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </SettingCard>
           </div>
         )}
 
