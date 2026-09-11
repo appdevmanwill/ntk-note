@@ -30,6 +30,86 @@ export const getDeterministicChatId = (uidA: string, uidB: string): string => {
   return [uidA.trim(), uidB.trim()].sort().join('_');
 };
 
+// ── UID-Scoped Chat Draft Management (S3-001 Remediation) ──
+
+export const getChatDraftKey = (uid: string, chatId: string): string => {
+  const safeUid = uid?.trim() || '';
+  const safeChatId = chatId?.trim() || '';
+  if (!safeUid || !safeChatId) {
+    throw new Error('Both UID and chatId are required to compute draft storage key');
+  }
+  return `ntk:chat:draft:${safeUid}:${safeChatId}`;
+};
+
+export const getLegacyChatDraftKey = (chatId: string): string => {
+  return `ntk:chat:draft:${chatId?.trim() || ''}`;
+};
+
+/**
+ * Retrieve an unsent chat draft strictly scoped to the authenticated UID.
+ * Never falls back to legacy unscoped storage to prevent cross-account draft leakage.
+ */
+export const getChatDraft = (uid: string, chatId: string): string => {
+  if (typeof localStorage === 'undefined') return '';
+  if (!uid || !chatId) return '';
+  try {
+    const key = getChatDraftKey(uid, chatId);
+    return localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * Store an unsent chat draft strictly scoped to the authenticated UID.
+ * If text is empty, deletes the key.
+ */
+export const setChatDraft = (uid: string, chatId: string, text: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!uid || !chatId) return;
+  try {
+    const key = getChatDraftKey(uid, chatId);
+    if (text) {
+      localStorage.setItem(key, text);
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch (err) {
+    console.warn('[Chat] Failed to persist scoped draft:', err);
+  }
+};
+
+/**
+ * Clear a specific user's chat draft.
+ */
+export const clearChatDraft = (uid: string, chatId: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!uid || !chatId) return;
+  try {
+    const key = getChatDraftKey(uid, chatId);
+    localStorage.removeItem(key);
+  } catch (err) {
+    console.warn('[Chat] Failed to clear scoped draft:', err);
+  }
+};
+
+/**
+ * Legacy Draft Policy:
+ * Unscoped chat drafts (`ntk:chat:draft:${chatId}`) cannot be proven to belong
+ * to the currently signed-in user, because deterministic chat IDs are symmetric
+ * between User A and User B.
+ * Therefore, legacy drafts are NEVER automatically migrated to a user's scoped draft.
+ * Instead, they are quarantined and safely removed so obsolete unscoped drafts do not linger.
+ */
+export const cleanupLegacyChatDraft = (chatId: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!chatId) return;
+  try {
+    const legacyKey = getLegacyChatDraftKey(chatId);
+    localStorage.removeItem(legacyKey);
+  } catch {}
+};
+
 export const getTimestampMillis = (val: unknown): number => {
   if (!val) return 0;
   if (typeof val === 'number') return val;

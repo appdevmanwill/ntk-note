@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '@/store';
-import { db } from '@/utils/firebase';
+import { db, auth } from '@/utils/firebase';
 import { History, X, RotateCcw, Clock, Eye, ChevronRight } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
@@ -8,6 +8,7 @@ import { collection, deleteDoc, doc, getDocs, query, setDoc, where } from 'fireb
 export interface NoteVersion {
   id: string;
   noteId: string;
+  uid?: string;
   title: string;
   content: string;
   timestamp: string;
@@ -21,30 +22,83 @@ interface Props {
   presentation?: 'modal' | 'panel';
 }
 
-// Store versions in localStorage
-export const getVersions = (noteId: string): NoteVersion[] => {
+// ── UID-Scoped Version History Storage Keys (S3-002 Remediation) ──
+
+export const getVersionHistoryStorageKey = (uid: string | null | undefined, noteId: string): string => {
+  const safeUid = uid?.trim() || 'guest';
+  const safeNoteId = noteId?.trim() || '';
+  if (!safeNoteId) {
+    throw new Error('Note ID is required to compute version history storage key');
+  }
+  return `ntk:versions:${safeUid}:${safeNoteId}`;
+};
+
+export const getLegacyVersionHistoryKey = (noteId: string): string => {
+  return `ntk-versions-${noteId?.trim() || ''}`;
+};
+
+/**
+ * Legacy Version History Policy:
+ * Unscoped history (`ntk-versions-${noteId}`) cannot safely be attributed to
+ * the currently authenticated account, especially for shared notes where multiple
+ * users legitimately collaborate on the same note ID.
+ * Therefore, legacy unscoped version history is NEVER automatically migrated into
+ * a user's scoped history.
+ * Obsolete legacy keys are safely quarantined and removed so older un-isolated
+ * version history does not remain accessible to other accounts on this browser.
+ */
+export const cleanupLegacyVersionHistory = (noteId: string): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!noteId) return;
   try {
-    const raw = localStorage.getItem(`ntk-versions-${noteId}`);
+    localStorage.removeItem(getLegacyVersionHistoryKey(noteId));
+  } catch {}
+};
+
+// Store versions in localStorage strictly scoped by UID + noteId
+export const getVersions = (noteId: string, uid?: string | null): NoteVersion[] => {
+  if (typeof localStorage === 'undefined') return [];
+  if (!noteId) return [];
+  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  try {
+    const key = getVersionHistoryStorageKey(effectiveUid, noteId);
+    const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 };
 
-export const saveVersion = (version: NoteVersion) => {
-  const versions = getVersions(version.noteId);
-  // Keep last 50 versions per note
-  const newVersions = [version, ...versions].slice(0, 50);
-  localStorage.setItem(`ntk-versions-${version.noteId}`, JSON.stringify(newVersions));
+export const saveVersion = (version: NoteVersion, uid?: string | null): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!version?.noteId) return;
+  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (version.uid?.trim() || auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  const versions = getVersions(version.noteId, effectiveUid);
+  const versionWithUid: NoteVersion = { ...version, uid: effectiveUid };
+  // Keep last 50 versions per note per account
+  const newVersions = [versionWithUid, ...versions.filter(v => v.id !== version.id)].slice(0, 50);
+  const key = getVersionHistoryStorageKey(effectiveUid, version.noteId);
+  try {
+    localStorage.setItem(key, JSON.stringify(newVersions));
+  } catch (err) {
+    console.warn('[VersionHistory] Failed to persist scoped version:', err);
+  }
 };
 
 export const saveLocalNoteSnapshot = (
   noteId: string,
   title: string,
   content: string,
-  source: NoteVersion['source'] = 'manual'
-) => {
-  const versions = getVersions(noteId);
+  source: NoteVersion['source'] = 'manual',
+  uid?: string | null
+): NoteVersion | null => {
+  if (!noteId) return null;
+  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+
+  // Safely quarantine and remove any legacy unscoped version history for this note
+  cleanupLegacyVersionHistory(noteId);
+
+  const versions = getVersions(noteId, effectiveUid);
   const lastVersion = versions[0];
 
   if (lastVersion?.title === title && lastVersion.content === content && lastVersion.source === source) {
@@ -54,13 +108,40 @@ export const saveLocalNoteSnapshot = (
   const version: NoteVersion = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     noteId,
+    uid: effectiveUid,
     title,
     content,
     timestamp: new Date().toISOString(),
     source,
   };
-  saveVersion(version);
+  saveVersion(version, effectiveUid);
   return version;
+};
+
+export const clearVersions = (noteId: string, uid?: string | null): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!noteId) return;
+  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  try {
+    const key = getVersionHistoryStorageKey(effectiveUid, noteId);
+    localStorage.removeItem(key);
+  } catch (err) {
+    console.warn('[VersionHistory] Failed to clear scoped versions:', err);
+  }
+};
+
+export const deleteVersion = (noteId: string, versionId: string, uid?: string | null): void => {
+  if (typeof localStorage === 'undefined') return;
+  if (!noteId || !versionId) return;
+  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  const versions = getVersions(noteId, effectiveUid);
+  const filtered = versions.filter(v => v.id !== versionId);
+  const key = getVersionHistoryStorageKey(effectiveUid, noteId);
+  try {
+    localStorage.setItem(key, JSON.stringify(filtered));
+  } catch (err) {
+    console.warn('[VersionHistory] Failed to update scoped versions after delete:', err);
+  }
 };
 
 const cloudCheckpointPath = (uid: string) => `users/${uid}/note_checkpoints`;
@@ -79,7 +160,7 @@ export const saveCloudNoteCheckpoint = async (
   title: string,
   content: string
 ) => {
-  const version = saveLocalNoteSnapshot(noteId, title, content, 'cloud-checkpoint');
+  const version = saveLocalNoteSnapshot(noteId, title, content, 'cloud-checkpoint', uid);
   if (!uid) return version;
 
   const checkpointBytes = new Blob([JSON.stringify(version)]).size;
@@ -87,7 +168,9 @@ export const saveCloudNoteCheckpoint = async (
     throw new Error('This checkpoint is too large for safe cloud sync. Compress images or split the note first.');
   }
 
-  await setDoc(doc(db, cloudCheckpointPath(uid), version.id), version);
+  if (version) {
+    await setDoc(doc(db, cloudCheckpointPath(uid), version.id), version);
+  }
 
   const checkpoints = await getCloudNoteCheckpoints(uid, noteId);
   await Promise.all(
@@ -97,24 +180,27 @@ export const saveCloudNoteCheckpoint = async (
   return version;
 };
 
-// Hook to automatically save versions
-export const useVersionHistory = (noteId: string | null, title: string, content: string) => {
+// Hook to automatically save versions with UID scoping
+export const useVersionHistory = (noteId: string | null, title: string, content: string, uid?: string | null) => {
+  const storeUid = useStore(s => s.uid);
+  const effectiveUid = uid !== undefined ? uid : storeUid;
+
   useEffect(() => {
     if (!noteId || (!title && !content)) return;
 
     // Debounce: save version every 30 seconds of inactivity
     const timer = setTimeout(() => {
-      const versions = getVersions(noteId);
+      const versions = getVersions(noteId, effectiveUid);
       const lastVersion = versions[0];
       
       // Only save if content changed
       if (!lastVersion || lastVersion.title !== title || lastVersion.content !== content) {
-        saveLocalNoteSnapshot(noteId, title, content, 'auto');
+        saveLocalNoteSnapshot(noteId, title, content, 'auto', effectiveUid);
       }
     }, 30000);
 
     return () => clearTimeout(timer);
-  }, [noteId, title, content]);
+  }, [noteId, title, content, effectiveUid]);
 };
 
 export default function VersionHistory({ noteId, onClose, onRestore, presentation = 'modal' }: Props) {
@@ -126,7 +212,8 @@ export default function VersionHistory({ noteId, onClose, onRestore, presentatio
 
   useEffect(() => {
     let cancelled = false;
-    const localVersions = getVersions(noteId);
+    cleanupLegacyVersionHistory(noteId);
+    const localVersions = getVersions(noteId, uid);
     setVersions(localVersions);
 
     if (uid) {
@@ -149,9 +236,9 @@ export default function VersionHistory({ noteId, onClose, onRestore, presentatio
 
   const handleRestore = (version: NoteVersion) => {
     if (confirm('Restore this version? Current content will be saved as a new version.')) {
-      // Save current state first
+      // Save current state first with scoped UID
       if (currentNote) {
-        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore');
+        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore', uid);
       }
       onRestore(version);
       onClose();

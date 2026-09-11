@@ -2074,6 +2074,8 @@ export const useStore = create<AppState>((set, get) => {
         currentView: 'home',
         selectedNoteId: null,
         editingNote: false,
+        activeChatId: null,
+        aiNoteContext: null,
         syncStatus: 'idle',
         syncMessage: '',
         lastManualSyncAt: null,

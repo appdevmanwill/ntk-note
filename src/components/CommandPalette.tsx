@@ -93,10 +93,10 @@ export default function CommandPalette() {
       { id: 'star-current', icon: Star, label: currentNote.starred ? 'Unstar current note' : 'Star current note', category: 'Current Note', action: () => { void starNote(currentNote.id); close(); } },
       { id: 'archive-current', icon: Archive, label: currentNote.archived ? 'Unarchive current note' : 'Archive current note', category: 'Current Note', action: () => { void (currentNote.archived ? unarchiveNote(currentNote.id) : archiveNote(currentNote.id)); close(); } },
       { id: 'trash-current', icon: Trash2, label: 'Move current note to trash', category: 'Current Note', action: () => { void trashNote(currentNote.id); close(); } },
-      { id: 'snapshot-current', icon: History, label: 'Save local snapshot', description: 'Device recovery copy', category: 'Current Note', action: () => { saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'manual'); close(); } },
+      { id: 'snapshot-current', icon: History, label: 'Save local snapshot', description: 'Device recovery copy', category: 'Current Note', action: () => { saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'manual', uid); close(); } },
       { id: 'checkpoint-current', icon: Cloud, label: 'Save cloud checkpoint', description: currentNote.encrypted ? 'Encrypted notes stay local' : 'Synced important version', category: 'Current Note', action: async () => {
         if (currentNote.encrypted) {
-          saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'cloud-checkpoint');
+          saveLocalNoteSnapshot(currentNote.id, currentNote.title, currentNote.content, 'cloud-checkpoint', uid);
         } else {
           try {
             await saveCloudNoteCheckpoint(uid, currentNote.id, currentNote.title, currentNote.content);

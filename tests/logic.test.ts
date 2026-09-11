@@ -60,7 +60,23 @@ import {
   getDeterministicChatId,
   isChatUnread,
   getTimestampMillis,
+  getChatDraftKey,
+  getLegacyChatDraftKey,
+  getChatDraft,
+  setChatDraft,
+  clearChatDraft,
+  cleanupLegacyChatDraft,
 } from '../src/utils/chatService.ts';
+import {
+  getVersionHistoryStorageKey,
+  getLegacyVersionHistoryKey,
+  cleanupLegacyVersionHistory,
+  getVersions,
+  saveVersion,
+  saveLocalNoteSnapshot,
+  clearVersions,
+  deleteVersion,
+} from '../src/components/VersionHistory.tsx';
 import {
   QUICK_SHARE_LIMIT,
   GLOBAL_DIRECTORY_MIN_CHARS,
@@ -9243,6 +9259,166 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const aiChatSource = fs.readFileSync(path.resolve('src/components/AiAssistantView.tsx'), 'utf8');
       assert.ok(messagesSource.includes('pb-24 md:pb-0'));
       assert.ok(aiChatSource.includes('pb-24 md:pb-4'));
+    });
+  });
+
+  describe('Stage 3A — Critical Cross-Account Isolation Remediation (S3-001 & S3-002)', () => {
+    test('S3-001 P0 Behavioral: Message draft storage is strictly isolated by authenticated UID and symmetric chatId', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+
+      // Verify key shape matches canonical ntk:chat:draft:${uid}:${chatId}
+      assert.equal(getChatDraftKey(uidA, chatId), `ntk:chat:draft:${uidA}:${chatId}`);
+      assert.equal(getChatDraftKey(uidB, chatId), `ntk:chat:draft:${uidB}:${chatId}`);
+      assert.notEqual(getChatDraftKey(uidA, chatId), getChatDraftKey(uidB, chatId));
+
+      // Clean starting slate
+      clearChatDraft(uidA, chatId);
+      clearChatDraft(uidB, chatId);
+      cleanupLegacyChatDraft(chatId);
+
+      // Step A: User A enters a private draft
+      const draftA = 'private draft from A';
+      setChatDraft(uidA, chatId, draftA);
+
+      // Verify User A can load it
+      assert.equal(getChatDraft(uidA, chatId), draftA);
+
+      // Step B: Switch to User B in the same browser profile
+      // Account B must load EMPTY for the same conversation
+      assert.equal(getChatDraft(uidB, chatId), '');
+
+      // Step C: User B enters their own private draft
+      const draftB = 'private draft from B';
+      setChatDraft(uidB, chatId, draftB);
+
+      // Step D: Switch back to User A
+      // Account A must see only A's own scoped draft
+      assert.equal(getChatDraft(uidA, chatId), draftA);
+
+      // Step E: Switch back to User B
+      // Account B must see only B's own scoped draft
+      assert.equal(getChatDraft(uidB, chatId), draftB);
+
+      // Step F: Legacy unscoped draft quarantine verification
+      // If an obsolete legacy unscoped draft exists:
+      const legacyKey = getLegacyChatDraftKey(chatId);
+      localStorage.setItem(legacyKey, 'leaked unscoped text from old version');
+
+      // Neither A nor B should ever read or migrate the legacy unscoped draft
+      assert.equal(getChatDraft(uidA, chatId), draftA);
+      assert.equal(getChatDraft(uidB, chatId), draftB);
+
+      // Running cleanupLegacyChatDraft removes the legacy key without touching user drafts
+      cleanupLegacyChatDraft(chatId);
+      assert.equal(localStorage.getItem(legacyKey), null);
+      assert.equal(getChatDraft(uidA, chatId), draftA);
+      assert.equal(getChatDraft(uidB, chatId), draftB);
+
+      // Step G: Clear draft for User A does not touch User B
+      clearChatDraft(uidA, chatId);
+      assert.equal(getChatDraft(uidA, chatId), '');
+      assert.equal(getChatDraft(uidB, chatId), draftB);
+
+      // Clean up
+      clearChatDraft(uidB, chatId);
+    });
+
+    test('S3-002 P0 Behavioral: Note version history is strictly isolated by authenticated UID and noteId on shared notes', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const sharedNoteId = 'shared-note-1';
+
+      // Verify key shape matches canonical ntk:versions:${uid}:${noteId}
+      assert.equal(getVersionHistoryStorageKey(uidA, sharedNoteId), `ntk:versions:${uidA}:${sharedNoteId}`);
+      assert.equal(getVersionHistoryStorageKey(uidB, sharedNoteId), `ntk:versions:${uidB}:${sharedNoteId}`);
+      assert.notEqual(
+        getVersionHistoryStorageKey(uidA, sharedNoteId),
+        getVersionHistoryStorageKey(uidB, sharedNoteId)
+      );
+
+      // Clean starting state
+      clearVersions(sharedNoteId, uidA);
+      clearVersions(sharedNoteId, uidB);
+      cleanupLegacyVersionHistory(sharedNoteId);
+
+      // Step A: User A saves a private historical version snapshot on the shared note
+      const titleA = 'A private old title';
+      const contentA = 'A private historical content';
+      const versionA = saveLocalNoteSnapshot(sharedNoteId, titleA, contentA, 'manual', uidA);
+      assert.ok(versionA);
+      assert.equal(versionA.uid, uidA);
+
+      // Verify User A receives only A's version
+      const historyA = getVersions(sharedNoteId, uidA);
+      assert.equal(historyA.length, 1);
+      assert.equal(historyA[0].title, titleA);
+      assert.equal(historyA[0].content, contentA);
+
+      // Step B: Switch account context to User B on the same shared note in the same browser profile
+      // Account B must receive an EMPTY version history
+      const historyBInitial = getVersions(sharedNoteId, uidB);
+      assert.equal(historyBInitial.length, 0);
+
+      // Step C: User B saves a separate version on the shared note
+      const titleB = 'B collaborator revision title';
+      const contentB = 'B collaborator revision content';
+      const versionB = saveLocalNoteSnapshot(sharedNoteId, titleB, contentB, 'manual', uidB);
+      assert.ok(versionB);
+      assert.equal(versionB.uid, uidB);
+
+      // Step D: Switch account context back to User A
+      // Account A receives only A's history
+      const historyAReloaded = getVersions(sharedNoteId, uidA);
+      assert.equal(historyAReloaded.length, 1);
+      assert.equal(historyAReloaded[0].title, titleA);
+      assert.equal(historyAReloaded[0].content, contentA);
+
+      // Step E: Switch account context back to User B
+      // Account B receives only B's history
+      const historyBReloaded = getVersions(sharedNoteId, uidB);
+      assert.equal(historyBReloaded.length, 1);
+      assert.equal(historyBReloaded[0].title, titleB);
+      assert.equal(historyBReloaded[0].content, contentB);
+
+      // Step F: Legacy unscoped version history quarantine verification
+      const legacyKey = getLegacyVersionHistoryKey(sharedNoteId);
+      localStorage.setItem(legacyKey, JSON.stringify([{ id: 'legacy-1', noteId: sharedNoteId, title: 'Old Leak', content: 'Unsafe' }]));
+
+      // Neither A nor B should read or adopt the legacy version
+      assert.equal(getVersions(sharedNoteId, uidA).length, 1);
+      assert.equal(getVersions(sharedNoteId, uidA)[0].title, titleA);
+      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
+      assert.equal(getVersions(sharedNoteId, uidB)[0].title, titleB);
+
+      // cleanupLegacyVersionHistory safely evicts legacy key without mutating user versions
+      cleanupLegacyVersionHistory(sharedNoteId);
+      assert.equal(localStorage.getItem(legacyKey), null);
+      assert.equal(getVersions(sharedNoteId, uidA).length, 1);
+      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
+
+      // Step G: Operations audit — deleteVersion and clearVersions are strictly UID-scoped
+      clearVersions(sharedNoteId, uidA);
+      assert.equal(getVersions(sharedNoteId, uidA).length, 0);
+      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
+
+      // Clean up
+      clearVersions(sharedNoteId, uidB);
+    });
+
+    test('Auth clearing: clearAuth resets activeChatId and aiNoteContext in memory', () => {
+      useStore.setState({
+        activeChatId: 'some-chat-id',
+        aiNoteContext: { noteId: 'note-123', noteTitle: 'Note 123' },
+      });
+      assert.equal(useStore.getState().activeChatId, 'some-chat-id');
+      assert.ok(useStore.getState().aiNoteContext);
+
+      useStore.getState().clearAuth();
+
+      assert.equal(useStore.getState().activeChatId, null);
+      assert.equal(useStore.getState().aiNoteContext, null);
     });
   });
 

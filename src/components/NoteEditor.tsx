@@ -279,7 +279,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   const activeChecklist = note?.encrypted && unlockedNote ? unlockedNote.checklist : note?.checklist || [];
   const accessRole = note ? getEntityRole(note, profile.email, uid) : 'owner';
   const canEditNote = canEditRole(accessRole);
-  useVersionHistory(note?.id || null, title, content);
+  useVersionHistory(note?.id || null, title, content, uid);
 
   const autoResizeTextarea = useCallback(() => {
     const el = contentRef.current;
@@ -1392,7 +1392,7 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const handleSaveLocalSnapshot = (source: 'manual' | 'cloud-checkpoint' = 'manual') => {
     if (!note) return;
-    saveLocalNoteSnapshot(note.id, title, content, source);
+    saveLocalNoteSnapshot(note.id, title, content, source, uid);
     setVersionStatus(source === 'cloud-checkpoint' ? 'Cloud checkpoint saved.' : 'Local snapshot saved.');
     if (source === 'manual') showActionToast('Local snapshot saved on this device.');
     window.setTimeout(() => setVersionStatus(''), 3000);

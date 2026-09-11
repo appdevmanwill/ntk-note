@@ -27,15 +27,19 @@ import {
   loadEarlierMessages,
   isChatUnread,
   getTimestampMillis,
+  getChatDraft,
+  setChatDraft,
+  clearChatDraft,
+  cleanupLegacyChatDraft,
 } from '@/utils/chatService';
 import { DIRECT_MESSAGE_MAX_CHARS, DIRECT_MESSAGE_PAGE_SIZE } from '@/utils/freeZoneConstants';
 import UserAvatar from '@/components/UserAvatar';
 import NewMessageModal from '@/components/NewMessageModal';
 
 export default function MessagesView() {
-  const { activeChatId, setActiveChatId, online } = useStore();
+  const { activeChatId, setActiveChatId, online, uid: storeUid } = useStore();
   const currentUser = auth.currentUser;
-  const myUid = currentUser?.uid || '';
+  const myUid = currentUser?.uid || storeUid || '';
 
   const [chats, setChats] = useState<DirectChat[]>([]);
   const [messages, setMessages] = useState<DirectMessage[]>([]);
@@ -104,8 +108,11 @@ export default function MessagesView() {
     setLoadingMessages(true);
     setHasMoreEarlier(false);
 
-    // Restore draft if any
-    const savedDraft = localStorage.getItem(`ntk:chat:draft:${activeChatId}`) || '';
+    // Clean up any legacy unscoped draft without migrating
+    cleanupLegacyChatDraft(activeChatId);
+
+    // Restore draft strictly scoped to myUid
+    const savedDraft = myUid ? getChatDraft(myUid, activeChatId) : '';
     setComposerText(savedDraft);
 
     // Mark as read
@@ -135,12 +142,8 @@ export default function MessagesView() {
   // Save composer draft on change
   const handleComposerChange = (text: string) => {
     setComposerText(text);
-    if (activeChatId) {
-      if (text) {
-        localStorage.setItem(`ntk:chat:draft:${activeChatId}`, text);
-      } else {
-        localStorage.removeItem(`ntk:chat:draft:${activeChatId}`);
-      }
+    if (activeChatId && myUid) {
+      setChatDraft(myUid, activeChatId, text);
     }
   };
 
@@ -153,7 +156,10 @@ export default function MessagesView() {
     try {
       await sendMessage(activeChatId, textToSend);
       setComposerText('');
-      localStorage.removeItem(`ntk:chat:draft:${activeChatId}`);
+      if (myUid) {
+        clearChatDraft(myUid, activeChatId);
+      }
+      cleanupLegacyChatDraft(activeChatId);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
       }
