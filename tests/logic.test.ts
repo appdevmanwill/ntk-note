@@ -69,8 +69,13 @@ import {
   getConfirmedUid,
   resolveConfirmedUid,
   reduceMessagesComposerState,
+  sendMessage,
+  executeSendMessage,
   type MessagesComposerState,
+  type ExecuteSendMessageParams,
+  type ExecuteSendMessageResult,
 } from '../src/utils/chatService.ts';
+import { isConfirmedSession } from '../src/utils/sessionAuthority.ts';
 import {
   getVersionHistoryStorageKey,
   getLegacyVersionHistoryKey,
@@ -82,7 +87,11 @@ import {
   deleteVersion,
   getConfirmedVersionUid,
   reduceVersionHistoryUiState,
+  executeVersionRestore,
   type VersionHistoryUiState,
+  type NoteVersion,
+  type ExecuteVersionRestoreParams,
+  type ExecuteVersionRestoreResult,
 } from '../src/components/VersionHistory.tsx';
 import {
   QUICK_SHARE_LIMIT,
@@ -9693,6 +9702,361 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       assert.equal(useStore.getState().activeChatId, null);
       assert.equal(useStore.getState().aiNoteContext, null);
+    });
+  });
+
+  describe('Stage 3A.2 — Final Production Auth-Handoff P0 Closure', () => {
+    let originalLocalStorage: any;
+    let mockStore: Map<string, string>;
+
+    before(() => {
+      originalLocalStorage = (globalThis as any).localStorage;
+    });
+
+    beforeEach(() => {
+      mockStore = new Map<string, string>();
+      (globalThis as any).localStorage = {
+        getItem: (k: string) => (mockStore.has(k) ? mockStore.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          mockStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          mockStore.delete(k);
+        },
+        clear: () => {
+          mockStore.clear();
+        },
+        get length() {
+          return mockStore.size;
+        },
+        key: (i: number) => Array.from(mockStore.keys())[i] ?? null,
+      };
+    });
+
+    after(() => {
+      (globalThis as any).localStorage = originalLocalStorage;
+    });
+
+    test('A. Auth A / Store A confirmed session authority', () => {
+      const uidA = 'userA';
+      assert.equal(resolveConfirmedUid(uidA, uidA), uidA);
+      assert.equal(isConfirmedSession(uidA, uidA, uidA), true);
+      assert.equal(isConfirmedSession(uidA, uidA, 'userB'), false);
+    });
+
+    test('B. Auth B / Store A fails closed without confirmed session', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      assert.equal(resolveConfirmedUid(uidB, uidA), null, 'Auth B / Store A must fail closed to null');
+      assert.equal(isConfirmedSession(uidB, uidA, uidA), false);
+      assert.equal(isConfirmedSession(uidB, uidA, uidB), false);
+      assert.equal(isConfirmedSession(uidB, uidA, null), false);
+    });
+
+    test('C. Auth B / Store B confirmed session authority', () => {
+      const uidB = 'userB';
+      assert.equal(resolveConfirmedUid(uidB, uidB), uidB);
+      assert.equal(isConfirmedSession(uidB, uidB, uidB), true);
+    });
+
+    test('D. S3-001 stale Send action rejected during Auth B / Store A transition window', async () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+      const staleDraftA = 'PRIVATE DRAFT A FROM OLD USER';
+
+      // Reproduce exact Codex scenario:
+      // Stale handler captured expectedSenderUid = uidA, while Auth is now B, and Store remains A (async hydration)
+      const resMismatch = await executeSendMessage({
+        chatId,
+        text: staleDraftA,
+        expectedSenderUid: uidA,
+        currentAuthUid: uidB,
+        currentStoreUid: uidA,
+      });
+
+      assert.equal(resMismatch.success, false, 'Send must be rejected during Auth B / Store A window');
+      assert.ok(
+        resMismatch.error?.includes('AUTH_TRANSITION_ABORT'),
+        `Error must indicate auth transition abort: ${resMismatch.error}`
+      );
+
+      // Even if Store has also transitioned to B, a stale A handler passing expectedSenderUid = uidA must STILL be rejected
+      const resStaleHandlerOnB = await executeSendMessage({
+        chatId,
+        text: staleDraftA,
+        expectedSenderUid: uidA,
+        currentAuthUid: uidB,
+        currentStoreUid: uidB,
+      });
+
+      assert.equal(resStaleHandlerOnB.success, false, 'Stale A handler must be rejected even after Store becomes B');
+      assert.ok(
+        resStaleHandlerOnB.error?.includes('AUTH_TRANSITION_ABORT'),
+        `Error must indicate stale sender session: ${resStaleHandlerOnB.error}`
+      );
+    });
+
+    test('E. S3-001 stale composer cannot persist draft after Auth becomes B', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+
+      // Initially A is confirmed and has a valid draft
+      setChatDraft(uidA, chatId, 'A private draft');
+      assert.equal(getChatDraft(uidA, chatId), 'A private draft');
+
+      // Event-time check when user tries to persist draft during Auth B / Store A mismatch
+      const isAllowedToPersist = isConfirmedSession(uidB, uidA, uidA);
+      assert.equal(isAllowedToPersist, false, 'Draft persist must be refused during auth mismatch');
+
+      // Stale handler trying to save text under B namespace must be blocked
+      if (isAllowedToPersist) {
+        setChatDraft(uidB, chatId, 'Corrupted draft');
+      }
+      assert.equal(getChatDraft(uidB, chatId), '', 'B namespace must remain empty');
+      // And A's existing draft remains safe in A's namespace
+      assert.equal(getChatDraft(uidA, chatId), 'A private draft');
+    });
+
+    test('F. S3-001 chat list and message preview cleared during transition', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+
+      // Active state for User A
+      const stateA: MessagesComposerState = {
+        uid: uidA,
+        chatId: chatId,
+        text: 'A private composer preview',
+      };
+
+      // Incoherent state during transition (Auth B, Store A -> confirmed is null)
+      const confirmedTransitionUid = resolveConfirmedUid(uidB, uidA);
+      assert.equal(confirmedTransitionUid, null);
+
+      // Reducer immediately wipes composer text
+      const transitionedState = reduceMessagesComposerState(stateA, confirmedTransitionUid, chatId);
+      assert.equal(transitionedState.uid, null);
+      assert.equal(transitionedState.text, '', 'Composer text must be empty during transition');
+
+      // ClearAuth wipes active chat and AI context synchronously
+      useStore.setState({ activeChatId: chatId, aiNoteContext: { noteId: 'n1', noteTitle: 'T' } });
+      useStore.getState().clearAuth();
+      assert.equal(useStore.getState().activeChatId, null);
+      assert.equal(useStore.getState().aiNoteContext, null);
+    });
+
+    test('G. S3-001 new B session confirmed and recognized by session authority', () => {
+      const uidB = 'userB';
+      const confirmed = resolveConfirmedUid(uidB, uidB);
+      assert.equal(confirmed, uidB);
+      assert.equal(isConfirmedSession(uidB, uidB, uidB), true);
+
+      // When expectedSenderUid matches confirmed session, validation passes
+      const validationPasses = (expectedUid: string, authUid: string, storeUid: string) => {
+        const conf = resolveConfirmedUid(authUid, storeUid);
+        return conf !== null && conf === getConfirmedUid(expectedUid);
+      };
+      assert.equal(validationPasses(uidB, uidB, uidB), true);
+      assert.equal(validationPasses('userA', uidB, uidB), false);
+    });
+
+    test('H. S3-002 selectedVersion becomes unusable during Auth B / Store A mismatch', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'shared-note-1';
+
+      const versionA = saveLocalNoteSnapshot(noteId, 'A Secret Title', 'A Secret Content', 'manual', uidA);
+      assert.ok(versionA);
+
+      const uiStateA: VersionHistoryUiState = {
+        uid: uidA,
+        noteId,
+        selectedVersion: versionA,
+        versions: [versionA],
+      };
+
+      // During transition, confirmed UID is null
+      const transitionUid = resolveConfirmedUid(uidB, uidA);
+      assert.equal(transitionUid, null);
+
+      const transitionUiState = reduceVersionHistoryUiState(uiStateA, transitionUid, noteId);
+      assert.equal(transitionUiState.selectedVersion, null, 'selectedVersion must be null during transition');
+      assert.equal(transitionUiState.versions.length, 0, 'Rendered versions must be empty during transition');
+    });
+
+    test('I. S3-002 Restore action rejected during Auth B / Store A transition window', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'shared-note-restore-test';
+
+      const versionA: NoteVersion = {
+        id: 'vA-123',
+        noteId,
+        uid: uidA,
+        title: 'A Private Note History',
+        content: 'A Sensitive Details',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      let onRestoreCalled = false;
+      const mockOnRestore = (_v: NoteVersion) => {
+        onRestoreCalled = true;
+      };
+
+      // Case 1: Auth B / Store A mismatch -> rejected
+      const res1 = executeVersionRestore({
+        noteId,
+        version: versionA,
+        expectedSessionUid: uidA,
+        currentAuthUid: uidB,
+        currentStoreUid: uidA,
+        onRestore: mockOnRestore,
+      });
+      assert.equal(res1.success, false);
+      assert.ok(res1.reason?.includes('AUTH_MISMATCH'));
+      assert.equal(onRestoreCalled, false, 'onRestore must NEVER be called during auth mismatch');
+
+      // Case 2: Store has become B, but stale restore callback has expectedSessionUid = uidA -> rejected
+      const res2 = executeVersionRestore({
+        noteId,
+        version: versionA,
+        expectedSessionUid: uidA,
+        currentAuthUid: uidB,
+        currentStoreUid: uidB,
+        onRestore: mockOnRestore,
+      });
+      assert.equal(res2.success, false);
+      assert.ok(res2.reason?.includes('AUTH_MISMATCH'));
+      assert.equal(onRestoreCalled, false);
+
+      // Case 3: Expected session is B, but version belongs to User A -> rejected
+      const res3 = executeVersionRestore({
+        noteId,
+        version: versionA,
+        expectedSessionUid: uidB,
+        currentAuthUid: uidB,
+        currentStoreUid: uidB,
+        onRestore: mockOnRestore,
+      });
+      assert.equal(res3.success, false);
+      assert.ok(res3.reason?.includes('Version belongs to userA'));
+      assert.equal(onRestoreCalled, false);
+
+      // Case 4: Target note mismatch -> rejected
+      const res4 = executeVersionRestore({
+        noteId: 'different-note',
+        version: versionA,
+        expectedSessionUid: uidA,
+        currentAuthUid: uidA,
+        currentStoreUid: uidA,
+        onRestore: mockOnRestore,
+      });
+      assert.equal(res4.success, false);
+      assert.ok(res4.reason?.includes('NOTE_MISMATCH'));
+      assert.equal(onRestoreCalled, false);
+    });
+
+    test('J. S3-002 History delete/clear cannot cross account boundary', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'shared-note-del-test';
+
+      const verA = saveLocalNoteSnapshot(noteId, 'A Title', 'A Body', 'manual', uidA);
+      const verB = saveLocalNoteSnapshot(noteId, 'B Title', 'B Body', 'manual', uidB);
+      assert.ok(verA);
+      assert.ok(verB);
+
+      assert.equal(getVersions(noteId, uidA).length, 1);
+      assert.equal(getVersions(noteId, uidB).length, 1);
+
+      // User A deletes version: B remains unaffected
+      deleteVersion(noteId, verA.id, uidA);
+      assert.equal(getVersions(noteId, uidA).length, 0);
+      assert.equal(getVersions(noteId, uidB).length, 1);
+
+      // Clear with missing UID fails closed with no-op
+      clearVersions(noteId, null as any);
+      assert.equal(getVersions(noteId, uidB).length, 1);
+
+      clearVersions(noteId, uidB);
+      assert.equal(getVersions(noteId, uidB).length, 0);
+    });
+
+    test('K. S3-002 User B cannot read User A local history', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'shared-note-k-test';
+
+      saveLocalNoteSnapshot(noteId, 'A Secret History', 'Confidential', 'manual', uidA);
+
+      // User A reads 1 version
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // User B reads 0 versions
+      assert.equal(getVersions(noteId, uidB).length, 0);
+
+      // Ambient resolution with missing or mismatch UID returns []
+      assert.deepEqual(getVersions(noteId, null), []);
+      assert.deepEqual(getVersions(noteId, undefined), []);
+    });
+
+    test('L. S3-001 & S3-002 Firebase anonymous UID 1 and UID 2 remain independent', () => {
+      const anon1 = 'firebase-anon-uid-1111';
+      const anon2 = 'firebase-anon-uid-2222';
+      const noteId = 'anon-note-test';
+      const chatId = getDeterministicChatId(anon1, anon2);
+
+      assert.equal(resolveConfirmedUid(anon1, anon1), anon1);
+      assert.equal(resolveConfirmedUid(anon2, anon2), anon2);
+      assert.equal(resolveConfirmedUid(anon1, anon2), null);
+
+      // Chat drafts isolated
+      setChatDraft(anon1, chatId, 'Draft from Anon 1');
+      setChatDraft(anon2, chatId, 'Draft from Anon 2');
+      assert.equal(getChatDraft(anon1, chatId), 'Draft from Anon 1');
+      assert.equal(getChatDraft(anon2, chatId), 'Draft from Anon 2');
+
+      // Version history isolated
+      saveLocalNoteSnapshot(noteId, 'Anon 1 Snapshot', 'Content 1', 'manual', anon1);
+      saveLocalNoteSnapshot(noteId, 'Anon 2 Snapshot', 'Content 2', 'manual', anon2);
+      assert.equal(getVersions(noteId, anon1)[0].title, 'Anon 1 Snapshot');
+      assert.equal(getVersions(noteId, anon2)[0].title, 'Anon 2 Snapshot');
+    });
+
+    test('M. S3-001 & S3-002 Missing UID and pseudo-identities fail closed across all authorities', () => {
+      const bogusIdentities = [null, undefined, '', '   ', 'guest', 'Guest', 'unknown', 'default', 'anonymous'];
+      const noteId = 'test-note-m';
+      const chatId = 'test-chat-m';
+
+      for (const id of bogusIdentities) {
+        assert.equal(getConfirmedUid(id as any), null);
+        assert.equal(resolveConfirmedUid(id as any, 'userA'), null);
+        assert.equal(resolveConfirmedUid('userA', id as any), null);
+        assert.equal(isConfirmedSession(id as any, id as any, id as any), false);
+        assert.deepEqual(getVersions(noteId, id as any), []);
+        assert.equal(saveLocalNoteSnapshot(noteId, 'T', 'C', 'manual', id as any), null);
+        assert.equal(getChatDraft(id as any, chatId), '');
+      }
+    });
+
+    test('N. S3-001 & S3-002 Legacy unscoped chat and version data remains non-migrated', () => {
+      const uidA = 'userA';
+      const noteId = 'legacy-note-n';
+      const chatId = 'legacy-chat-n';
+
+      localStorage.setItem(`ntk:chat:draft:${chatId}`, 'unscoped leaked text');
+      localStorage.setItem(`ntk-versions-${noteId}`, JSON.stringify([{ id: 'leg', title: 'old' }]));
+
+      assert.equal(getChatDraft(uidA, chatId), '', 'Legacy chat draft must not be migrated');
+      assert.equal(getVersions(noteId, uidA).length, 0, 'Legacy versions must not be migrated');
+
+      cleanupLegacyChatDraft(chatId);
+      cleanupLegacyVersionHistory(noteId);
+      assert.equal(localStorage.getItem(`ntk:chat:draft:${chatId}`), null);
+      assert.equal(localStorage.getItem(`ntk-versions-${noteId}`), null);
     });
   });
 

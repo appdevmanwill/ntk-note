@@ -38,6 +38,7 @@ import { setCurrentSpeechUser } from '@/utils/ntkAi';
 import { getTabCoordinator } from '@/utils/tabCoordinator';
 import { recordManualSyncMetrics, setActiveListenersCount } from '@/utils/performanceMetrics';
 import { commitQueuedNoteSafely } from '@/utils/noteSyncTransaction';
+import { setStoreUidGetter } from '@/utils/sessionAuthority';
 import { getOfflineMediaSyncService, summarizePendingMedia } from '@/utils/offlineMediaSyncService';
 import { reconcileRemoteNotesSnapshot, hasMeaningfulNoteDifference, getConflictIdentity } from '@/utils/noteReconciliation';
 import { getPendingMediaForUser } from '@/utils/offlineMediaQueue';
@@ -842,6 +843,7 @@ interface AppState {
   unsubscribeNotebooks: (() => void) | null;
   unsubscribeSettings: (() => void) | null;
   unsubscribeTeamSpaces: (() => void) | null;
+  authEpoch: number;
   unsubscribeActivity: (() => void) | null;
   unsubscribeNotifications: (() => void) | null;
   unsubscribeReminders: (() => void) | null;
@@ -1415,6 +1417,7 @@ export const useStore = create<AppState>((set, get) => {
     activeChatId: null,
     aiNoteContext: null,
     uid: null,
+    authEpoch: 0,
     unsubscribeNotes: null,
     unsubscribeNotebooks: null,
     unsubscribeSettings: null,
@@ -1429,6 +1432,11 @@ export const useStore = create<AppState>((set, get) => {
       const outgoingUid = get().uid;
       if (outgoingUid && outgoingUid !== uid) {
         persist(); // Save outgoing workspace before switching namespace
+        set({
+          activeChatId: null,
+          aiNoteContext: null,
+          authEpoch: get().authEpoch + 1,
+        });
       }
       migrateLegacyData(uid); // Strict legacy migration / quarantine for this user
       setWorkspacePrefix(uid); // Switch active namespace to ntk:user:{uid}
@@ -2047,6 +2055,7 @@ export const useStore = create<AppState>((set, get) => {
       const guestData = loadWorkspaceData();
       set({
         uid: null,
+        authEpoch: get().authEpoch + 1,
         notes: guestData.notes,
         notebooks: guestData.notebooks.length ? guestData.notebooks : [defaultNotebook],
         tags: guestData.tags,
@@ -4456,3 +4465,5 @@ export const useStore = create<AppState>((set, get) => {
     },
   };
 });
+
+setStoreUidGetter(() => useStore.getState().uid);

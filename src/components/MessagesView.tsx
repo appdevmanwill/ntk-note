@@ -19,7 +19,6 @@ import type { DirectChat, DirectMessage } from '@/types';
 import {
   subscribeToDirectChats,
   subscribeToMessages,
-  sendMessage,
   markChatAsRead,
   acceptChatRequest,
   declineChatRequest,
@@ -32,6 +31,8 @@ import {
   clearChatDraft,
   cleanupLegacyChatDraft,
   resolveConfirmedUid,
+  isConfirmedSession,
+  executeSendMessage,
   reduceMessagesComposerState,
 } from '@/utils/chatService';
 import { DIRECT_MESSAGE_MAX_CHARS, DIRECT_MESSAGE_PAGE_SIZE } from '@/utils/freeZoneConstants';
@@ -65,6 +66,7 @@ export default function MessagesView() {
     const nextState = reduceMessagesComposerState(composerState, confirmedUid, activeChatId);
     setComposerState(nextState);
     setMessages([]);
+    setChats([]);
     setActionError('');
   }
 
@@ -155,24 +157,44 @@ export default function MessagesView() {
 
   // Save composer draft on change
   const handleComposerChange = (text: string) => {
-    if (!confirmedUid || !activeChatId) {
+    const currentAuth = auth.currentUser?.uid;
+    const currentStore = useStore.getState().uid;
+    if (!isConfirmedSession(currentAuth, currentStore, composerState.uid) || !activeChatId) {
       setComposerState(s => ({ ...s, text: '' }));
       return;
     }
+    const currentConfirmed = resolveConfirmedUid(currentAuth, currentStore);
+    if (!currentConfirmed) return;
     setComposerState(s => ({ ...s, text }));
-    setChatDraft(confirmedUid, activeChatId, text);
+    setChatDraft(currentConfirmed, activeChatId, text);
   };
 
   const handleSendMessage = async () => {
-    if (!activeChatId || !confirmedUid || !composerText.trim() || isSending) return;
+    const currentAuth = auth.currentUser?.uid;
+    const currentStore = useStore.getState().uid;
+    if (!isConfirmedSession(currentAuth, currentStore, composerState.uid)) {
+      setActionError('Session changed. Unsent text retained locally.');
+      return;
+    }
+    const sendingUid = resolveConfirmedUid(currentAuth, currentStore);
+    if (!sendingUid || !activeChatId || !composerText.trim() || isSending) return;
     const textToSend = composerText;
     setIsSending(true);
     setActionError('');
 
     try {
-      await sendMessage(activeChatId, textToSend);
+      const result = await executeSendMessage({
+        chatId: activeChatId,
+        text: textToSend,
+        expectedSenderUid: sendingUid,
+        currentAuthUid: currentAuth,
+        currentStoreUid: currentStore,
+      });
+      if (!result.success) {
+        throw new Error(result.error);
+      }
       setComposerState(s => ({ ...s, text: '' }));
-      clearChatDraft(confirmedUid, activeChatId);
+      clearChatDraft(sendingUid, activeChatId);
       cleanupLegacyChatDraft(activeChatId);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';
@@ -180,9 +202,11 @@ export default function MessagesView() {
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 50);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[NTK Chat] Send failed:', err);
-      setActionError('Message failed to send. Check connection.');
+      setActionError(err?.message?.includes('AUTH_TRANSITION_ABORT')
+        ? 'Message not sent: account switched.'
+        : 'Message failed to send. Check connection.');
     } finally {
       setIsSending(false);
     }

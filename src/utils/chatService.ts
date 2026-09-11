@@ -30,36 +30,14 @@ export const getDeterministicChatId = (uidA: string, uidB: string): string => {
   return [uidA.trim(), uidB.trim()].sort().join('_');
 };
 
-// ── UID-Scoped Chat Draft Management (S3-001 Remediation) ──
+import {
+  getConfirmedUid,
+  resolveConfirmedUid,
+  isConfirmedSession,
+  getStoreUid,
+} from '@/utils/sessionAuthority';
 
-const INVALID_UID_KEYWORDS = new Set(['guest', 'unknown', 'null', 'undefined', 'default', 'anonymous']);
-
-/**
- * Validates that a UID is a genuine confirmed Firebase identity.
- * Rejects empty strings and placeholder keywords (e.g. 'guest', 'unknown').
- */
-export const getConfirmedUid = (uid?: string | null): string | null => {
-  if (!uid || typeof uid !== 'string') return null;
-  const trimmed = uid.trim();
-  if (!trimmed) return null;
-  if (INVALID_UID_KEYWORDS.has(trimmed.toLowerCase())) return null;
-  return trimmed;
-};
-
-/**
- * Resolves a single authoritative effective UID between auth.currentUser and Zustand store.
- * If both are supplied and mismatch, an identity transition is active -> fails closed to null.
- */
-export const resolveConfirmedUid = (
-  authUid?: string | null,
-  storeUid?: string | null
-): string | null => {
-  const confirmedAuth = getConfirmedUid(authUid);
-  const confirmedStore = getConfirmedUid(storeUid);
-  if (!confirmedAuth || !confirmedStore) return null;
-  if (confirmedAuth !== confirmedStore) return null;
-  return confirmedAuth;
-};
+export { getConfirmedUid, resolveConfirmedUid, isConfirmedSession };
 
 export interface ComposerState {
   uid: string | null;
@@ -397,14 +375,43 @@ export const loadEarlierMessages = async (
 
 /**
  * Atomic message creation and chat summary update via Firestore writeBatch.
- * Enforces strictly intended fields and prevents stale chat summaries.
+ * DEFENSE-IN-DEPTH AUTHENTICATION & SESSION COHERENCE:
+ * Before performing ANY Firestore write, validates:
+ * 1. Current Firebase auth UID exists and is confirmed.
+ * 2. Current workspace store UID exists and is confirmed.
+ * 3. Auth UID === Store UID.
+ * 4. Expected sender UID (from composer) === Confirmed UID.
+ * If any identity differs, ABORTS immediately with ZERO Firestore writes.
  */
 export const sendMessage = async (
   chatId: string,
-  text: string
+  text: string,
+  expectedSenderUid?: string | null,
+  overrides?: {
+    currentAuthUid?: string | null;
+    currentStoreUid?: string | null;
+  }
 ): Promise<void> => {
-  const currentUser = auth.currentUser;
-  if (!currentUser) throw new Error('Must be signed in to send messages');
+  const authUid = overrides?.currentAuthUid !== undefined
+    ? overrides.currentAuthUid
+    : auth.currentUser?.uid;
+  const storeUid = overrides?.currentStoreUid !== undefined
+    ? overrides.currentStoreUid
+    : getStoreUid();
+
+  const confirmedUid = resolveConfirmedUid(authUid, storeUid);
+  if (!confirmedUid) {
+    throw new Error('AUTH_TRANSITION_ABORT: No confirmed session active');
+  }
+
+  if (expectedSenderUid !== undefined && expectedSenderUid !== null) {
+    const expected = getConfirmedUid(expectedSenderUid);
+    if (!expected || expected !== confirmedUid) {
+      throw new Error(
+        `AUTH_TRANSITION_ABORT: Stale sender session (expected ${expectedSenderUid}, active ${confirmedUid})`
+      );
+    }
+  }
 
   const cleanText = text.trim();
   if (!cleanText) throw new Error('Message cannot be empty');
@@ -416,12 +423,11 @@ export const sendMessage = async (
   sendingLock = true;
 
   try {
-    const myUid = currentUser.uid;
     const batch = writeBatch(db);
 
     const messageRef = doc(collection(db, 'direct_chats', chatId, 'messages'));
     const messageData = {
-      senderUid: myUid,
+      senderUid: confirmedUid,
       text: cleanText,
       createdAt: serverTimestamp(),
       type: 'text' as const,
@@ -433,13 +439,40 @@ export const sendMessage = async (
     batch.update(chatRef, {
       lastMessageAt: serverTimestamp(),
       lastMessagePreview: cleanText.slice(0, 80),
-      lastMessageSenderUid: myUid,
-      [`lastReadAtByUid.${myUid}`]: serverTimestamp(),
+      lastMessageSenderUid: confirmedUid,
+      [`lastReadAtByUid.${confirmedUid}`]: serverTimestamp(),
     });
 
     await batch.commit();
   } finally {
     sendingLock = false;
+  }
+};
+
+export interface ExecuteSendMessageParams {
+  chatId: string;
+  text: string;
+  expectedSenderUid: string | null;
+  currentAuthUid?: string | null;
+  currentStoreUid?: string | null;
+}
+
+export interface ExecuteSendMessageResult {
+  success: boolean;
+  error?: string;
+}
+
+export const executeSendMessage = async (
+  params: ExecuteSendMessageParams
+): Promise<ExecuteSendMessageResult> => {
+  try {
+    await sendMessage(params.chatId, params.text, params.expectedSenderUid, {
+      currentAuthUid: params.currentAuthUid,
+      currentStoreUid: params.currentStoreUid,
+    });
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Send failed' };
   }
 };
 

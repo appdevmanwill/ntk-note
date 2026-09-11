@@ -22,21 +22,14 @@ interface Props {
   presentation?: 'modal' | 'panel';
 }
 
-// ── UID-Scoped Version History Storage Keys (S3-002 Remediation) ──
+import {
+  getConfirmedUid,
+  resolveConfirmedUid,
+  isConfirmedSession,
+} from '@/utils/sessionAuthority';
 
-const INVALID_UID_KEYWORDS = new Set(['guest', 'unknown', 'null', 'undefined', 'default', 'anonymous']);
-
-/**
- * Validates that a UID is a genuine confirmed Firebase identity.
- * Rejects empty strings and placeholder keywords (e.g. 'guest', 'unknown').
- */
-export const getConfirmedVersionUid = (uid?: string | null): string | null => {
-  if (!uid || typeof uid !== 'string') return null;
-  const trimmed = uid.trim();
-  if (!trimmed) return null;
-  if (INVALID_UID_KEYWORDS.has(trimmed.toLowerCase())) return null;
-  return trimmed;
-};
+export const getConfirmedVersionUid = getConfirmedUid;
+export { resolveConfirmedUid, isConfirmedSession };
 
 export interface VersionHistoryUiState {
   uid: string | null;
@@ -141,7 +134,9 @@ export const saveLocalNoteSnapshot = (
   uid?: string | null
 ): NoteVersion | null => {
   if (!noteId) return null;
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  const confirmed = uid !== undefined
+    ? getConfirmedVersionUid(uid)
+    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
   if (!confirmed) return null; // FAIL CLOSED: safe refusal, no-op
 
   // Safely quarantine and remove any legacy unscoped version history for this note
@@ -170,7 +165,9 @@ export const saveLocalNoteSnapshot = (
 export const clearVersions = (noteId: string, uid?: string | null): void => {
   if (typeof localStorage === 'undefined') return;
   if (!noteId) return;
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  const confirmed = uid !== undefined
+    ? getConfirmedVersionUid(uid)
+    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
   if (!confirmed) return; // FAIL CLOSED: no-op
   try {
     const key = getVersionHistoryStorageKey(confirmed, noteId);
@@ -183,7 +180,9 @@ export const clearVersions = (noteId: string, uid?: string | null): void => {
 export const deleteVersion = (noteId: string, versionId: string, uid?: string | null): void => {
   if (typeof localStorage === 'undefined') return;
   if (!noteId || !versionId) return;
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  const confirmed = uid !== undefined
+    ? getConfirmedVersionUid(uid)
+    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
   if (!confirmed) return; // FAIL CLOSED: no-op
   const versions = getVersions(noteId, confirmed);
   const filtered = versions.filter(v => v.id !== versionId);
@@ -234,10 +233,11 @@ export const saveCloudNoteCheckpoint = async (
   return version;
 };
 
-// Hook to automatically save versions with UID scoping
 export const useVersionHistory = (noteId: string | null, title: string, content: string, uid?: string | null) => {
   const storeUid = useStore(s => s.uid);
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : storeUid);
+  const confirmed = uid !== undefined
+    ? getConfirmedVersionUid(uid)
+    : resolveConfirmedUid(auth.currentUser?.uid, storeUid);
 
   useEffect(() => {
     if (!noteId || (!title && !content) || !confirmed) return;
@@ -257,9 +257,87 @@ export const useVersionHistory = (noteId: string | null, title: string, content:
   }, [noteId, title, content, confirmed]);
 };
 
+export interface ExecuteVersionRestoreParams {
+  noteId: string;
+  version: NoteVersion;
+  expectedSessionUid: string | null;
+  currentAuthUid?: string | null;
+  currentStoreUid?: string | null;
+  onRestore: (version: NoteVersion) => void;
+  currentNote?: { title: string; content: string } | null;
+}
+
+export interface ExecuteVersionRestoreResult {
+  success: boolean;
+  reason?: string;
+}
+
+/**
+ * Event-time restore execution defense.
+ * Validates:
+ * 1. Current Firebase auth UID exists and is confirmed.
+ * 2. Current workspace store UID exists and is confirmed.
+ * 3. Auth UID === Store UID.
+ * 4. Expected session UID (captured at view open / version select) === Confirmed UID.
+ * 5. Version owner UID (if set) === Confirmed UID.
+ * 6. Target noteId === Version noteId.
+ *
+ * If ANY condition fails, the restore is REJECTED and onRestore is NEVER called.
+ */
+export const executeVersionRestore = (
+  params: ExecuteVersionRestoreParams
+): ExecuteVersionRestoreResult => {
+  const authUid = params.currentAuthUid !== undefined
+    ? params.currentAuthUid
+    : auth.currentUser?.uid;
+  const storeUid = params.currentStoreUid !== undefined
+    ? params.currentStoreUid
+    : useStore.getState().uid;
+
+  const confirmedUid = resolveConfirmedUid(authUid, storeUid);
+  if (!confirmedUid) {
+    return { success: false, reason: 'AUTH_MISMATCH: No confirmed session active' };
+  }
+
+  const expected = getConfirmedVersionUid(params.expectedSessionUid);
+  if (!expected || expected !== confirmedUid) {
+    return {
+      success: false,
+      reason: `AUTH_MISMATCH: Expected session ${params.expectedSessionUid}, active ${confirmedUid}`,
+    };
+  }
+
+  if (params.version.uid) {
+    const versionOwner = getConfirmedVersionUid(params.version.uid);
+    if (versionOwner && versionOwner !== confirmedUid) {
+      return {
+        success: false,
+        reason: `AUTH_MISMATCH: Version belongs to ${params.version.uid}, cannot restore under ${confirmedUid}`,
+      };
+    }
+  }
+
+  if (!params.noteId || params.version.noteId !== params.noteId) {
+    return { success: false, reason: 'NOTE_MISMATCH: Target note does not match version note' };
+  }
+
+  if (params.currentNote && params.noteId) {
+    saveLocalNoteSnapshot(
+      params.noteId,
+      params.currentNote.title,
+      params.currentNote.content,
+      'restore',
+      confirmedUid
+    );
+  }
+
+  params.onRestore(params.version);
+  return { success: true };
+};
+
 export default function VersionHistory({ noteId, onClose, onRestore, presentation = 'modal' }: Props) {
   const { getNoteById, uid: storeUid } = useStore();
-  const confirmedUid = getConfirmedVersionUid(storeUid || auth.currentUser?.uid);
+  const confirmedUid = resolveConfirmedUid(auth.currentUser?.uid, storeUid);
   
   const currentNote = getNoteById(noteId);
 
@@ -308,14 +386,28 @@ export default function VersionHistory({ noteId, onClose, onRestore, presentatio
   }, [noteId, confirmedUid]);
 
   const handleRestore = (version: NoteVersion) => {
-    if (!confirmedUid) return; // fail closed
+    const currentAuth = auth.currentUser?.uid;
+    const currentStore = useStore.getState().uid;
+    const currentConfirmed = resolveConfirmedUid(currentAuth, currentStore);
+    if (!currentConfirmed || uiState.uid !== currentConfirmed) {
+      return; // Fail closed at event boundary
+    }
+
     if (confirm('Restore this version? Current content will be saved as a new version.')) {
-      // Save current state first with scoped UID
-      if (currentNote) {
-        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore', confirmedUid);
+      const result = executeVersionRestore({
+        noteId,
+        version,
+        expectedSessionUid: uiState.uid,
+        currentAuthUid: currentAuth,
+        currentStoreUid: currentStore,
+        currentNote,
+        onRestore,
+      });
+      if (result.success) {
+        onClose();
+      } else {
+        console.warn('[VersionHistory] Restore aborted:', result.reason);
       }
-      onRestore(version);
-      onClose();
     }
   };
 

@@ -164,8 +164,16 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentSpeechUser(user ? user.uid : null);
       getOfflineMediaSyncService().setActiveUser(user ? user.uid : null);
+      const state = useStore.getState();
+      const nextUid = user ? user.uid : null;
+
+      // IMMEDIATE SYNCHRONOUS INVALIDATION OF VOLATILE ACCOUNT-BOUND UI/STATE
+      // Before B's workspace hydration becomes usable, ensure A's volatile state cannot linger.
+      if (state.uid && state.uid !== nextUid) {
+        state.clearAuth();
+      }
+
       if (user) {
-        const state = useStore.getState();
         try {
           // IMPORTANT: switch to the authenticated user's workspace first.
           // Completing onboarding before initFirestore() writes the flag/profile
