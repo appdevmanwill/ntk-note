@@ -26,10 +26,15 @@ import {
   getConfirmedUid,
   resolveConfirmedUid,
   isConfirmedSession,
+  isStrictConfirmedSession,
+  isAuthorizedSession,
+  getAuthUid,
+  getStoreUid,
+  type SessionAuthorityOverrides,
 } from '@/utils/sessionAuthority';
 
 export const getConfirmedVersionUid = getConfirmedUid;
-export { resolveConfirmedUid, isConfirmedSession };
+export { resolveConfirmedUid, isConfirmedSession, isStrictConfirmedSession, isAuthorizedSession };
 
 export interface VersionHistoryUiState {
   uid: string | null;
@@ -94,11 +99,15 @@ export const cleanupLegacyVersionHistory = (noteId: string): void => {
   } catch {}
 };
 
-// Store versions in localStorage strictly scoped by confirmed UID + noteId
-export const getVersions = (noteId: string, uid?: string | null): NoteVersion[] => {
+/**
+ * Store versions in localStorage strictly scoped by confirmed UID + noteId.
+ * OMITTED UID MUST NEVER MEAN "RESOLVE AMBIENTLY" (Section 5, 7, 10).
+ * If confirmedUid is absent, invalid, or placeholder, returns [] immediately.
+ */
+export const getVersions = (noteId: string, confirmedUid?: string | null): NoteVersion[] => {
   if (typeof localStorage === 'undefined') return [];
   if (!noteId) return [];
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  const confirmed = getConfirmedVersionUid(confirmedUid);
   if (!confirmed) return []; // FAIL CLOSED: empty array
   try {
     const key = getVersionHistoryStorageKey(confirmed, noteId);
@@ -109,11 +118,20 @@ export const getVersions = (noteId: string, uid?: string | null): NoteVersion[] 
   }
 };
 
-export const saveVersion = (version: NoteVersion, uid?: string | null): void => {
+/**
+ * Persist version into localStorage strictly under the confirmed UID.
+ * Rejects missing or invalid UIDs without fallback to ambient state.
+ */
+export const saveVersion = (
+  version: NoteVersion,
+  confirmedUid?: string | null,
+  overrides?: SessionAuthorityOverrides
+): void => {
   if (typeof localStorage === 'undefined') return;
   if (!version?.noteId) return;
-  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (version.uid || auth.currentUser?.uid || useStore.getState().uid));
+  const confirmed = getConfirmedVersionUid(confirmedUid || version?.uid);
   if (!confirmed) return; // FAIL CLOSED: safe refusal, no-op
+  if (!isAuthorizedSession(confirmed, overrides)) return; // FAIL CLOSED: unconfirmed session or mismatch
   const versions = getVersions(version.noteId, confirmed);
   const versionWithUid: NoteVersion = { ...version, uid: confirmed };
   // Keep last 50 versions per note per account
@@ -126,18 +144,27 @@ export const saveVersion = (version: NoteVersion, uid?: string | null): void => 
   }
 };
 
+/**
+ * Snapshot current note state locally under confirmed UID.
+ * Omitted UID fails closed to null (Section 5 & 11).
+ * Confirms that the current session strictly authorizes the save (Section 8 & 11).
+ */
 export const saveLocalNoteSnapshot = (
   noteId: string,
   title: string,
   content: string,
   source: NoteVersion['source'] = 'manual',
-  uid?: string | null
+  confirmedUid?: string | null,
+  overrides?: SessionAuthorityOverrides
 ): NoteVersion | null => {
   if (!noteId) return null;
-  const confirmed = uid !== undefined
-    ? getConfirmedVersionUid(uid)
-    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
-  if (!confirmed) return null; // FAIL CLOSED: safe refusal, no-op
+  const confirmed = getConfirmedVersionUid(confirmedUid);
+  if (!confirmed) return null; // FAIL CLOSED: missing or invalid UID never resolves ambiently
+
+  // Session authority verification (Section 8 & 11):
+  if (!isAuthorizedSession(confirmed, overrides)) {
+    return null; // FAIL CLOSED: unconfirmed session or mismatch
+  }
 
   // Safely quarantine and remove any legacy unscoped version history for this note
   cleanupLegacyVersionHistory(noteId);
@@ -158,39 +185,82 @@ export const saveLocalNoteSnapshot = (
     timestamp: new Date().toISOString(),
     source,
   };
-  saveVersion(version, confirmed);
+  saveVersion(version, confirmed, overrides);
   return version;
 };
 
-export const clearVersions = (noteId: string, uid?: string | null): void => {
-  if (typeof localStorage === 'undefined') return;
-  if (!noteId) return;
-  const confirmed = uid !== undefined
-    ? getConfirmedVersionUid(uid)
-    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
-  if (!confirmed) return; // FAIL CLOSED: no-op
+/**
+ * Clear versions for a note.
+ * DEFENSE-IN-DEPTH SESSION COHERENCE (Section 8 & 13):
+ * Explicit UID must NOT bypass session coherence.
+ * Both active Firebase Auth UID and Store UID must exist, match, and equal target UID.
+ * Fails closed without modifying storage if unconfirmed or mismatched.
+ */
+export const clearVersions = (
+  noteId: string,
+  confirmedUid?: string | null,
+  overrides?: SessionAuthorityOverrides
+): boolean => {
+  if (typeof localStorage === 'undefined') return false;
+  if (!noteId) return false;
+
+  const target = getConfirmedVersionUid(confirmedUid);
+  if (!target) return false; // FAIL CLOSED: omitted or invalid UID
+
+  if (!isAuthorizedSession(target, overrides)) {
+    return false; // FAIL CLOSED: unconfirmed session or mismatch
+  }
+
   try {
-    const key = getVersionHistoryStorageKey(confirmed, noteId);
+    const key = getVersionHistoryStorageKey(target, noteId);
     localStorage.removeItem(key);
+    return true;
   } catch (err) {
     console.warn('[VersionHistory] Failed to clear scoped versions:', err);
+    return false;
   }
 };
 
-export const deleteVersion = (noteId: string, versionId: string, uid?: string | null): void => {
-  if (typeof localStorage === 'undefined') return;
-  if (!noteId || !versionId) return;
-  const confirmed = uid !== undefined
-    ? getConfirmedVersionUid(uid)
-    : resolveConfirmedUid(auth.currentUser?.uid, useStore.getState().uid);
-  if (!confirmed) return; // FAIL CLOSED: no-op
-  const versions = getVersions(noteId, confirmed);
+/**
+ * Delete a specific version.
+ * DEFENSE-IN-DEPTH SESSION COHERENCE (Section 8 & 12):
+ * Confirms session authority AND validates that the version object has a valid,
+ * confirmed owner UID matching that session.
+ */
+export const deleteVersion = (
+  noteId: string,
+  versionId: string,
+  confirmedUid?: string | null,
+  overrides?: SessionAuthorityOverrides
+): boolean => {
+  if (typeof localStorage === 'undefined') return false;
+  if (!noteId || !versionId) return false;
+
+  const target = getConfirmedVersionUid(confirmedUid);
+  if (!target) return false; // FAIL CLOSED: omitted or invalid UID
+
+  if (!isAuthorizedSession(target, overrides)) {
+    return false; // FAIL CLOSED: unconfirmed session or mismatch
+  }
+
+  const versions = getVersions(noteId, target);
+  const targetVersion = versions.find(v => v.id === versionId);
+  if (!targetVersion) return false;
+
+  // Stored version ownership validation (Section 12):
+  const versionOwner = getConfirmedVersionUid(targetVersion.uid);
+  if (!versionOwner || versionOwner !== target) {
+    return false; // FAIL CLOSED: version has missing, invalid, or mismatched ownership
+  }
+
   const filtered = versions.filter(v => v.id !== versionId);
   try {
-    const key = getVersionHistoryStorageKey(confirmed, noteId);
+    const key = getVersionHistoryStorageKey(target, noteId);
     localStorage.setItem(key, JSON.stringify(filtered));
+    return true;
   } catch (err) {
     console.warn('[VersionHistory] Failed to update scoped versions after delete:', err);
+    return false;
   }
 };
 
@@ -235,9 +305,9 @@ export const saveCloudNoteCheckpoint = async (
 
 export const useVersionHistory = (noteId: string | null, title: string, content: string, uid?: string | null) => {
   const storeUid = useStore(s => s.uid);
-  const confirmed = uid !== undefined
-    ? getConfirmedVersionUid(uid)
-    : resolveConfirmedUid(auth.currentUser?.uid, storeUid);
+  const confirmedSession = resolveConfirmedUid(auth.currentUser?.uid, storeUid);
+  const requested = getConfirmedVersionUid(uid);
+  const confirmed = (confirmedSession && requested === confirmedSession) ? confirmedSession : null;
 
   useEffect(() => {
     if (!noteId || (!title && !content) || !confirmed) return;
@@ -279,8 +349,9 @@ export interface ExecuteVersionRestoreResult {
  * 2. Current workspace store UID exists and is confirmed.
  * 3. Auth UID === Store UID.
  * 4. Expected session UID (captured at view open / version select) === Confirmed UID.
- * 5. Version owner UID (if set) === Confirmed UID.
- * 6. Target noteId === Version noteId.
+ * 5. Version owner UID exists and is valid (Section 14 & 15: ownerless/guest/unknown REJECTED).
+ * 6. Version owner UID === Confirmed UID.
+ * 7. Target noteId === Version noteId.
  *
  * If ANY condition fails, the restore is REJECTED and onRestore is NEVER called.
  */
@@ -289,10 +360,10 @@ export const executeVersionRestore = (
 ): ExecuteVersionRestoreResult => {
   const authUid = params.currentAuthUid !== undefined
     ? params.currentAuthUid
-    : auth.currentUser?.uid;
+    : getAuthUid();
   const storeUid = params.currentStoreUid !== undefined
     ? params.currentStoreUid
-    : useStore.getState().uid;
+    : getStoreUid();
 
   const confirmedUid = resolveConfirmedUid(authUid, storeUid);
   if (!confirmedUid) {
@@ -307,14 +378,22 @@ export const executeVersionRestore = (
     };
   }
 
-  if (params.version.uid) {
-    const versionOwner = getConfirmedVersionUid(params.version.uid);
-    if (versionOwner && versionOwner !== confirmedUid) {
-      return {
-        success: false,
-        reason: `AUTH_MISMATCH: Version belongs to ${params.version.uid}, cannot restore under ${confirmedUid}`,
-      };
-    }
+  // Section 14 & 15: VALID CANONICAL VERSION OWNER REQUIRED
+  // Historical version used for Restore must contain a valid canonical version.uid.
+  // Missing (undefined, null, blank) or placeholder (guest, unknown, default, anonymous) MUST FAIL CLOSED.
+  const versionOwner = getConfirmedVersionUid(params.version?.uid);
+  if (!versionOwner) {
+    return {
+      success: false,
+      reason: `INVALID_VERSION_OWNER: Version has missing or invalid owner (${params.version?.uid})`,
+    };
+  }
+
+  if (versionOwner !== confirmedUid) {
+    return {
+      success: false,
+      reason: `AUTH_MISMATCH: Version belongs to ${params.version?.uid}, cannot restore under ${confirmedUid}`,
+    };
   }
 
   if (!params.noteId || params.version.noteId !== params.noteId) {
@@ -327,7 +406,8 @@ export const executeVersionRestore = (
       params.currentNote.title,
       params.currentNote.content,
       'restore',
-      confirmedUid
+      confirmedUid,
+      { currentAuthUid: authUid, currentStoreUid: storeUid }
     );
   }
 

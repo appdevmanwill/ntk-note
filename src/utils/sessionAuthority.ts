@@ -11,6 +11,8 @@
  * If ANY identity differs or is missing/transitioning, operations must FAIL CLOSED.
  */
 
+import { auth } from '@/utils/firebase';
+
 export const INVALID_UID_KEYWORDS = new Set([
   'guest',
   'unknown',
@@ -70,6 +72,59 @@ export const isConfirmedSession = (
 };
 
 /**
+ * Strict Confirmed Session Authority (Section 17).
+ * Unlike generic session checks, expectedSessionUid is MANDATORY and must be a valid,
+ * confirmed UID.
+ * Returns true if and only if:
+ * 1. currentAuthUid is valid.
+ * 2. currentStoreUid is valid.
+ * 3. expectedSessionUid is valid.
+ * 4. currentAuthUid === currentStoreUid === expectedSessionUid.
+ * Otherwise returns false (FAIL CLOSED).
+ */
+export const isStrictConfirmedSession = (
+  currentAuthUid: string | null | undefined,
+  currentStoreUid: string | null | undefined,
+  expectedSessionUid: string | null | undefined
+): boolean => {
+  const expected = getConfirmedUid(expectedSessionUid);
+  if (!expected) return false;
+  const confirmed = resolveConfirmedUid(currentAuthUid, currentStoreUid);
+  if (!confirmed) return false;
+  return confirmed === expected;
+};
+
+export interface SessionAuthorityOverrides {
+  currentAuthUid?: string | null;
+  currentStoreUid?: string | null;
+}
+
+/**
+ * Decoupled auth UID getter registry to allow ambient auth lookups without
+ * directly mutating Firebase Auth internal state during testing or transitions.
+ */
+type AuthUidGetter = () => string | null;
+let activeAuthUidGetter: AuthUidGetter = () => {
+  try {
+    return auth?.currentUser?.uid ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export const setAuthUidGetter = (getter: AuthUidGetter): void => {
+  activeAuthUidGetter = getter;
+};
+
+export const getAuthUid = (): string | null => {
+  try {
+    return activeAuthUidGetter();
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Decoupled store UID getter registry to prevent circular dependencies
  * between store/index.ts and service modules.
  */
@@ -87,3 +142,30 @@ export const getStoreUid = (): string | null => {
     return null;
   }
 };
+
+/**
+ * Verifies that an operation requested for `requestedUid` is authorized by the current
+ * confirmed session (or explicit overrides).
+ * Returns true only when:
+ * 1. requestedUid is a valid confirmed UID.
+ * 2. Active auth UID exists and matches active store UID.
+ * 3. That confirmed session UID === requestedUid.
+ * Otherwise returns false (FAIL CLOSED).
+ */
+export const isAuthorizedSession = (
+  requestedUid: string | null | undefined,
+  overrides?: SessionAuthorityOverrides
+): boolean => {
+  const target = getConfirmedUid(requestedUid);
+  if (!target) return false;
+
+  const authUid = overrides?.currentAuthUid !== undefined
+    ? overrides.currentAuthUid
+    : getAuthUid();
+  const storeUid = overrides?.currentStoreUid !== undefined
+    ? overrides.currentStoreUid
+    : getStoreUid();
+
+  return isStrictConfirmedSession(authUid, storeUid, target);
+};
+
