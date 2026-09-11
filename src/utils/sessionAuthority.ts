@@ -94,11 +94,6 @@ export const isStrictConfirmedSession = (
   return confirmed === expected;
 };
 
-export interface SessionAuthorityOverrides {
-  currentAuthUid?: string | null;
-  currentStoreUid?: string | null;
-}
-
 /**
  * Decoupled auth UID getter registry to allow ambient auth lookups without
  * directly mutating Firebase Auth internal state during testing or transitions.
@@ -145,7 +140,13 @@ export const getStoreUid = (): string | null => {
 
 /**
  * Verifies that an operation requested for `requestedUid` is authorized by the current
- * confirmed session (or explicit overrides).
+ * confirmed session.
+ *
+ * SECURITY INVARIANT (Section 4 & 5):
+ * Callers can never supply or override current Auth UID or Store UID.
+ * Authority derives strictly from the actual current runtime identity sources:
+ * getAuthUid() and getStoreUid().
+ *
  * Returns true only when:
  * 1. requestedUid is a valid confirmed UID.
  * 2. Active auth UID exists and matches active store UID.
@@ -153,18 +154,13 @@ export const getStoreUid = (): string | null => {
  * Otherwise returns false (FAIL CLOSED).
  */
 export const isAuthorizedSession = (
-  requestedUid: string | null | undefined,
-  overrides?: SessionAuthorityOverrides
+  requestedUid: string | null | undefined
 ): boolean => {
   const target = getConfirmedUid(requestedUid);
   if (!target) return false;
 
-  const authUid = overrides?.currentAuthUid !== undefined
-    ? overrides.currentAuthUid
-    : getAuthUid();
-  const storeUid = overrides?.currentStoreUid !== undefined
-    ? overrides.currentStoreUid
-    : getStoreUid();
+  const authUid = getAuthUid();
+  const storeUid = getStoreUid();
 
   return isStrictConfirmedSession(authUid, storeUid, target);
 };
