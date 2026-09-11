@@ -31,6 +31,8 @@ import {
   setChatDraft,
   clearChatDraft,
   cleanupLegacyChatDraft,
+  resolveConfirmedUid,
+  reduceMessagesComposerState,
 } from '@/utils/chatService';
 import { DIRECT_MESSAGE_MAX_CHARS, DIRECT_MESSAGE_PAGE_SIZE } from '@/utils/freeZoneConstants';
 import UserAvatar from '@/components/UserAvatar';
@@ -39,7 +41,8 @@ import NewMessageModal from '@/components/NewMessageModal';
 export default function MessagesView() {
   const { activeChatId, setActiveChatId, online, uid: storeUid } = useStore();
   const currentUser = auth.currentUser;
-  const myUid = currentUser?.uid || storeUid || '';
+  const confirmedUid = resolveConfirmedUid(currentUser?.uid, storeUid);
+  const myUid = confirmedUid || '';
 
   const [chats, setChats] = useState<DirectChat[]>([]);
   const [messages, setMessages] = useState<DirectMessage[]>([]);
@@ -47,18 +50,35 @@ export default function MessagesView() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
-  const [composerText, setComposerText] = useState('');
+  const [actionError, setActionError] = useState('');
+
+  // Synchronous atomic identity-transition state:
+  const [composerState, setComposerState] = useState(() => ({
+    uid: confirmedUid,
+    chatId: activeChatId,
+    text: confirmedUid && activeChatId ? getChatDraft(confirmedUid, activeChatId) : '',
+  }));
+
+  // Synchronous transition guard: If confirmedUid or activeChatId changed, instantly reduce state
+  // BEFORE any DOM render or user action can access or send previous account's draft.
+  if (composerState.uid !== confirmedUid || composerState.chatId !== activeChatId) {
+    const nextState = reduceMessagesComposerState(composerState, confirmedUid, activeChatId);
+    setComposerState(nextState);
+    setMessages([]);
+    setActionError('');
+  }
+
+  const composerText = composerState.text;
   const [isSending, setIsSending] = useState(false);
   const [isNewMessageOpen, setIsNewMessageOpen] = useState(false);
   const [optionsMenuOpen, setOptionsMenuOpen] = useState(false);
-  const [actionError, setActionError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Subscribe to direct chats list
   useEffect(() => {
-    if (!myUid) {
+    if (!confirmedUid) {
       setChats([]);
       setLoadingChats(false);
       return;
@@ -66,7 +86,7 @@ export default function MessagesView() {
 
     setLoadingChats(true);
     const unsub = subscribeToDirectChats(
-      myUid,
+      confirmedUid,
       loadedChats => {
         setChats(loadedChats);
         setLoadingChats(false);
@@ -75,7 +95,7 @@ export default function MessagesView() {
     );
 
     return () => unsub();
-  }, [myUid]);
+  }, [confirmedUid]);
 
   // Active chat object
   const activeChat = useMemo(() => {
@@ -84,8 +104,8 @@ export default function MessagesView() {
 
   // Other participant in the active chat
   const otherParticipant = useMemo(() => {
-    if (!activeChat || !myUid) return null;
-    const otherUid = activeChat.participantUids.find(uid => uid !== myUid);
+    if (!activeChat || !confirmedUid) return null;
+    const otherUid = activeChat.participantUids.find(uid => uid !== confirmedUid);
     if (!otherUid) return null;
     const pData = activeChat.participantData?.[otherUid];
     const otherEmail = activeChat.participantEmails.find(e => e !== currentUser?.email) || '';
@@ -95,11 +115,11 @@ export default function MessagesView() {
       email: pData?.email || otherEmail,
       photoURL: pData?.photoURL,
     };
-  }, [activeChat, myUid, currentUser?.email]);
+  }, [activeChat, confirmedUid, currentUser?.email]);
 
   // Subscribe to messages in active chat
   useEffect(() => {
-    if (!activeChatId) {
+    if (!activeChatId || !confirmedUid) {
       setMessages([]);
       setLoadingMessages(false);
       return;
@@ -111,14 +131,8 @@ export default function MessagesView() {
     // Clean up any legacy unscoped draft without migrating
     cleanupLegacyChatDraft(activeChatId);
 
-    // Restore draft strictly scoped to myUid
-    const savedDraft = myUid ? getChatDraft(myUid, activeChatId) : '';
-    setComposerText(savedDraft);
-
     // Mark as read
-    if (myUid) {
-      void markChatAsRead(activeChatId, myUid);
-    }
+    void markChatAsRead(activeChatId, confirmedUid);
 
     const unsub = subscribeToMessages(
       activeChatId,
@@ -137,28 +151,28 @@ export default function MessagesView() {
     return () => {
       unsub();
     };
-  }, [activeChatId, myUid]);
+  }, [activeChatId, confirmedUid]);
 
   // Save composer draft on change
   const handleComposerChange = (text: string) => {
-    setComposerText(text);
-    if (activeChatId && myUid) {
-      setChatDraft(myUid, activeChatId, text);
+    if (!confirmedUid || !activeChatId) {
+      setComposerState(s => ({ ...s, text: '' }));
+      return;
     }
+    setComposerState(s => ({ ...s, text }));
+    setChatDraft(confirmedUid, activeChatId, text);
   };
 
   const handleSendMessage = async () => {
-    if (!activeChatId || !composerText.trim() || isSending) return;
+    if (!activeChatId || !confirmedUid || !composerText.trim() || isSending) return;
     const textToSend = composerText;
     setIsSending(true);
     setActionError('');
 
     try {
       await sendMessage(activeChatId, textToSend);
-      setComposerText('');
-      if (myUid) {
-        clearChatDraft(myUid, activeChatId);
-      }
+      setComposerState(s => ({ ...s, text: '' }));
+      clearChatDraft(confirmedUid, activeChatId);
       cleanupLegacyChatDraft(activeChatId);
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';

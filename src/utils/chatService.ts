@@ -32,13 +32,73 @@ export const getDeterministicChatId = (uidA: string, uidB: string): string => {
 
 // ── UID-Scoped Chat Draft Management (S3-001 Remediation) ──
 
-export const getChatDraftKey = (uid: string, chatId: string): string => {
-  const safeUid = uid?.trim() || '';
-  const safeChatId = chatId?.trim() || '';
-  if (!safeUid || !safeChatId) {
-    throw new Error('Both UID and chatId are required to compute draft storage key');
+const INVALID_UID_KEYWORDS = new Set(['guest', 'unknown', 'null', 'undefined', 'default', 'anonymous']);
+
+/**
+ * Validates that a UID is a genuine confirmed Firebase identity.
+ * Rejects empty strings and placeholder keywords (e.g. 'guest', 'unknown').
+ */
+export const getConfirmedUid = (uid?: string | null): string | null => {
+  if (!uid || typeof uid !== 'string') return null;
+  const trimmed = uid.trim();
+  if (!trimmed) return null;
+  if (INVALID_UID_KEYWORDS.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+};
+
+/**
+ * Resolves a single authoritative effective UID between auth.currentUser and Zustand store.
+ * If both are supplied and mismatch, an identity transition is active -> fails closed to null.
+ */
+export const resolveConfirmedUid = (
+  authUid?: string | null,
+  storeUid?: string | null
+): string | null => {
+  const confirmedAuth = getConfirmedUid(authUid);
+  const confirmedStore = getConfirmedUid(storeUid);
+  if (!confirmedAuth || !confirmedStore) return null;
+  if (confirmedAuth !== confirmedStore) return null;
+  return confirmedAuth;
+};
+
+export interface ComposerState {
+  uid: string | null;
+  chatId: string | null;
+  text: string;
+}
+export type MessagesComposerState = ComposerState;
+
+/**
+ * Pure state reducer for atomic identity transitions in Messages composer.
+ * When UID or chatId transitions, the previous account's draft/text is instantly cleared
+ * and the new scoped draft is loaded (or empty if unauthenticated/transitioning).
+ */
+export const reduceMessagesComposerState = (
+  prev: ComposerState,
+  nextUid: string | null,
+  nextChatId: string | null
+): ComposerState => {
+  const confirmed = getConfirmedUid(nextUid);
+  const safeChatId = nextChatId?.trim() || null;
+
+  if (prev.uid !== confirmed || prev.chatId !== safeChatId) {
+    return {
+      uid: confirmed,
+      chatId: safeChatId,
+      text: confirmed && safeChatId ? getChatDraft(confirmed, safeChatId) : '',
+    };
   }
-  return `ntk:chat:draft:${safeUid}:${safeChatId}`;
+
+  return prev;
+};
+
+export const getChatDraftKey = (uid: string | null | undefined, chatId: string | null | undefined): string => {
+  const confirmed = getConfirmedUid(uid);
+  const safeChatId = chatId?.trim() || '';
+  if (!confirmed || !safeChatId) {
+    return '';
+  }
+  return `ntk:chat:draft:${confirmed}:${safeChatId}`;
 };
 
 export const getLegacyChatDraftKey = (chatId: string): string => {
@@ -47,13 +107,15 @@ export const getLegacyChatDraftKey = (chatId: string): string => {
 
 /**
  * Retrieve an unsent chat draft strictly scoped to the authenticated UID.
- * Never falls back to legacy unscoped storage to prevent cross-account draft leakage.
+ * Never falls back to legacy unscoped storage or invalid UIDs to prevent cross-account draft leakage.
  */
-export const getChatDraft = (uid: string, chatId: string): string => {
+export const getChatDraft = (uid: string | null | undefined, chatId: string | null | undefined): string => {
   if (typeof localStorage === 'undefined') return '';
-  if (!uid || !chatId) return '';
+  const confirmed = getConfirmedUid(uid);
+  const safeChatId = chatId?.trim();
+  if (!confirmed || !safeChatId) return '';
   try {
-    const key = getChatDraftKey(uid, chatId);
+    const key = getChatDraftKey(confirmed, safeChatId);
     return localStorage.getItem(key) || '';
   } catch {
     return '';
@@ -62,13 +124,15 @@ export const getChatDraft = (uid: string, chatId: string): string => {
 
 /**
  * Store an unsent chat draft strictly scoped to the authenticated UID.
- * If text is empty, deletes the key.
+ * If text is empty, deletes the key. Fails closed (no-op) if UID is unconfirmed.
  */
-export const setChatDraft = (uid: string, chatId: string, text: string): void => {
+export const setChatDraft = (uid: string | null | undefined, chatId: string | null | undefined, text: string): void => {
   if (typeof localStorage === 'undefined') return;
-  if (!uid || !chatId) return;
+  const confirmed = getConfirmedUid(uid);
+  const safeChatId = chatId?.trim();
+  if (!confirmed || !safeChatId) return; // FAIL CLOSED
   try {
-    const key = getChatDraftKey(uid, chatId);
+    const key = getChatDraftKey(confirmed, safeChatId);
     if (text) {
       localStorage.setItem(key, text);
     } else {
@@ -80,13 +144,15 @@ export const setChatDraft = (uid: string, chatId: string, text: string): void =>
 };
 
 /**
- * Clear a specific user's chat draft.
+ * Clear a specific user's chat draft. Fails closed (no-op) if UID is unconfirmed.
  */
-export const clearChatDraft = (uid: string, chatId: string): void => {
+export const clearChatDraft = (uid: string | null | undefined, chatId: string | null | undefined): void => {
   if (typeof localStorage === 'undefined') return;
-  if (!uid || !chatId) return;
+  const confirmed = getConfirmedUid(uid);
+  const safeChatId = chatId?.trim();
+  if (!confirmed || !safeChatId) return; // FAIL CLOSED
   try {
-    const key = getChatDraftKey(uid, chatId);
+    const key = getChatDraftKey(confirmed, safeChatId);
     localStorage.removeItem(key);
   } catch (err) {
     console.warn('[Chat] Failed to clear scoped draft:', err);

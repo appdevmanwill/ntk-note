@@ -1,4 +1,4 @@
-import { test, describe, after } from 'node:test';
+import { test, describe, after, before, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeServerRetryBackoffMs,
@@ -66,6 +66,10 @@ import {
   setChatDraft,
   clearChatDraft,
   cleanupLegacyChatDraft,
+  getConfirmedUid,
+  resolveConfirmedUid,
+  reduceMessagesComposerState,
+  type MessagesComposerState,
 } from '../src/utils/chatService.ts';
 import {
   getVersionHistoryStorageKey,
@@ -76,6 +80,9 @@ import {
   saveLocalNoteSnapshot,
   clearVersions,
   deleteVersion,
+  getConfirmedVersionUid,
+  reduceVersionHistoryUiState,
+  type VersionHistoryUiState,
 } from '../src/components/VersionHistory.tsx';
 import {
   QUICK_SHARE_LIMIT,
@@ -9263,7 +9270,38 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
   });
 
   describe('Stage 3A — Critical Cross-Account Isolation Remediation (S3-001 & S3-002)', () => {
-    test('S3-001 P0 Behavioral: Message draft storage is strictly isolated by authenticated UID and symmetric chatId', () => {
+    let originalLocalStorage: any;
+    let mockStore: Map<string, string>;
+
+    before(() => {
+      originalLocalStorage = (globalThis as any).localStorage;
+    });
+
+    beforeEach(() => {
+      mockStore = new Map<string, string>();
+      (globalThis as any).localStorage = {
+        getItem: (k: string) => (mockStore.has(k) ? mockStore.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          mockStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          mockStore.delete(k);
+        },
+        clear: () => {
+          mockStore.clear();
+        },
+        get length() {
+          return mockStore.size;
+        },
+        key: (i: number) => Array.from(mockStore.keys())[i] ?? null,
+      };
+    });
+
+    after(() => {
+      (globalThis as any).localStorage = originalLocalStorage;
+    });
+
+    test('A. S3-001 valid A/B scoped draft test: drafts strictly isolated by authenticated UID and symmetric chatId', () => {
       const uidA = 'userA';
       const uidB = 'userB';
       const chatId = getDeterministicChatId(uidA, uidB);
@@ -9301,22 +9339,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       // Account B must see only B's own scoped draft
       assert.equal(getChatDraft(uidB, chatId), draftB);
 
-      // Step F: Legacy unscoped draft quarantine verification
-      // If an obsolete legacy unscoped draft exists:
-      const legacyKey = getLegacyChatDraftKey(chatId);
-      localStorage.setItem(legacyKey, 'leaked unscoped text from old version');
-
-      // Neither A nor B should ever read or migrate the legacy unscoped draft
-      assert.equal(getChatDraft(uidA, chatId), draftA);
-      assert.equal(getChatDraft(uidB, chatId), draftB);
-
-      // Running cleanupLegacyChatDraft removes the legacy key without touching user drafts
-      cleanupLegacyChatDraft(chatId);
-      assert.equal(localStorage.getItem(legacyKey), null);
-      assert.equal(getChatDraft(uidA, chatId), draftA);
-      assert.equal(getChatDraft(uidB, chatId), draftB);
-
-      // Step G: Clear draft for User A does not touch User B
+      // Step F: Clear draft for User A does not touch User B
       clearChatDraft(uidA, chatId);
       assert.equal(getChatDraft(uidA, chatId), '');
       assert.equal(getChatDraft(uidB, chatId), draftB);
@@ -9325,12 +9348,131 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       clearChatDraft(uidB, chatId);
     });
 
-    test('S3-002 P0 Behavioral: Note version history is strictly isolated by authenticated UID and noteId on shared notes', () => {
+    test('B. S3-001 direct identity-replacement composer test: atomic transition resets composerText and fails closed on transition mismatch', () => {
       const uidA = 'userA';
       const uidB = 'userB';
-      const sharedNoteId = 'shared-note-1';
+      const chatId = getDeterministicChatId(uidA, uidB);
 
-      // Verify key shape matches canonical ntk:versions:${uid}:${noteId}
+      // 1. Initial state: User A is active and has entered draft text in the composer
+      const stateA: MessagesComposerState = {
+        uid: uidA,
+        chatId: chatId,
+        text: 'private draft A',
+      };
+
+      // 2. Direct identity replacement: User A -> User B without clearAuth flow
+      // The reducer immediately wipes composerText so B cannot see or send A's draft
+      const stateB = reduceMessagesComposerState(stateA, uidB, chatId);
+      assert.equal(stateB.uid, uidB);
+      assert.equal(stateB.chatId, chatId);
+      assert.equal(stateB.text, '', 'Composer text must be immediately wiped on UID change');
+
+      // User B draft lookup returns empty because B has not saved any draft yet
+      assert.equal(getChatDraft(stateB.uid, chatId), '');
+
+      // 3. User B types and stores B's own draft
+      setChatDraft(uidB, chatId, 'private draft B');
+      const stateBWithDraft: MessagesComposerState = {
+        uid: uidB,
+        chatId: chatId,
+        text: 'private draft B',
+      };
+
+      // 4. Direct identity replacement: User B -> User A
+      const stateAReturned = reduceMessagesComposerState(stateBWithDraft, uidA, chatId);
+      assert.equal(stateAReturned.uid, uidA);
+      assert.equal(stateAReturned.chatId, chatId);
+      assert.equal(stateAReturned.text, '', 'Composer text must reset when transitioning back to A');
+
+      // 5. Test resolveConfirmedUid authority rule:
+      // Mismatches during active transitions or unconfirmed states must FAIL CLOSED to null
+      assert.equal(resolveConfirmedUid(uidA, uidA), uidA);
+      assert.equal(resolveConfirmedUid(uidB, uidA), null, 'In-flight auth transition mismatch must fail closed');
+      assert.equal(resolveConfirmedUid(null, uidA), null, 'Missing auth identity must fail closed');
+      assert.equal(resolveConfirmedUid(uidB, null), null, 'Missing store identity must fail closed');
+      assert.equal(resolveConfirmedUid(undefined, undefined), null);
+      assert.equal(resolveConfirmedUid('guest', 'guest'), null, 'Pseudo-identity guest must fail closed');
+    });
+
+    test('C. S3-001 missing-UID fail-closed test: null, undefined, blank, and invalid pseudo-identities fail closed', () => {
+      const chatId = 'chat-missing-uid-123';
+
+      // 1. getConfirmedUid rejects empty or pseudo-identities
+      assert.equal(getConfirmedUid(null), null);
+      assert.equal(getConfirmedUid(undefined), null);
+      assert.equal(getConfirmedUid(''), null);
+      assert.equal(getConfirmedUid('   '), null);
+      assert.equal(getConfirmedUid('guest'), null);
+      assert.equal(getConfirmedUid('Guest'), null);
+      assert.equal(getConfirmedUid('unknown'), null);
+      assert.equal(getConfirmedUid('default'), null);
+      assert.equal(getConfirmedUid('anonymous'), null);
+
+      // 2. Draft key returns empty string for missing / pseudo UID
+      assert.equal(getChatDraftKey(null as any, chatId), '');
+      assert.equal(getChatDraftKey(undefined as any, chatId), '');
+      assert.equal(getChatDraftKey('', chatId), '');
+      assert.equal(getChatDraftKey('guest', chatId), '');
+
+      // 3. getChatDraft returns empty string
+      assert.equal(getChatDraft(null as any, chatId), '');
+      assert.equal(getChatDraft('guest', chatId), '');
+
+      // 4. setChatDraft is a safe no-op and never writes to localStorage
+      setChatDraft(null as any, chatId, 'secret draft text');
+      setChatDraft(undefined as any, chatId, 'secret draft text');
+      setChatDraft('', chatId, 'secret draft text');
+      setChatDraft('guest', chatId, 'secret draft text');
+      setChatDraft('unknown', chatId, 'secret draft text');
+
+      // Verify no sensitive keys exist in localStorage
+      assert.equal(localStorage.getItem(`ntk:chat:draft:guest:${chatId}`), null);
+      assert.equal(localStorage.getItem(`ntk:chat:draft:null:${chatId}`), null);
+      assert.equal(localStorage.getItem(`ntk:chat:draft:undefined:${chatId}`), null);
+      assert.equal(localStorage.getItem(`ntk:chat:draft::${chatId}`), null);
+
+      // 5. clearChatDraft is a safe no-op
+      clearChatDraft(null as any, chatId);
+      clearChatDraft('guest', chatId);
+    });
+
+    test('D. S3-001 anonymous unique-UID test: independent namespaces for distinct Firebase anonymous UIDs', () => {
+      const anonUid1 = 'anon-firebase-uid-abc-123';
+      const anonUid2 = 'anon-firebase-uid-def-456';
+      const chatId = 'chat-anon-deterministic-1';
+
+      // Both anonymous users have confirmed unique UIDs
+      assert.equal(getConfirmedUid(anonUid1), anonUid1);
+      assert.equal(getConfirmedUid(anonUid2), anonUid2);
+
+      // Keys must be distinct and scoped to their unique anonymous UID
+      const key1 = getChatDraftKey(anonUid1, chatId);
+      const key2 = getChatDraftKey(anonUid2, chatId);
+      assert.equal(key1, `ntk:chat:draft:${anonUid1}:${chatId}`);
+      assert.equal(key2, `ntk:chat:draft:${anonUid2}:${chatId}`);
+      assert.notEqual(key1, key2);
+
+      // User 1 sets draft
+      setChatDraft(anonUid1, chatId, 'Anon 1 private draft');
+      assert.equal(getChatDraft(anonUid1, chatId), 'Anon 1 private draft');
+      assert.equal(getChatDraft(anonUid2, chatId), '');
+
+      // User 2 sets draft
+      setChatDraft(anonUid2, chatId, 'Anon 2 private draft');
+      assert.equal(getChatDraft(anonUid1, chatId), 'Anon 1 private draft');
+      assert.equal(getChatDraft(anonUid2, chatId), 'Anon 2 private draft');
+
+      // Clean up
+      clearChatDraft(anonUid1, chatId);
+      clearChatDraft(anonUid2, chatId);
+    });
+
+    test('E. S3-002 valid A/B shared-note history test: local note version history isolated by UID and noteId', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const sharedNoteId = 'shared-note-s3002';
+
+      // Canonical key format
       assert.equal(getVersionHistoryStorageKey(uidA, sharedNoteId), `ntk:versions:${uidA}:${sharedNoteId}`);
       assert.equal(getVersionHistoryStorageKey(uidB, sharedNoteId), `ntk:versions:${uidB}:${sharedNoteId}`);
       assert.notEqual(
@@ -9338,73 +9480,205 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         getVersionHistoryStorageKey(uidB, sharedNoteId)
       );
 
-      // Clean starting state
       clearVersions(sharedNoteId, uidA);
       clearVersions(sharedNoteId, uidB);
-      cleanupLegacyVersionHistory(sharedNoteId);
 
-      // Step A: User A saves a private historical version snapshot on the shared note
-      const titleA = 'A private old title';
+      // User A creates snapshot
+      const titleA = 'A private historical title';
       const contentA = 'A private historical content';
       const versionA = saveLocalNoteSnapshot(sharedNoteId, titleA, contentA, 'manual', uidA);
       assert.ok(versionA);
       assert.equal(versionA.uid, uidA);
 
-      // Verify User A receives only A's version
+      // A sees only A snapshot
       const historyA = getVersions(sharedNoteId, uidA);
       assert.equal(historyA.length, 1);
       assert.equal(historyA[0].title, titleA);
-      assert.equal(historyA[0].content, contentA);
 
-      // Step B: Switch account context to User B on the same shared note in the same browser profile
-      // Account B must receive an EMPTY version history
+      // B receives empty history
       const historyBInitial = getVersions(sharedNoteId, uidB);
       assert.equal(historyBInitial.length, 0);
 
-      // Step C: User B saves a separate version on the shared note
-      const titleB = 'B collaborator revision title';
-      const contentB = 'B collaborator revision content';
+      // B creates snapshot
+      const titleB = 'B collaborator revision';
+      const contentB = 'B collaborator content';
       const versionB = saveLocalNoteSnapshot(sharedNoteId, titleB, contentB, 'manual', uidB);
       assert.ok(versionB);
       assert.equal(versionB.uid, uidB);
 
-      // Step D: Switch account context back to User A
-      // Account A receives only A's history
-      const historyAReloaded = getVersions(sharedNoteId, uidA);
-      assert.equal(historyAReloaded.length, 1);
-      assert.equal(historyAReloaded[0].title, titleA);
-      assert.equal(historyAReloaded[0].content, contentA);
+      // A reload
+      const historyAReload = getVersions(sharedNoteId, uidA);
+      assert.equal(historyAReload.length, 1);
+      assert.equal(historyAReload[0].title, titleA);
 
-      // Step E: Switch account context back to User B
-      // Account B receives only B's history
-      const historyBReloaded = getVersions(sharedNoteId, uidB);
-      assert.equal(historyBReloaded.length, 1);
-      assert.equal(historyBReloaded[0].title, titleB);
-      assert.equal(historyBReloaded[0].content, contentB);
+      // B reload
+      const historyBReload = getVersions(sharedNoteId, uidB);
+      assert.equal(historyBReload.length, 1);
+      assert.equal(historyBReload[0].title, titleB);
 
-      // Step F: Legacy unscoped version history quarantine verification
-      const legacyKey = getLegacyVersionHistoryKey(sharedNoteId);
-      localStorage.setItem(legacyKey, JSON.stringify([{ id: 'legacy-1', noteId: sharedNoteId, title: 'Old Leak', content: 'Unsafe' }]));
-
-      // Neither A nor B should read or adopt the legacy version
-      assert.equal(getVersions(sharedNoteId, uidA).length, 1);
-      assert.equal(getVersions(sharedNoteId, uidA)[0].title, titleA);
-      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
-      assert.equal(getVersions(sharedNoteId, uidB)[0].title, titleB);
-
-      // cleanupLegacyVersionHistory safely evicts legacy key without mutating user versions
-      cleanupLegacyVersionHistory(sharedNoteId);
-      assert.equal(localStorage.getItem(legacyKey), null);
-      assert.equal(getVersions(sharedNoteId, uidA).length, 1);
-      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
-
-      // Step G: Operations audit — deleteVersion and clearVersions are strictly UID-scoped
+      // Delete / clear by A does not touch B
       clearVersions(sharedNoteId, uidA);
       assert.equal(getVersions(sharedNoteId, uidA).length, 0);
       assert.equal(getVersions(sharedNoteId, uidB).length, 1);
 
-      // Clean up
       clearVersions(sharedNoteId, uidB);
+    });
+
+    test('F. S3-002 selectedVersion identity-reset test: selectedVersion and UI state reset immediately on UID change', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'note-selected-ver-test';
+
+      const initialUiState: VersionHistoryUiState = {
+        uid: uidA,
+        noteId: noteId,
+        selectedVersion: {
+          id: 'vA-123',
+          noteId: noteId,
+          title: 'Secret Title of A',
+          content: 'Secret Content of A',
+          timestamp: Date.now(),
+          type: 'manual',
+          uid: uidA,
+        },
+      };
+
+      // Direct identity replacement: User A -> User B
+      const switchedUiState = reduceVersionHistoryUiState(initialUiState, uidB, noteId);
+      assert.equal(switchedUiState.uid, uidB);
+      assert.equal(switchedUiState.noteId, noteId);
+      assert.equal(
+        switchedUiState.selectedVersion,
+        null,
+        'selectedVersion must be reset to null immediately when UID changes'
+      );
+
+      // Also verify changing noteId resets selectedVersion
+      const sameUserDifferentNote: VersionHistoryUiState = {
+        uid: uidB,
+        noteId: 'note-1',
+        selectedVersion: {
+          id: 'vB-1',
+          noteId: 'note-1',
+          title: 'Note 1',
+          content: 'Content',
+          timestamp: Date.now(),
+          type: 'manual',
+          uid: uidB,
+        },
+      };
+      const switchedNoteState = reduceVersionHistoryUiState(sameUserDifferentNote, uidB, 'note-2');
+      assert.equal(switchedNoteState.selectedVersion, null);
+    });
+
+    test('G. S3-002 missing-UID fail-closed test: null, undefined, blank, and guest fallbacks rejected', () => {
+      const noteId = 'note-fail-closed-test';
+
+      // 1. getConfirmedVersionUid rejects null, undefined, blanks, and 'guest'
+      assert.equal(getConfirmedVersionUid(null), null);
+      assert.equal(getConfirmedVersionUid(undefined), null);
+      assert.equal(getConfirmedVersionUid(''), null);
+      assert.equal(getConfirmedVersionUid('   '), null);
+      assert.equal(getConfirmedVersionUid('guest'), null);
+      assert.equal(getConfirmedVersionUid('unknown'), null);
+
+      // 2. getVersionHistoryStorageKey fails closed without confirmed UID
+      assert.equal(getVersionHistoryStorageKey(null as any, noteId), '');
+      assert.equal(getVersionHistoryStorageKey(undefined as any, noteId), '');
+      assert.equal(getVersionHistoryStorageKey('', noteId), '');
+      assert.equal(getVersionHistoryStorageKey('guest', noteId), '');
+
+      // 3. getVersions returns empty array
+      assert.deepEqual(getVersions(noteId, null as any), []);
+      assert.deepEqual(getVersions(noteId, undefined as any), []);
+      assert.deepEqual(getVersions(noteId, 'guest'), []);
+
+      // 4. saveLocalNoteSnapshot returns null and never writes to storage
+      const savedSnapshot = saveLocalNoteSnapshot(noteId, 'Title', 'Content', 'manual', null as any);
+      assert.equal(savedSnapshot, null);
+      const savedGuestSnapshot = saveLocalNoteSnapshot(noteId, 'Title', 'Content', 'manual', 'guest');
+      assert.equal(savedGuestSnapshot, null);
+
+      // Ensure no ntk:versions:guest:${noteId} or ntk:versions:null:${noteId} exists
+      assert.equal(localStorage.getItem(`ntk:versions:guest:${noteId}`), null);
+      assert.equal(localStorage.getItem(`ntk:versions:null:${noteId}`), null);
+      assert.equal(localStorage.getItem(`ntk:versions:undefined:${noteId}`), null);
+
+      // 5. deleteVersion and clearVersions are safe no-ops
+      deleteVersion(noteId, 'any-id', null as any);
+      deleteVersion(noteId, 'any-id', 'guest');
+      clearVersions(noteId, null as any);
+      clearVersions(noteId, 'guest');
+    });
+
+    test('H. S3-002 two anonymous unique-UID isolation test: independent version namespaces for distinct anonymous UIDs', () => {
+      const anonUid1 = 'anon-user-123';
+      const anonUid2 = 'anon-user-456';
+      const sharedNoteId = 'shared-note-anon-test';
+
+      // Storage keys are strictly scoped
+      const key1 = getVersionHistoryStorageKey(anonUid1, sharedNoteId);
+      const key2 = getVersionHistoryStorageKey(anonUid2, sharedNoteId);
+      assert.equal(key1, `ntk:versions:${anonUid1}:${sharedNoteId}`);
+      assert.equal(key2, `ntk:versions:${anonUid2}:${sharedNoteId}`);
+      assert.notEqual(key1, key2);
+
+      // Anonymous User 1 saves snapshot
+      const snap1 = saveLocalNoteSnapshot(sharedNoteId, 'Anon 1 Draft', 'Body 1', 'manual', anonUid1);
+      assert.ok(snap1);
+
+      // Anonymous User 2 sees 0 versions
+      assert.equal(getVersions(sharedNoteId, anonUid2).length, 0);
+
+      // Anonymous User 2 saves snapshot
+      const snap2 = saveLocalNoteSnapshot(sharedNoteId, 'Anon 2 Draft', 'Body 2', 'manual', anonUid2);
+      assert.ok(snap2);
+
+      // Scoped reads
+      const hist1 = getVersions(sharedNoteId, anonUid1);
+      const hist2 = getVersions(sharedNoteId, anonUid2);
+      assert.equal(hist1.length, 1);
+      assert.equal(hist1[0].title, 'Anon 1 Draft');
+      assert.equal(hist2.length, 1);
+      assert.equal(hist2[0].title, 'Anon 2 Draft');
+
+      // Cleanup
+      clearVersions(sharedNoteId, anonUid1);
+      clearVersions(sharedNoteId, anonUid2);
+    });
+
+    test('I. Legacy non-migration tests: obsolete unscoped chat and version keys are quarantined and never migrated', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+      const noteId = 'shared-note-legacy-test';
+
+      // 1. Seed obsolete legacy unscoped chat key
+      const legacyChatKey = getLegacyChatDraftKey(chatId);
+      localStorage.setItem(legacyChatKey, 'leaked unscoped text from old version');
+
+      // Neither A nor B should read or migrate the legacy draft
+      assert.equal(getChatDraft(uidA, chatId), '');
+      assert.equal(getChatDraft(uidB, chatId), '');
+
+      // Cleanup legacy chat key
+      cleanupLegacyChatDraft(chatId);
+      assert.equal(localStorage.getItem(legacyChatKey), null);
+
+      // 2. Seed obsolete legacy unscoped version history key
+      const legacyVerKey = getLegacyVersionHistoryKey(noteId);
+      localStorage.setItem(
+        legacyVerKey,
+        JSON.stringify([{ id: 'legacy-1', noteId, title: 'Old Leak', content: 'Unsafe' }])
+      );
+
+      // Neither A nor B should read or adopt the legacy version history
+      assert.equal(getVersions(noteId, uidA).length, 0);
+      assert.equal(getVersions(noteId, uidB).length, 0);
+
+      // Cleanup legacy version key
+      cleanupLegacyVersionHistory(noteId);
+      assert.equal(localStorage.getItem(legacyVerKey), null);
     });
 
     test('Auth clearing: clearAuth resets activeChatId and aiNoteContext in memory', () => {

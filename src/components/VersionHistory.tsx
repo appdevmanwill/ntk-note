@@ -24,13 +24,59 @@ interface Props {
 
 // ── UID-Scoped Version History Storage Keys (S3-002 Remediation) ──
 
-export const getVersionHistoryStorageKey = (uid: string | null | undefined, noteId: string): string => {
-  const safeUid = uid?.trim() || 'guest';
-  const safeNoteId = noteId?.trim() || '';
-  if (!safeNoteId) {
-    throw new Error('Note ID is required to compute version history storage key');
+const INVALID_UID_KEYWORDS = new Set(['guest', 'unknown', 'null', 'undefined', 'default', 'anonymous']);
+
+/**
+ * Validates that a UID is a genuine confirmed Firebase identity.
+ * Rejects empty strings and placeholder keywords (e.g. 'guest', 'unknown').
+ */
+export const getConfirmedVersionUid = (uid?: string | null): string | null => {
+  if (!uid || typeof uid !== 'string') return null;
+  const trimmed = uid.trim();
+  if (!trimmed) return null;
+  if (INVALID_UID_KEYWORDS.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+};
+
+export interface VersionHistoryUiState {
+  uid: string | null;
+  noteId: string;
+  selectedVersion: NoteVersion | null;
+  versions: NoteVersion[];
+}
+
+/**
+ * Pure state reducer for atomic identity transitions in Version History.
+ * When UID transitions, previous account's selectedVersion is IMMEDIATELY cleared to null,
+ * and versions are loaded strictly for the new confirmed UID.
+ */
+export const reduceVersionHistoryUiState = (
+  prev: { uid: string | null; noteId: string; selectedVersion: NoteVersion | null; versions: NoteVersion[] },
+  nextUid: string | null,
+  nextNoteId: string
+): VersionHistoryUiState => {
+  const confirmed = getConfirmedVersionUid(nextUid);
+  const safeNoteId = nextNoteId?.trim() || '';
+
+  if (prev.uid !== confirmed || prev.noteId !== safeNoteId) {
+    return {
+      uid: confirmed,
+      noteId: safeNoteId,
+      selectedVersion: null, // Reset immediately on account transition
+      versions: confirmed && safeNoteId ? getVersions(safeNoteId, confirmed) : [],
+    };
   }
-  return `ntk:versions:${safeUid}:${safeNoteId}`;
+
+  return prev;
+};
+
+export const getVersionHistoryStorageKey = (uid: string | null | undefined, noteId: string): string => {
+  const confirmed = getConfirmedVersionUid(uid);
+  const safeNoteId = noteId?.trim() || '';
+  if (!confirmed || !safeNoteId) {
+    return '';
+  }
+  return `ntk:versions:${confirmed}:${safeNoteId}`;
 };
 
 export const getLegacyVersionHistoryKey = (noteId: string): string => {
@@ -55,13 +101,14 @@ export const cleanupLegacyVersionHistory = (noteId: string): void => {
   } catch {}
 };
 
-// Store versions in localStorage strictly scoped by UID + noteId
+// Store versions in localStorage strictly scoped by confirmed UID + noteId
 export const getVersions = (noteId: string, uid?: string | null): NoteVersion[] => {
   if (typeof localStorage === 'undefined') return [];
   if (!noteId) return [];
-  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  if (!confirmed) return []; // FAIL CLOSED: empty array
   try {
-    const key = getVersionHistoryStorageKey(effectiveUid, noteId);
+    const key = getVersionHistoryStorageKey(confirmed, noteId);
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : [];
   } catch {
@@ -72,13 +119,14 @@ export const getVersions = (noteId: string, uid?: string | null): NoteVersion[] 
 export const saveVersion = (version: NoteVersion, uid?: string | null): void => {
   if (typeof localStorage === 'undefined') return;
   if (!version?.noteId) return;
-  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (version.uid?.trim() || auth.currentUser?.uid || useStore.getState().uid || 'guest');
-  const versions = getVersions(version.noteId, effectiveUid);
-  const versionWithUid: NoteVersion = { ...version, uid: effectiveUid };
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (version.uid || auth.currentUser?.uid || useStore.getState().uid));
+  if (!confirmed) return; // FAIL CLOSED: safe refusal, no-op
+  const versions = getVersions(version.noteId, confirmed);
+  const versionWithUid: NoteVersion = { ...version, uid: confirmed };
   // Keep last 50 versions per note per account
   const newVersions = [versionWithUid, ...versions.filter(v => v.id !== version.id)].slice(0, 50);
-  const key = getVersionHistoryStorageKey(effectiveUid, version.noteId);
   try {
+    const key = getVersionHistoryStorageKey(confirmed, version.noteId);
     localStorage.setItem(key, JSON.stringify(newVersions));
   } catch (err) {
     console.warn('[VersionHistory] Failed to persist scoped version:', err);
@@ -93,12 +141,13 @@ export const saveLocalNoteSnapshot = (
   uid?: string | null
 ): NoteVersion | null => {
   if (!noteId) return null;
-  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  if (!confirmed) return null; // FAIL CLOSED: safe refusal, no-op
 
   // Safely quarantine and remove any legacy unscoped version history for this note
   cleanupLegacyVersionHistory(noteId);
 
-  const versions = getVersions(noteId, effectiveUid);
+  const versions = getVersions(noteId, confirmed);
   const lastVersion = versions[0];
 
   if (lastVersion?.title === title && lastVersion.content === content && lastVersion.source === source) {
@@ -108,22 +157,23 @@ export const saveLocalNoteSnapshot = (
   const version: NoteVersion = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     noteId,
-    uid: effectiveUid,
+    uid: confirmed,
     title,
     content,
     timestamp: new Date().toISOString(),
     source,
   };
-  saveVersion(version, effectiveUid);
+  saveVersion(version, confirmed);
   return version;
 };
 
 export const clearVersions = (noteId: string, uid?: string | null): void => {
   if (typeof localStorage === 'undefined') return;
   if (!noteId) return;
-  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  if (!confirmed) return; // FAIL CLOSED: no-op
   try {
-    const key = getVersionHistoryStorageKey(effectiveUid, noteId);
+    const key = getVersionHistoryStorageKey(confirmed, noteId);
     localStorage.removeItem(key);
   } catch (err) {
     console.warn('[VersionHistory] Failed to clear scoped versions:', err);
@@ -133,11 +183,12 @@ export const clearVersions = (noteId: string, uid?: string | null): void => {
 export const deleteVersion = (noteId: string, versionId: string, uid?: string | null): void => {
   if (typeof localStorage === 'undefined') return;
   if (!noteId || !versionId) return;
-  const effectiveUid = uid !== undefined ? (uid?.trim() || 'guest') : (auth.currentUser?.uid || useStore.getState().uid || 'guest');
-  const versions = getVersions(noteId, effectiveUid);
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : (auth.currentUser?.uid || useStore.getState().uid));
+  if (!confirmed) return; // FAIL CLOSED: no-op
+  const versions = getVersions(noteId, confirmed);
   const filtered = versions.filter(v => v.id !== versionId);
-  const key = getVersionHistoryStorageKey(effectiveUid, noteId);
   try {
+    const key = getVersionHistoryStorageKey(confirmed, noteId);
     localStorage.setItem(key, JSON.stringify(filtered));
   } catch (err) {
     console.warn('[VersionHistory] Failed to update scoped versions after delete:', err);
@@ -147,7 +198,9 @@ export const deleteVersion = (noteId: string, versionId: string, uid?: string | 
 const cloudCheckpointPath = (uid: string) => `users/${uid}/note_checkpoints`;
 
 export const getCloudNoteCheckpoints = async (uid: string, noteId: string): Promise<NoteVersion[]> => {
-  const snapshot = await getDocs(query(collection(db, cloudCheckpointPath(uid)), where('noteId', '==', noteId)));
+  const confirmed = getConfirmedVersionUid(uid);
+  if (!confirmed) return [];
+  const snapshot = await getDocs(query(collection(db, cloudCheckpointPath(confirmed)), where('noteId', '==', noteId)));
   return snapshot.docs
     .map(item => item.data() as NoteVersion)
     .filter(item => item.noteId === noteId)
@@ -160,21 +213,22 @@ export const saveCloudNoteCheckpoint = async (
   title: string,
   content: string
 ) => {
-  const version = saveLocalNoteSnapshot(noteId, title, content, 'cloud-checkpoint', uid);
-  if (!uid) return version;
+  const confirmed = getConfirmedVersionUid(uid);
+  if (!confirmed) return null;
+
+  const version = saveLocalNoteSnapshot(noteId, title, content, 'cloud-checkpoint', confirmed);
+  if (!version) return null;
 
   const checkpointBytes = new Blob([JSON.stringify(version)]).size;
   if (checkpointBytes >= 900_000) {
     throw new Error('This checkpoint is too large for safe cloud sync. Compress images or split the note first.');
   }
 
-  if (version) {
-    await setDoc(doc(db, cloudCheckpointPath(uid), version.id), version);
-  }
+  await setDoc(doc(db, cloudCheckpointPath(confirmed), version.id), version);
 
-  const checkpoints = await getCloudNoteCheckpoints(uid, noteId);
+  const checkpoints = await getCloudNoteCheckpoints(confirmed, noteId);
   await Promise.all(
-    checkpoints.slice(10).map(item => deleteDoc(doc(db, cloudCheckpointPath(uid), item.id)).catch(console.error))
+    checkpoints.slice(10).map(item => deleteDoc(doc(db, cloudCheckpointPath(confirmed), item.id)).catch(console.error))
   );
 
   return version;
@@ -183,62 +237,82 @@ export const saveCloudNoteCheckpoint = async (
 // Hook to automatically save versions with UID scoping
 export const useVersionHistory = (noteId: string | null, title: string, content: string, uid?: string | null) => {
   const storeUid = useStore(s => s.uid);
-  const effectiveUid = uid !== undefined ? uid : storeUid;
+  const confirmed = getConfirmedVersionUid(uid !== undefined ? uid : storeUid);
 
   useEffect(() => {
-    if (!noteId || (!title && !content)) return;
+    if (!noteId || (!title && !content) || !confirmed) return;
 
     // Debounce: save version every 30 seconds of inactivity
     const timer = setTimeout(() => {
-      const versions = getVersions(noteId, effectiveUid);
+      const versions = getVersions(noteId, confirmed);
       const lastVersion = versions[0];
       
       // Only save if content changed
       if (!lastVersion || lastVersion.title !== title || lastVersion.content !== content) {
-        saveLocalNoteSnapshot(noteId, title, content, 'auto', effectiveUid);
+        saveLocalNoteSnapshot(noteId, title, content, 'auto', confirmed);
       }
     }, 30000);
 
     return () => clearTimeout(timer);
-  }, [noteId, title, content, effectiveUid]);
+  }, [noteId, title, content, confirmed]);
 };
 
 export default function VersionHistory({ noteId, onClose, onRestore, presentation = 'modal' }: Props) {
-  const [versions, setVersions] = useState<NoteVersion[]>([]);
-  const [selectedVersion, setSelectedVersion] = useState<NoteVersion | null>(null);
-  const { getNoteById, uid } = useStore();
+  const { getNoteById, uid: storeUid } = useStore();
+  const confirmedUid = getConfirmedVersionUid(storeUid || auth.currentUser?.uid);
   
   const currentNote = getNoteById(noteId);
+
+  // Synchronous atomic identity-transition state:
+  const [uiState, setUiState] = useState(() => ({
+    uid: confirmedUid,
+    noteId,
+    selectedVersion: null as NoteVersion | null,
+    versions: confirmedUid ? getVersions(noteId, confirmedUid) : [],
+  }));
+
+  // Synchronous transition guard: If confirmedUid or noteId changed, immediately reset selectedVersion
+  if (uiState.uid !== confirmedUid || uiState.noteId !== noteId) {
+    setUiState(reduceVersionHistoryUiState(uiState, confirmedUid, noteId));
+  }
+
+  const versions = uiState.versions;
+  const selectedVersion = uiState.selectedVersion;
+  const setSelectedVersion = (v: NoteVersion | null) => setUiState(s => ({ ...s, selectedVersion: v }));
 
   useEffect(() => {
     let cancelled = false;
     cleanupLegacyVersionHistory(noteId);
-    const localVersions = getVersions(noteId, uid);
-    setVersions(localVersions);
-
-    if (uid) {
-      void getCloudNoteCheckpoints(uid, noteId)
-        .then(cloudVersions => {
-          if (cancelled) return;
-          const merged = new Map<string, NoteVersion>();
-          [...cloudVersions, ...localVersions].forEach(item => merged.set(item.id, item));
-          setVersions(
-            [...merged.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-          );
-        })
-        .catch(console.error);
+    if (!confirmedUid) {
+      setUiState(s => ({ ...s, versions: [], selectedVersion: null }));
+      return;
     }
+    const localVersions = getVersions(noteId, confirmedUid);
+    setUiState(s => ({ ...s, versions: localVersions }));
+
+    void getCloudNoteCheckpoints(confirmedUid, noteId)
+      .then(cloudVersions => {
+        if (cancelled) return;
+        const merged = new Map<string, NoteVersion>();
+        [...cloudVersions, ...localVersions].forEach(item => merged.set(item.id, item));
+        setUiState(s => ({
+          ...s,
+          versions: [...merged.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+        }));
+      })
+      .catch(console.error);
 
     return () => {
       cancelled = true;
     };
-  }, [noteId, uid]);
+  }, [noteId, confirmedUid]);
 
   const handleRestore = (version: NoteVersion) => {
+    if (!confirmedUid) return; // fail closed
     if (confirm('Restore this version? Current content will be saved as a new version.')) {
       // Save current state first with scoped UID
       if (currentNote) {
-        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore', uid);
+        saveLocalNoteSnapshot(noteId, currentNote.title, currentNote.content, 'restore', confirmedUid);
       }
       onRestore(version);
       onClose();
