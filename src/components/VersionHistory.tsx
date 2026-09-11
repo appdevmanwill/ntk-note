@@ -101,14 +101,22 @@ export const cleanupLegacyVersionHistory = (noteId: string): void => {
 
 /**
  * Store versions in localStorage strictly scoped by confirmed UID + noteId.
- * OMITTED UID MUST NEVER MEAN "RESOLVE AMBIENTLY" (Section 5, 7, 10).
- * If confirmedUid is absent, invalid, or placeholder, returns [] immediately.
+ * STAGE 3A.4 MANDATORY SESSION AUTHORITY:
+ * Confirms that the current session strictly authorizes reading the requested UID.
+ * Requires Auth UID === Store UID === confirmedUid.
+ * If confirmedUid is absent, invalid, placeholder, or not authorized by the active session,
+ * returns [] immediately (FAIL CLOSED).
  */
-export const getVersions = (noteId: string, confirmedUid?: string | null): NoteVersion[] => {
+export const getVersions = (
+  noteId: string,
+  confirmedUid?: string | null,
+  overrides?: SessionAuthorityOverrides
+): NoteVersion[] => {
   if (typeof localStorage === 'undefined') return [];
   if (!noteId) return [];
   const confirmed = getConfirmedVersionUid(confirmedUid);
   if (!confirmed) return []; // FAIL CLOSED: empty array
+  if (!isAuthorizedSession(confirmed, overrides)) return []; // FAIL CLOSED: unconfirmed session or mismatch
   try {
     const key = getVersionHistoryStorageKey(confirmed, noteId);
     const raw = localStorage.getItem(key);
@@ -120,27 +128,45 @@ export const getVersions = (noteId: string, confirmedUid?: string | null): NoteV
 
 /**
  * Persist version into localStorage strictly under the confirmed UID.
- * Rejects missing or invalid UIDs without fallback to ambient state.
+ * STAGE 3A.4 MANDATORY SESSION & OWNERSHIP INVARIANT:
+ * 1. Requires explicit confirmedUid parameter (NO fallback to version.uid or ambient identity).
+ * 2. Requires strict session authority: Auth UID === Store UID === confirmedUid.
+ * 3. Requires valid version owner matching confirmed session: version.uid === confirmedUid.
+ * 4. NEVER rewrites version ownership on mismatch (fails closed with false/no-op).
  */
 export const saveVersion = (
   version: NoteVersion,
-  confirmedUid?: string | null,
+  confirmedUid: string,
   overrides?: SessionAuthorityOverrides
-): void => {
-  if (typeof localStorage === 'undefined') return;
-  if (!version?.noteId) return;
-  const confirmed = getConfirmedVersionUid(confirmedUid || version?.uid);
-  if (!confirmed) return; // FAIL CLOSED: safe refusal, no-op
-  if (!isAuthorizedSession(confirmed, overrides)) return; // FAIL CLOSED: unconfirmed session or mismatch
-  const versions = getVersions(version.noteId, confirmed);
-  const versionWithUid: NoteVersion = { ...version, uid: confirmed };
-  // Keep last 50 versions per note per account
-  const newVersions = [versionWithUid, ...versions.filter(v => v.id !== version.id)].slice(0, 50);
+): boolean => {
+  if (typeof localStorage === 'undefined') return false;
+  if (!version?.noteId) return false;
+
+  // 1. Explicit confirmedUid parameter required; omitted/invalid fails closed
+  const target = getConfirmedVersionUid(confirmedUid);
+  if (!target) return false;
+
+  // 2. Strict session authority: Auth UID === Store UID === target
+  if (!isAuthorizedSession(target, overrides)) return false;
+
+  // 3. Version owner validation: version.uid must exist, be valid non-placeholder, and match target
+  const versionOwner = getConfirmedVersionUid(version?.uid);
+  if (!versionOwner || versionOwner !== target) {
+    // FAIL CLOSED: missing, placeholder, or mismatched owner. NEVER rewrite ownership!
+    return false;
+  }
+
+  // 4. Authorized and ownership verified; persist under confirmed namespace
+  const versions = getVersions(version.noteId, target, overrides);
+  // Keep last 50 versions per note per account. Do NOT rewrite version.uid!
+  const newVersions = [version, ...versions.filter(v => v.id !== version.id)].slice(0, 50);
   try {
-    const key = getVersionHistoryStorageKey(confirmed, version.noteId);
+    const key = getVersionHistoryStorageKey(target, version.noteId);
     localStorage.setItem(key, JSON.stringify(newVersions));
+    return true;
   } catch (err) {
     console.warn('[VersionHistory] Failed to persist scoped version:', err);
+    return false;
   }
 };
 
@@ -169,7 +195,7 @@ export const saveLocalNoteSnapshot = (
   // Safely quarantine and remove any legacy unscoped version history for this note
   cleanupLegacyVersionHistory(noteId);
 
-  const versions = getVersions(noteId, confirmed);
+  const versions = getVersions(noteId, confirmed, overrides);
   const lastVersion = versions[0];
 
   if (lastVersion?.title === title && lastVersion.content === content && lastVersion.source === source) {
@@ -185,7 +211,8 @@ export const saveLocalNoteSnapshot = (
     timestamp: new Date().toISOString(),
     source,
   };
-  saveVersion(version, confirmed, overrides);
+  const saved = saveVersion(version, confirmed, overrides);
+  if (!saved) return null;
   return version;
 };
 
@@ -243,7 +270,7 @@ export const deleteVersion = (
     return false; // FAIL CLOSED: unconfirmed session or mismatch
   }
 
-  const versions = getVersions(noteId, target);
+  const versions = getVersions(noteId, target, overrides);
   const targetVersion = versions.find(v => v.id === versionId);
   if (!targetVersion) return false;
 

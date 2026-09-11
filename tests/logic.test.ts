@@ -9543,10 +9543,10 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       setAuthUidGetter(() => uidA);
       clearVersions(sharedNoteId, uidA);
       assert.equal(getVersions(sharedNoteId, uidA).length, 0);
-      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
 
       useStore.setState({ uid: uidB });
       setAuthUidGetter(() => uidB);
+      assert.equal(getVersions(sharedNoteId, uidB).length, 1);
       clearVersions(sharedNoteId, uidB);
     });
 
@@ -9664,13 +9664,17 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const snap2 = saveLocalNoteSnapshot(sharedNoteId, 'Anon 2 Draft', 'Body 2', 'manual', anonUid2);
       assert.ok(snap2);
 
-      // Scoped reads
-      const hist1 = getVersions(sharedNoteId, anonUid1);
+      // Scoped reads under respective confirmed sessions
+      assert.deepEqual(getVersions(sharedNoteId, anonUid1), [], 'Anon 2 cannot read Anon 1 history');
       const hist2 = getVersions(sharedNoteId, anonUid2);
-      assert.equal(hist1.length, 1);
-      assert.equal(hist1[0].title, 'Anon 1 Draft');
       assert.equal(hist2.length, 1);
       assert.equal(hist2[0].title, 'Anon 2 Draft');
+
+      useStore.setState({ uid: anonUid1 });
+      setAuthUidGetter(() => anonUid1);
+      const hist1 = getVersions(sharedNoteId, anonUid1);
+      assert.equal(hist1.length, 1);
+      assert.equal(hist1[0].title, 'Anon 1 Draft');
 
       // Cleanup
       useStore.setState({ uid: anonUid1 });
@@ -10001,22 +10005,25 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.ok(verA);
       assert.ok(verB);
 
-      assert.equal(getVersions(noteId, uidA).length, 1);
+      // Under B's session, B reads B, and cross-account read of A fails closed
+      assert.deepEqual(getVersions(noteId, uidA), []);
       assert.equal(getVersions(noteId, uidB).length, 1);
 
-      // User A deletes version: B remains unaffected
+      // Switch to A: User A deletes version: B remains unaffected in storage
       useStore.setState({ uid: uidA });
       setAuthUidGetter(() => uidA);
       deleteVersion(noteId, verA.id, uidA);
       assert.equal(getVersions(noteId, uidA).length, 0);
+
+      // Switch to B: B's history remains intact
+      useStore.setState({ uid: uidB });
+      setAuthUidGetter(() => uidB);
       assert.equal(getVersions(noteId, uidB).length, 1);
 
       // Clear with missing UID fails closed with no-op
       clearVersions(noteId, null as any);
       assert.equal(getVersions(noteId, uidB).length, 1);
 
-      useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
       clearVersions(noteId, uidB);
       assert.equal(getVersions(noteId, uidB).length, 0);
     });
@@ -10066,8 +10073,12 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       setAuthUidGetter(() => anon2);
       saveLocalNoteSnapshot(noteId, 'Anon 2 Snapshot', 'Content 2', 'manual', anon2);
 
-      assert.equal(getVersions(noteId, anon1)[0].title, 'Anon 1 Snapshot');
+      assert.deepEqual(getVersions(noteId, anon1), []);
       assert.equal(getVersions(noteId, anon2)[0].title, 'Anon 2 Snapshot');
+
+      useStore.setState({ uid: anon1 });
+      setAuthUidGetter(() => anon1);
+      assert.equal(getVersions(noteId, anon1)[0].title, 'Anon 1 Snapshot');
     });
 
     test('M. S3-001 & S3-002 Missing UID and pseudo-identities fail closed across all authorities', () => {
@@ -10168,7 +10179,11 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.deepEqual(getVersions(noteId, undefined), []);
       assert.deepEqual(getVersions(noteId, null), []);
 
-      // Verify that passing confirmed UID reads the data
+      // Explicit UID under unconfirmed session (Auth = null) also fails closed
+      assert.deepEqual(getVersions(noteId, uidA), []);
+
+      // Verify that under confirmed session, reading data succeeds
+      setAuthUidGetter(() => uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
@@ -10211,7 +10226,9 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const deleted = deleteVersion(noteId, 'v-del-1', uidA);
       assert.equal(deleted, false, 'deleteVersion must fail closed when auth is null');
 
-      // Stored history must remain intact
+      // Stored history must remain intact in storage
+      assert.equal(JSON.parse(localStorage.getItem(key)!).length, 1);
+      setAuthUidGetter(() => uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
@@ -10237,9 +10254,10 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const cleared = clearVersions(noteId, uidA);
       assert.equal(cleared, false, 'clearVersions must fail closed when auth is null');
 
-      // User A\'s history must remain intact
-      assert.equal(getVersions(noteId, uidA).length, 1);
+      // User A's history must remain intact in storage
       assert.notEqual(localStorage.getItem(key), null);
+      setAuthUidGetter(() => uidA);
+      assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
     test('E. S3-002 Auth B / Store B / explicit A mutation rejected', () => {
@@ -10269,7 +10287,11 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       // User B attempts to save snapshot under uidA
       assert.equal(saveLocalNoteSnapshot(noteId, 'Hack', 'Content', 'manual', uidA), null);
 
-      // User A\'s history remains intact
+      // User B cannot read User A's history
+      assert.deepEqual(getVersions(noteId, uidA), []);
+      // User A's history remains intact in storage and readable by User A
+      setAuthUidGetter(() => uidA);
+      useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
@@ -10491,15 +10513,25 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const snap2 = saveLocalNoteSnapshot(noteId, 'Beta Note', 'Body 2', 'manual', anon2);
       assert.ok(snap2);
 
-      // Scoped reads
-      assert.equal(getVersions(noteId, anon1).length, 1);
-      assert.equal(getVersions(noteId, anon1)[0].title, 'Alpha Note');
-      assert.equal(getVersions(noteId, anon2).length, 1);
-      assert.equal(getVersions(noteId, anon2)[0].title, 'Beta Note');
+      // Scoped reads: Anon 2 cannot read Anon 1
+      assert.deepEqual(getVersions(noteId, anon1), []);
+      const histAnon2 = getVersions(noteId, anon2);
+      assert.equal(histAnon2.length, 1);
+      assert.equal(histAnon2[0].title, 'Beta Note');
 
       // Anon 2 cannot clear Anon 1
       assert.equal(clearVersions(noteId, anon1), false);
+      assert.deepEqual(getVersions(noteId, anon1), []);
+
+      // Switch to Anon 1 to verify history intact
+      setAuthUidGetter(() => anon1);
+      useStore.setState({ uid: anon1 });
       assert.equal(getVersions(noteId, anon1).length, 1);
+      assert.equal(getVersions(noteId, anon1)[0].title, 'Alpha Note');
+
+      // Switch back to Anon 2 for remaining negative tests
+      setAuthUidGetter(() => anon2);
+      useStore.setState({ uid: anon2 });
 
       // Anon 2 cannot restore Anon 1\'s version
       let onRestoreCalled = false;
@@ -10672,6 +10704,384 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(isAuthorizedSession('userA', { currentAuthUid: null, currentStoreUid: 'userA' }), false);
       assert.equal(isAuthorizedSession('userA', { currentAuthUid: 'userB', currentStoreUid: 'userB' }), false);
       assert.equal(isAuthorizedSession('guest', { currentAuthUid: 'guest', currentStoreUid: 'guest' }), false);
+    });
+  });
+
+  describe('Stage 3A.4 — Version History Read/Write Authority Closure', () => {
+    let originalLocalStorage: any;
+    let mockStore: Map<string, string>;
+
+    before(() => {
+      originalLocalStorage = (globalThis as any).localStorage;
+    });
+
+    beforeEach(() => {
+      mockStore = new Map<string, string>();
+      (globalThis as any).localStorage = {
+        getItem: (k: string) => (mockStore.has(k) ? mockStore.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          mockStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          mockStore.delete(k);
+        },
+        clear: () => {
+          mockStore.clear();
+        },
+        get length() {
+          return mockStore.size;
+        },
+        key: (i: number) => Array.from(mockStore.keys())[i] ?? null,
+      };
+      useStore.setState({ uid: null, activeChatId: null, aiNoteContext: null });
+      setAuthUidGetter(() => null);
+    });
+
+    afterEach(() => {
+      mockStore?.clear();
+      useStore.setState({ uid: null });
+      setAuthUidGetter(() => null);
+    });
+
+    after(() => {
+      (globalThis as any).localStorage = originalLocalStorage;
+    });
+
+    test('A. Auth B / Store B / explicit A getVersions -> [] (P0 Residual A reproduction)', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'cross-read-leak-note';
+
+      // 1. Seed User A history safely under confirmed A/A session
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+      const snapA = saveLocalNoteSnapshot(noteId, 'User A Secret History', 'Confidential A', 'manual', uidA);
+      assert.ok(snapA);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // 2. Transition active session to User B (Auth B / Store B)
+      useStore.setState({ uid: uidB });
+      setAuthUidGetter(() => uidB);
+
+      // 3. User B calls getVersions with explicit requested UID 'userA'
+      // MUST FAIL CLOSED: []
+      const leakedHistory = getVersions(noteId, uidA);
+      assert.deepEqual(leakedHistory, [], 'getVersions must refuse cross-account read when session does not match');
+      assert.equal(leakedHistory.length, 0);
+    });
+
+    test('B. Auth A / Store A / explicit A getVersions -> own history', () => {
+      const uidA = 'userA';
+      const noteId = 'own-read-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+      const snapA = saveLocalNoteSnapshot(noteId, 'My Snapshot', 'My Content', 'manual', uidA);
+      assert.ok(snapA);
+
+      const history = getVersions(noteId, uidA);
+      assert.equal(history.length, 1);
+      assert.equal(history[0].title, 'My Snapshot');
+      assert.equal(history[0].uid, uidA);
+    });
+
+    test('C. Anonymous user 2 cannot explicitly read anonymous user 1', () => {
+      const anon1 = 'anon-real-111';
+      const anon2 = 'anon-real-222';
+      const noteId = 'anon-cross-read-note';
+
+      // Seed Anon 1 history under confirmed Anon 1 session
+      useStore.setState({ uid: anon1 });
+      setAuthUidGetter(() => anon1);
+      const snap1 = saveLocalNoteSnapshot(noteId, 'Anon 1 Secrets', 'Body 1', 'manual', anon1);
+      assert.ok(snap1);
+      assert.equal(getVersions(noteId, anon1).length, 1);
+
+      // Transition session to Anon 2
+      useStore.setState({ uid: anon2 });
+      setAuthUidGetter(() => anon2);
+      const snap2 = saveLocalNoteSnapshot(noteId, 'Anon 2 Notes', 'Body 2', 'manual', anon2);
+      assert.ok(snap2);
+
+      // Confirmed as Anon 2: reading Anon 1 MUST FAIL CLOSED to []
+      assert.deepEqual(getVersions(noteId, anon1), []);
+
+      // Confirmed as Anon 2: reading Anon 2 returns only Anon 2 history
+      const history2 = getVersions(noteId, anon2);
+      assert.equal(history2.length, 1);
+      assert.equal(history2[0].title, 'Anon 2 Notes');
+      assert.equal(history2[0].uid, anon2);
+    });
+
+    test('D. Omitted UID saveVersion fails closed (P0 Residual B reproduction)', () => {
+      const uidA = 'userA';
+      const noteId = 'omitted-save-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const validVersion: NoteVersion = {
+        id: 'ver-a-1',
+        noteId,
+        uid: uidA,
+        title: 'Title A',
+        content: 'Content A',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      // Call saveVersion with confirmedUid argument omitted (runtime bypass / JS invocation)
+      const saveResult = (saveVersion as any)(validVersion);
+      assert.equal(saveResult, false, 'saveVersion must fail closed when confirmedUid is omitted');
+
+      // Verify no storage key was written
+      const expectedKey = getVersionHistoryStorageKey(uidA, noteId);
+      assert.equal(localStorage.getItem(expectedKey), null);
+      assert.deepEqual(getVersions(noteId, uidA), []);
+    });
+
+    test('E. Explicit A save while Auth B / Store B rejected', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'mismatch-session-save-note';
+
+      useStore.setState({ uid: uidB });
+      setAuthUidGetter(() => uidB);
+
+      const versionA: NoteVersion = {
+        id: 'ver-a-bad',
+        noteId,
+        uid: uidA,
+        title: 'Spoofed Snapshot',
+        content: 'Spoofed Content',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      // User B attempts to save under uidA
+      const result = saveVersion(versionA, uidA);
+      assert.equal(result, false, 'saveVersion must reject when active session is User B but target is User A');
+
+      // Verify zero storage written
+      const keyA = getVersionHistoryStorageKey(uidA, noteId);
+      assert.equal(localStorage.getItem(keyA), null);
+    });
+
+    test('F. Requested A + version owner B -> reject, no rewrite (Ownership-integrity defect reproduction)', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'mismatch-owner-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const versionWithOwnerB: NoteVersion = {
+        id: 'ver-b-payload',
+        noteId,
+        uid: uidB, // Owner is B!
+        title: 'Payload from B',
+        content: 'Content from B',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      // Calling saveVersion with requested UID A but payload owner B MUST REJECT
+      const result = saveVersion(versionWithOwnerB, uidA);
+      assert.equal(result, false, 'saveVersion must reject mismatched version.uid and requestedUid');
+
+      // CRITICAL: version.uid must NOT be rewritten to uidA!
+      assert.equal(versionWithOwnerB.uid, uidB, 'saveVersion must NEVER rewrite version.uid on ownership mismatch');
+
+      // Zero storage writes
+      assert.deepEqual(getVersions(noteId, uidA), []);
+    });
+
+    test('G. Requested A + version owner A under A/A -> succeed', () => {
+      const uidA = 'userA';
+      const noteId = 'happy-save-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const validVersion: NoteVersion = {
+        id: 'ver-a-ok',
+        noteId,
+        uid: uidA,
+        title: 'Valid Version',
+        content: 'Valid Content',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      const result = saveVersion(validVersion, uidA);
+      assert.equal(result, true, 'saveVersion must succeed when session and ownership match');
+
+      const history = getVersions(noteId, uidA);
+      assert.equal(history.length, 1);
+      assert.equal(history[0].id, 'ver-a-ok');
+      assert.equal(history[0].uid, uidA);
+    });
+
+    test('H. Ownerless direct save -> reject', () => {
+      const uidA = 'userA';
+      const noteId = 'ownerless-direct-save-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const ownerless1: NoteVersion = {
+        id: 'ver-none-1',
+        noteId,
+        uid: undefined,
+        title: 'No Owner Undefined',
+        content: 'Body',
+        timestamp: new Date().toISOString(),
+      };
+      assert.equal(saveVersion(ownerless1, uidA), false);
+
+      const ownerless2: NoteVersion = {
+        id: 'ver-none-2',
+        noteId,
+        uid: null as any,
+        title: 'No Owner Null',
+        content: 'Body',
+        timestamp: new Date().toISOString(),
+      };
+      assert.equal(saveVersion(ownerless2, uidA), false);
+
+      assert.deepEqual(getVersions(noteId, uidA), []);
+    });
+
+    test('I. Placeholder-owner direct save -> reject', () => {
+      const uidA = 'userA';
+      const noteId = 'placeholder-direct-save-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const placeholders = ['', '   ', 'guest', 'Guest', 'unknown', 'default', 'anonymous', '[object Object]'];
+      for (const ph of placeholders) {
+        const phVersion: NoteVersion = {
+          id: `ver-ph-${ph}`,
+          noteId,
+          uid: ph,
+          title: `Placeholder ${ph}`,
+          content: 'Body',
+          timestamp: new Date().toISOString(),
+        };
+        assert.equal(saveVersion(phVersion, uidA), false, `Placeholder owner '${ph}' must be rejected`);
+      }
+
+      assert.deepEqual(getVersions(noteId, uidA), []);
+    });
+
+    test('J. Genuine anonymous direct save under matching session -> succeed', () => {
+      const anonUid = 'firebase-real-anon-xyz789';
+      const noteId = 'real-anon-direct-save-note';
+
+      useStore.setState({ uid: anonUid });
+      setAuthUidGetter(() => anonUid);
+
+      const anonVersion: NoteVersion = {
+        id: 'ver-anon-ok',
+        noteId,
+        uid: anonUid,
+        title: 'Anon Real Version',
+        content: 'Anon Real Content',
+        timestamp: new Date().toISOString(),
+        source: 'manual',
+      };
+
+      const result = saveVersion(anonVersion, anonUid);
+      assert.equal(result, true, 'Genuine Firebase anonymous UID must succeed when session matches');
+
+      const history = getVersions(noteId, anonUid);
+      assert.equal(history.length, 1);
+      assert.equal(history[0].id, 'ver-anon-ok');
+      assert.equal(history[0].uid, anonUid);
+    });
+
+    test('K. Existing clear/delete session-authority tests remain green', () => {
+      const uidA = 'userA';
+      const noteId = 'clear-delete-integrity-note';
+
+      useStore.setState({ uid: uidA });
+      setAuthUidGetter(() => uidA);
+
+      const v = saveLocalNoteSnapshot(noteId, 'Delete Me', 'Content', 'manual', uidA);
+      assert.ok(v);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // Delete with mismatch UID fails
+      assert.equal(deleteVersion(noteId, v.id, 'userB'), false);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // Delete with valid UID succeeds
+      assert.equal(deleteVersion(noteId, v.id, uidA), true);
+      assert.equal(getVersions(noteId, uidA).length, 0);
+
+      // Save another
+      saveLocalNoteSnapshot(noteId, 'Clear Me', 'Content', 'manual', uidA);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // Clear with mismatch UID fails
+      assert.equal(clearVersions(noteId, 'userB'), false);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // Clear with valid UID succeeds
+      assert.equal(clearVersions(noteId, uidA), true);
+      assert.equal(getVersions(noteId, uidA).length, 0);
+    });
+
+    test('L. Existing Restore authority tests remain green', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'restore-integrity-note';
+
+      const validVersionA: NoteVersion = {
+        id: 'ver-restore-a',
+        noteId,
+        uid: uidA,
+        title: 'Restore Target',
+        content: 'Restored Content',
+        timestamp: new Date().toISOString(),
+      };
+
+      let restored = false;
+      const res = executeVersionRestore({
+        noteId,
+        version: validVersionA,
+        expectedSessionUid: uidA,
+        currentAuthUid: uidA,
+        currentStoreUid: uidA,
+        onRestore: () => { restored = true; },
+      });
+      assert.equal(res.success, true);
+      assert.equal(restored, true);
+
+      // Cross-account restore attempt fails
+      let restoredB = false;
+      const resB = executeVersionRestore({
+        noteId,
+        version: validVersionA,
+        expectedSessionUid: uidB,
+        currentAuthUid: uidB,
+        currentStoreUid: uidB,
+        onRestore: () => { restoredB = true; },
+      });
+      assert.equal(resB.success, false);
+      assert.equal(restoredB, false);
+    });
+
+    test('M. S3-001 stale Send remains green', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+
+      // Verify that isStrictConfirmedSession accurately rejects mismatched sessions
+      assert.equal(isStrictConfirmedSession(uidA, uidA, uidA), true);
+      assert.equal(isStrictConfirmedSession(uidA, uidB, uidA), false);
+      assert.equal(isStrictConfirmedSession(uidB, uidB, uidA), false);
+      assert.equal(isStrictConfirmedSession(null, uidA, uidA), false);
     });
   });
 
