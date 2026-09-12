@@ -27,13 +27,30 @@ import {
   resolveConfirmedUid,
   isConfirmedSession,
   isStrictConfirmedSession,
-  isAuthorizedSession,
-  getAuthUid,
-  getStoreUid,
 } from '@/utils/sessionAuthority';
 
 export const getConfirmedVersionUid = getConfirmedUid;
-export { resolveConfirmedUid, isConfirmedSession, isStrictConfirmedSession, isAuthorizedSession };
+
+/**
+ * Direct action-boundary runtime authority verification.
+ * Obtains current Firebase auth UID directly from auth.currentUser?.uid.
+ * Obtains current workspace store UID directly from useStore.getState().uid.
+ * Asserts strict equality against requestedUid via pure isStrictConfirmedSession.
+ * Never uses caller-supplied identity overrides or mutable getter registries.
+ */
+export const isAuthorizedSession = (
+  requestedUid: string | null | undefined
+): boolean => {
+  const target = getConfirmedUid(requestedUid);
+  if (!target) return false;
+
+  const currentAuth = auth?.currentUser?.uid ?? null;
+  const currentStore = useStore.getState().uid ?? null;
+
+  return isStrictConfirmedSession(currentAuth, currentStore, target);
+};
+
+export { resolveConfirmedUid, isConfirmedSession, isStrictConfirmedSession };
 
 export interface VersionHistoryUiState {
   uid: string | null;
@@ -399,8 +416,8 @@ export interface ExecuteVersionRestoreResult {
 export const executeVersionRestore = (
   params: ExecuteVersionRestoreParams
 ): ExecuteVersionRestoreResult => {
-  const authUid = getAuthUid();
-  const storeUid = getStoreUid();
+  const authUid = auth?.currentUser?.uid ?? null;
+  const storeUid = useStore.getState().uid ?? null;
 
   const confirmedUid = resolveConfirmedUid(authUid, storeUid);
   if (!confirmedUid) {

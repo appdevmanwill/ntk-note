@@ -75,7 +75,7 @@ import {
   type ExecuteSendMessageParams,
   type ExecuteSendMessageResult,
 } from '../src/utils/chatService.ts';
-import { isConfirmedSession, isStrictConfirmedSession, isAuthorizedSession, setAuthUidGetter } from '../src/utils/sessionAuthority.ts';
+import { isConfirmedSession, isStrictConfirmedSession } from '../src/utils/sessionAuthority.ts';
 import {
   getVersionHistoryStorageKey,
   getLegacyVersionHistoryKey,
@@ -88,6 +88,7 @@ import {
   getConfirmedVersionUid,
   reduceVersionHistoryUiState,
   executeVersionRestore,
+  isAuthorizedSession,
   type VersionHistoryUiState,
   type NoteVersion,
   type ExecuteVersionRestoreParams,
@@ -192,6 +193,12 @@ import {
   markMediaFailed,
 } from '../src/utils/offlineMediaQueue.ts';
 import { useStore } from '../src/store/index.ts';
+
+const setTestAuthUser = (uid: string | null) => {
+  (auth as any).currentUser = uid
+    ? { uid, _stopProactiveRefresh: () => {}, getIdToken: async () => 'mock_token' }
+    : null;
+};
 
 describe('Reminders Logic & Categorization', () => {
   const now = new Date();
@@ -9490,16 +9497,16 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       );
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       clearVersions(sharedNoteId, uidA);
 
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       clearVersions(sharedNoteId, uidB);
 
       // User A creates snapshot
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const titleA = 'A private historical title';
       const contentA = 'A private historical content';
       const versionA = saveLocalNoteSnapshot(sharedNoteId, titleA, contentA, 'manual', uidA);
@@ -9513,7 +9520,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // B receives empty history
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       const historyBInitial = getVersions(sharedNoteId, uidB);
       assert.equal(historyBInitial.length, 0);
 
@@ -9526,26 +9533,26 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // A reload
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const historyAReload = getVersions(sharedNoteId, uidA);
       assert.equal(historyAReload.length, 1);
       assert.equal(historyAReload[0].title, titleA);
 
       // B reload
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       const historyBReload = getVersions(sharedNoteId, uidB);
       assert.equal(historyBReload.length, 1);
       assert.equal(historyBReload[0].title, titleB);
 
       // Delete / clear by A does not touch B
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       clearVersions(sharedNoteId, uidA);
       assert.equal(getVersions(sharedNoteId, uidA).length, 0);
 
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       assert.equal(getVersions(sharedNoteId, uidB).length, 1);
       clearVersions(sharedNoteId, uidB);
     });
@@ -9651,7 +9658,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Anonymous User 1 saves snapshot
       useStore.setState({ uid: anonUid1 });
-      setAuthUidGetter(() => anonUid1);
+      setTestAuthUser(anonUid1);
       const snap1 = saveLocalNoteSnapshot(sharedNoteId, 'Anon 1 Draft', 'Body 1', 'manual', anonUid1);
       assert.ok(snap1);
 
@@ -9660,7 +9667,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Anonymous User 2 saves snapshot
       useStore.setState({ uid: anonUid2 });
-      setAuthUidGetter(() => anonUid2);
+      setTestAuthUser(anonUid2);
       const snap2 = saveLocalNoteSnapshot(sharedNoteId, 'Anon 2 Draft', 'Body 2', 'manual', anonUid2);
       assert.ok(snap2);
 
@@ -9671,17 +9678,17 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(hist2[0].title, 'Anon 2 Draft');
 
       useStore.setState({ uid: anonUid1 });
-      setAuthUidGetter(() => anonUid1);
+      setTestAuthUser(anonUid1);
       const hist1 = getVersions(sharedNoteId, anonUid1);
       assert.equal(hist1.length, 1);
       assert.equal(hist1[0].title, 'Anon 1 Draft');
 
       // Cleanup
       useStore.setState({ uid: anonUid1 });
-      setAuthUidGetter(() => anonUid1);
+      setTestAuthUser(anonUid1);
       clearVersions(sharedNoteId, anonUid1);
       useStore.setState({ uid: anonUid2 });
-      setAuthUidGetter(() => anonUid2);
+      setTestAuthUser(anonUid2);
       clearVersions(sharedNoteId, anonUid2);
     });
 
@@ -9897,7 +9904,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'shared-note-1';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const versionA = saveLocalNoteSnapshot(noteId, 'A Secret Title', 'A Secret Content', 'manual', uidA);
       assert.ok(versionA);
 
@@ -9938,7 +9945,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       };
 
       // Case 1: Auth B / Store A mismatch -> rejected
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidA });
       const res1 = executeVersionRestore({
         noteId,
@@ -9951,7 +9958,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(onRestoreCalled, false, 'onRestore must NEVER be called during auth mismatch');
 
       // Case 2: Store has become B, but stale restore callback has expectedSessionUid = uidA -> rejected
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       const res2 = executeVersionRestore({
         noteId,
@@ -9964,7 +9971,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(onRestoreCalled, false);
 
       // Case 3: Expected session is B, but version belongs to User A -> rejected
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       const res3 = executeVersionRestore({
         noteId,
@@ -9977,7 +9984,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(onRestoreCalled, false);
 
       // Case 4: Target note mismatch -> rejected
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       const res4 = executeVersionRestore({
         noteId: 'different-note',
@@ -9996,11 +10003,11 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'shared-note-del-test';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const verA = saveLocalNoteSnapshot(noteId, 'A Title', 'A Body', 'manual', uidA);
 
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       const verB = saveLocalNoteSnapshot(noteId, 'B Title', 'B Body', 'manual', uidB);
       assert.ok(verA);
       assert.ok(verB);
@@ -10011,13 +10018,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Switch to A: User A deletes version: B remains unaffected in storage
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       deleteVersion(noteId, verA.id, uidA);
       assert.equal(getVersions(noteId, uidA).length, 0);
 
       // Switch to B: B's history remains intact
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       assert.equal(getVersions(noteId, uidB).length, 1);
 
       // Clear with missing UID fails closed with no-op
@@ -10034,7 +10041,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'shared-note-k-test';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       saveLocalNoteSnapshot(noteId, 'A Secret History', 'Confidential', 'manual', uidA);
 
       // User A reads 1 version
@@ -10066,18 +10073,18 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Version history isolated
       useStore.setState({ uid: anon1 });
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       saveLocalNoteSnapshot(noteId, 'Anon 1 Snapshot', 'Content 1', 'manual', anon1);
 
       useStore.setState({ uid: anon2 });
-      setAuthUidGetter(() => anon2);
+      setTestAuthUser(anon2);
       saveLocalNoteSnapshot(noteId, 'Anon 2 Snapshot', 'Content 2', 'manual', anon2);
 
       assert.deepEqual(getVersions(noteId, anon1), []);
       assert.equal(getVersions(noteId, anon2)[0].title, 'Anon 2 Snapshot');
 
       useStore.setState({ uid: anon1 });
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       assert.equal(getVersions(noteId, anon1)[0].title, 'Anon 1 Snapshot');
     });
 
@@ -10142,13 +10149,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         key: (i: number) => Array.from(mockStore.keys())[i] ?? null,
       };
       useStore.setState({ uid: null, activeChatId: null, aiNoteContext: null });
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
     });
 
     afterEach(() => {
       mockStore?.clear();
       useStore.setState({ uid: null });
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
     });
 
     after(() => {
@@ -10171,7 +10178,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       localStorage.setItem(key, JSON.stringify([fakeVersion]));
 
       // Codex reproduction case: Auth UID = null, Store UID = userA
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
       useStore.setState({ uid: uidA });
 
       // Omitted UID in getVersions must NOT consult ambient store or auth
@@ -10183,14 +10190,14 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.deepEqual(getVersions(noteId, uidA), []);
 
       // Verify that under confirmed session, reading data succeeds
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
     test('B. S3-002 omitted UID save fails closed', () => {
       const noteId = 'omitted-save-test-note';
       useStore.setState({ uid: 'userA' });
-      setAuthUidGetter(() => 'userA');
+      setTestAuthUser('userA');
 
       // Omitted UID to saveLocalNoteSnapshot must FAIL CLOSED to null
       const res1 = saveLocalNoteSnapshot(noteId, 'Title', 'Content', 'manual');
@@ -10220,7 +10227,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       localStorage.setItem(key, JSON.stringify([v1]));
 
       // Codex reproduction: Auth = null, Store = userA, explicit UID = userA
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
       useStore.setState({ uid: uidA });
 
       const deleted = deleteVersion(noteId, 'v-del-1', uidA);
@@ -10228,7 +10235,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Stored history must remain intact in storage
       assert.equal(JSON.parse(localStorage.getItem(key)!).length, 1);
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
@@ -10248,7 +10255,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       localStorage.setItem(key, JSON.stringify([v1]));
 
       // Codex reproduction: Auth = null, Store = userA, explicit UID = userA
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
       useStore.setState({ uid: uidA });
 
       const cleared = clearVersions(noteId, uidA);
@@ -10256,7 +10263,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // User A's history must remain intact in storage
       assert.notEqual(localStorage.getItem(key), null);
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
 
@@ -10277,7 +10284,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       localStorage.setItem(keyA, JSON.stringify([vA]));
 
       // Session confirmed as User B
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       // User B attempts to delete User A\'s version by explicitly providing uidA
@@ -10290,7 +10297,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       // User B cannot read User A's history
       assert.deepEqual(getVersions(noteId, uidA), []);
       // User A's history remains intact in storage and readable by User A
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
@@ -10299,7 +10306,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'happy-path-test';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       // Save snapshot succeeds
@@ -10335,7 +10342,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         source: 'manual',
       };
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let onRestoreCalled = false;
       const res = executeVersionRestore({
@@ -10353,7 +10360,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     test('H. S3-002 blank-owner and null-owner Restore rejected', () => {
       const uidA = 'userA';
       const noteId = 'blank-restore-test';
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       for (const blank of [null, '', '   ']) {
@@ -10385,7 +10392,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'placeholder-restore-test';
       const placeholders = ['guest', 'unknown', 'default', 'anonymous'];
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       for (const ph of placeholders) {
@@ -10427,7 +10434,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         source: 'manual',
       };
 
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       let onRestoreCalled = false;
       const res = executeVersionRestore({
@@ -10455,7 +10462,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         source: 'manual',
       };
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let restoredVersion: NoteVersion | null = null;
       const res = executeVersionRestore({
@@ -10482,7 +10489,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         source: 'manual',
       };
 
-      setAuthUidGetter(() => anonUid);
+      setTestAuthUser(anonUid);
       useStore.setState({ uid: anonUid });
       let restoredVersion: NoteVersion | null = null;
       const res = executeVersionRestore({
@@ -10502,13 +10509,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'shared-note-anon-isolation';
 
       // Anon 1 saves
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       useStore.setState({ uid: anon1 });
       const snap1 = saveLocalNoteSnapshot(noteId, 'Alpha Note', 'Body 1', 'manual', anon1);
       assert.ok(snap1);
 
       // Anon 2 saves
-      setAuthUidGetter(() => anon2);
+      setTestAuthUser(anon2);
       useStore.setState({ uid: anon2 });
       const snap2 = saveLocalNoteSnapshot(noteId, 'Beta Note', 'Body 2', 'manual', anon2);
       assert.ok(snap2);
@@ -10524,13 +10531,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.deepEqual(getVersions(noteId, anon1), []);
 
       // Switch to Anon 1 to verify history intact
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       useStore.setState({ uid: anon1 });
       assert.equal(getVersions(noteId, anon1).length, 1);
       assert.equal(getVersions(noteId, anon1)[0].title, 'Alpha Note');
 
       // Switch back to Anon 2 for remaining negative tests
-      setAuthUidGetter(() => anon2);
+      setTestAuthUser(anon2);
       useStore.setState({ uid: anon2 });
 
       // Anon 2 cannot restore Anon 1\'s version
@@ -10552,7 +10559,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Confirmed user reads version history
       const uidA = 'userA';
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       // getVersions must not read or migrate legacy unscoped data
@@ -10581,7 +10588,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       });
 
       // CASE 1: Auth A, Store A, Expected A, Version uid A -> Restore allowed.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called1 = false;
       const res1 = executeVersionRestore({
@@ -10594,7 +10601,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called1, true);
 
       // CASE 2: Auth A, Store A, Expected A, Version uid undefined -> Restore rejected.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called2 = false;
       const res2 = executeVersionRestore({
@@ -10607,7 +10614,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called2, false);
 
       // CASE 3: Version uid null -> rejected.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called3 = false;
       const res3 = executeVersionRestore({
@@ -10620,7 +10627,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called3, false);
 
       // CASE 4: Version uid "" -> rejected.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called4 = false;
       const res4 = executeVersionRestore({
@@ -10633,7 +10640,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called4, false);
 
       // CASE 5: Version uid "guest" -> rejected.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called5 = false;
       const res5 = executeVersionRestore({
@@ -10646,7 +10653,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called5, false);
 
       // CASE 6: Version uid "unknown" -> rejected.
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let called6 = false;
       const res6 = executeVersionRestore({
@@ -10659,7 +10666,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called6, false);
 
       // CASE 7: Auth B, Store B, Expected B, Version uid A -> rejected.
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       let called7 = false;
       const res7 = executeVersionRestore({
@@ -10672,7 +10679,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(called7, false);
 
       // CASE 8: real Firebase anonymous UID: anon-firebase-real-123, Auth/store/expected/version all equal -> allowed.
-      setAuthUidGetter(() => realAnonUid);
+      setTestAuthUser(realAnonUid);
       useStore.setState({ uid: realAnonUid });
       let called8 = false;
       const res8 = executeVersionRestore({
@@ -10698,18 +10705,18 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(isStrictConfirmedSession('userB', 'userA', 'userA'), false);
 
       // isAuthorizedSession matches isStrictConfirmedSession against active runtime session
-      setAuthUidGetter(() => 'userA');
+      setTestAuthUser('userA');
       useStore.setState({ uid: 'userA' });
       assert.equal(isAuthorizedSession('userA'), true);
 
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
       assert.equal(isAuthorizedSession('userA'), false);
 
-      setAuthUidGetter(() => 'userB');
+      setTestAuthUser('userB');
       useStore.setState({ uid: 'userB' });
       assert.equal(isAuthorizedSession('userA'), false);
 
-      setAuthUidGetter(() => 'guest');
+      setTestAuthUser('guest');
       useStore.setState({ uid: 'guest' });
       assert.equal(isAuthorizedSession('guest'), false);
     });
@@ -10742,13 +10749,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         key: (i: number) => Array.from(mockStore.keys())[i] ?? null,
       };
       useStore.setState({ uid: null, activeChatId: null, aiNoteContext: null });
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
     });
 
     afterEach(() => {
       mockStore?.clear();
       useStore.setState({ uid: null });
-      setAuthUidGetter(() => null);
+      setTestAuthUser(null);
     });
 
     after(() => {
@@ -10762,14 +10769,14 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // 1. Seed User A history safely under confirmed A/A session
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const snapA = saveLocalNoteSnapshot(noteId, 'User A Secret History', 'Confidential A', 'manual', uidA);
       assert.ok(snapA);
       assert.equal(getVersions(noteId, uidA).length, 1);
 
       // 2. Transition active session to User B (Auth B / Store B)
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
 
       // 3. User B calls getVersions with explicit requested UID 'userA'
       // MUST FAIL CLOSED: []
@@ -10783,7 +10790,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'own-read-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       const snapA = saveLocalNoteSnapshot(noteId, 'My Snapshot', 'My Content', 'manual', uidA);
       assert.ok(snapA);
 
@@ -10800,14 +10807,14 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
 
       // Seed Anon 1 history under confirmed Anon 1 session
       useStore.setState({ uid: anon1 });
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       const snap1 = saveLocalNoteSnapshot(noteId, 'Anon 1 Secrets', 'Body 1', 'manual', anon1);
       assert.ok(snap1);
       assert.equal(getVersions(noteId, anon1).length, 1);
 
       // Transition session to Anon 2
       useStore.setState({ uid: anon2 });
-      setAuthUidGetter(() => anon2);
+      setTestAuthUser(anon2);
       const snap2 = saveLocalNoteSnapshot(noteId, 'Anon 2 Notes', 'Body 2', 'manual', anon2);
       assert.ok(snap2);
 
@@ -10826,7 +10833,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'omitted-save-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const validVersion: NoteVersion = {
         id: 'ver-a-1',
@@ -10854,7 +10861,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'mismatch-session-save-note';
 
       useStore.setState({ uid: uidB });
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
 
       const versionA: NoteVersion = {
         id: 'ver-a-bad',
@@ -10881,7 +10888,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'mismatch-owner-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const versionWithOwnerB: NoteVersion = {
         id: 'ver-b-payload',
@@ -10909,7 +10916,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'happy-save-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const validVersion: NoteVersion = {
         id: 'ver-a-ok',
@@ -10935,7 +10942,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'ownerless-direct-save-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const ownerless1: NoteVersion = {
         id: 'ver-none-1',
@@ -10965,7 +10972,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'placeholder-direct-save-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const placeholders = ['', '   ', 'guest', 'Guest', 'unknown', 'default', 'anonymous', '[object Object]'];
       for (const ph of placeholders) {
@@ -10988,7 +10995,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'real-anon-direct-save-note';
 
       useStore.setState({ uid: anonUid });
-      setAuthUidGetter(() => anonUid);
+      setTestAuthUser(anonUid);
 
       const anonVersion: NoteVersion = {
         id: 'ver-anon-ok',
@@ -11014,7 +11021,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'clear-delete-integrity-note';
 
       useStore.setState({ uid: uidA });
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
 
       const v = saveLocalNoteSnapshot(noteId, 'Delete Me', 'Content', 'manual', uidA);
       assert.ok(v);
@@ -11055,7 +11062,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         timestamp: new Date().toISOString(),
       };
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let restored = false;
       const res = executeVersionRestore({
@@ -11068,7 +11075,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(restored, true);
 
       // Cross-account restore attempt fails
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       let restoredB = false;
       const resB = executeVersionRestore({
@@ -11127,13 +11134,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'test-note-3a5-a';
 
       // Seed A\'s version under A\'s session
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       saveLocalNoteSnapshot(noteId, 'Title A', 'Content A', 'manual', uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
 
       // Switch to B\'s session
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       // getVersions requesting A returns empty array
@@ -11146,7 +11153,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidB = 'userB';
       const noteId = 'test-note-3a5-b';
 
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       // Attempt to pass forged overrides as extra argument
@@ -11162,7 +11169,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidB = 'userB';
       const noteId = 'test-note-3a5-c';
 
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       const versionA: NoteVersion = {
@@ -11183,7 +11190,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidB = 'userB';
       const noteId = 'test-note-3a5-d';
 
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       const versionA: NoteVersion = {
@@ -11202,7 +11209,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(forgedRes, false, 'Forged saveVersion must return false');
 
       // Verify 0 writes occurred to A namespace
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 0, 'No versions written to A namespace');
     });
@@ -11213,20 +11220,20 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'test-note-3a5-e';
 
       // Seed A\'s version
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       saveLocalNoteSnapshot(noteId, 'Protected A', 'Body', 'manual', uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
 
       // Switch to B
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       const cleared = clearVersions(noteId, uidA);
       assert.equal(cleared, false, 'B cannot clear A history');
 
       // Switch back to A, verify history intact
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
@@ -11237,13 +11244,13 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'test-note-3a5-f';
 
       // Seed A
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       saveLocalNoteSnapshot(noteId, 'Protected A', 'Body', 'manual', uidA);
       assert.equal(getVersions(noteId, uidA).length, 1);
 
       // Switch to B
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       const forgedClear = (clearVersions as any)(noteId, uidA, {
@@ -11253,7 +11260,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(forgedClear, false, 'Forged clearVersions must return false');
 
       // Verify A history intact
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
@@ -11264,7 +11271,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const noteId = 'test-note-3a5-g';
 
       // Seed A
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       saveLocalNoteSnapshot(noteId, 'A note', 'Body', 'manual', uidA);
       const vers = getVersions(noteId, uidA);
@@ -11272,7 +11279,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const vId = vers[0].id;
 
       // Switch to B
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       const deleted = deleteVersion(noteId, vId, uidA);
@@ -11285,7 +11292,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(forgedDelete, false, 'Forged deleteVersion must return false');
 
       // Verify A version still exists
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       assert.equal(getVersions(noteId, uidA).length, 1);
     });
@@ -11305,7 +11312,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       };
 
       // Current active runtime is B/B
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
 
       let onRestoreCalled = false;
@@ -11326,7 +11333,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'test-note-3a5-i';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const saved = saveLocalNoteSnapshot(noteId, 'My Version', 'Content', 'manual', uidA);
@@ -11343,7 +11350,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidB = 'userB';
       const noteId = 'test-note-3a5-j';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       // Manually seed A\'s namespace with mixed owners (A-owned and B-owned)
@@ -11378,7 +11385,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'test-note-3a5-k';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const key = getVersionHistoryStorageKey(uidA, noteId);
@@ -11418,7 +11425,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'test-note-3a5-l';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const key = getVersionHistoryStorageKey(uidA, noteId);
@@ -11453,7 +11460,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const anon2 = 'anon-firebase-222';
       const noteId = 'test-note-3a5-m';
 
-      setAuthUidGetter(() => anon1);
+      setTestAuthUser(anon1);
       useStore.setState({ uid: anon1 });
 
       const key = getVersionHistoryStorageKey(anon1, noteId);
@@ -11487,7 +11494,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'test-note-3a5-n';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const v: NoteVersion = {
@@ -11509,7 +11516,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidB = 'userB';
       const noteId = 'test-note-3a5-o';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const v: NoteVersion = {
@@ -11529,7 +11536,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const uidA = 'userA';
       const noteId = 'test-note-3a5-p';
 
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
 
       const v: NoteVersion = {
@@ -11564,7 +11571,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       };
 
       // 1. Valid A/A/A/A restore succeeds
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       let restored = false;
       const resA = executeVersionRestore({
@@ -11577,7 +11584,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(restored, true);
 
       // 2. Mismatched session (B active attempting to restore A) fails
-      setAuthUidGetter(() => uidB);
+      setTestAuthUser(uidB);
       useStore.setState({ uid: uidB });
       let restoredB = false;
       const resB = executeVersionRestore({
@@ -11590,7 +11597,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(restoredB, false);
 
       // 3. Ownerless version fails
-      setAuthUidGetter(() => uidA);
+      setTestAuthUser(uidA);
       useStore.setState({ uid: uidA });
       const ownerless: NoteVersion = {
         id: 'v-ownerless-q',
@@ -11637,6 +11644,439 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       assert.equal(isStrictConfirmedSession(null, uidA, uidA), false);
       assert.equal(isStrictConfirmedSession(uidA, null, uidA), false);
       assert.equal(isStrictConfirmedSession('guest', 'guest', 'guest'), false);
+    });
+  });
+
+  describe('Stage 3A.6 — Immutable Runtime Session Authority', () => {
+    let originalLocalStorage: any;
+    let mockStore: Map<string, string>;
+
+    before(() => {
+      originalLocalStorage = (globalThis as any).localStorage;
+    });
+
+    beforeEach(() => {
+      mockStore = new Map<string, string>();
+      (globalThis as any).localStorage = {
+        getItem: (k: string) => (mockStore.has(k) ? mockStore.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          mockStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          mockStore.delete(k);
+        },
+        clear: () => {
+          mockStore.clear();
+        },
+      };
+    });
+
+    after(() => {
+      (globalThis as any).localStorage = originalLocalStorage;
+    });
+
+    test('A. production module no longer exports setAuthUidGetter', async () => {
+      const sessionAuth = await import('../src/utils/sessionAuthority.ts');
+      assert.equal((sessionAuth as any).setAuthUidGetter, undefined, 'setAuthUidGetter must not be exported');
+      assert.equal((sessionAuth as any).getAuthUid, undefined, 'getAuthUid must not be exported');
+    });
+
+    test('B. production module no longer exports setStoreUidGetter', async () => {
+      const sessionAuth = await import('../src/utils/sessionAuthority.ts');
+      assert.equal((sessionAuth as any).setStoreUidGetter, undefined, 'setStoreUidGetter must not be exported');
+      assert.equal((sessionAuth as any).getStoreUid, undefined, 'getStoreUid must not be exported');
+    });
+
+    test('C. actual Auth B / Store B requesting A getVersions -> []', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-c';
+
+      // Seed A history under A
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      saveLocalNoteSnapshot(noteId, 'Title A', 'Content A', 'manual', uidA);
+      assert.equal(getVersions(noteId, uidA).length, 1);
+
+      // Switch real runtime identity to B/B
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+
+      // Requesting A returns empty
+      assert.deepEqual(getVersions(noteId, uidA), []);
+    });
+
+    test('D. actual B/B cannot save A', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-d';
+
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+
+      const versionA: NoteVersion = {
+        id: 'ver-3a6-d',
+        noteId,
+        uid: uidA,
+        title: 'Title A',
+        content: 'Content A',
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.equal(saveVersion(versionA, uidA), false);
+    });
+
+    test('E. actual B/B cannot delete A version', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-e';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      saveLocalNoteSnapshot(noteId, 'Title A', 'Content A', 'manual', uidA);
+      const vId = getVersions(noteId, uidA)[0].id;
+
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+      assert.equal(deleteVersion(noteId, vId, uidA), false);
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      assert.equal(getVersions(noteId, uidA).length, 1);
+    });
+
+    test('F. actual B/B cannot clear A history', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-f';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      saveLocalNoteSnapshot(noteId, 'Title A', 'Content A', 'manual', uidA);
+
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+      assert.equal(clearVersions(noteId, uidA), false);
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      assert.equal(getVersions(noteId, uidA).length, 1);
+    });
+
+    test('G. actual B/B cannot restore A version', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-g';
+
+      const versionA: NoteVersion = {
+        id: 'ver-3a6-g',
+        noteId,
+        uid: uidA,
+        title: 'Title A',
+        content: 'Content A',
+        timestamp: new Date().toISOString(),
+      };
+
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+
+      let onRestoreCalled = false;
+      const res = executeVersionRestore({
+        noteId,
+        version: versionA,
+        expectedSessionUid: uidA,
+        onRestore: () => { onRestoreCalled = true; },
+      });
+      assert.equal(res.success, false);
+      assert.equal(onRestoreCalled, false);
+    });
+
+    test('H. old forged extra arguments still have zero effect', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-h';
+
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+
+      const forgedGet = (getVersions as any)(noteId, uidA, { currentAuthUid: uidA, currentStoreUid: uidA });
+      assert.deepEqual(forgedGet, []);
+
+      const forgedSave = (saveVersion as any)({ id: 'v', noteId, uid: uidA, title: 'T', content: 'C', timestamp: new Date().toISOString() }, uidA, { currentAuthUid: uidA, currentStoreUid: uidA });
+      assert.equal(forgedSave, false);
+
+      const forgedClear = (clearVersions as any)(noteId, uidA, { currentAuthUid: uidA, currentStoreUid: uidA });
+      assert.equal(forgedClear, false);
+
+      const forgedDelete = (deleteVersion as any)(noteId, 'v', uidA, { currentAuthUid: uidA, currentStoreUid: uidA });
+      assert.equal(forgedDelete, false);
+
+      let restoreCalled = false;
+      const forgedRestore = (executeVersionRestore as any)({
+        noteId,
+        version: { id: 'v', noteId, uid: uidA, title: 'T', content: 'C', timestamp: new Date().toISOString() },
+        expectedSessionUid: uidA,
+        currentAuthUid: uidA,
+        currentStoreUid: uidA,
+        onRestore: () => { restoreCalled = true; },
+      });
+      assert.equal(forgedRestore.success, false);
+      assert.equal(restoreCalled, false);
+    });
+
+    test('I. valid A/A/A read succeeds', () => {
+      const uidA = 'userA';
+      const noteId = 'test-note-3a6-i';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      saveLocalNoteSnapshot(noteId, 'Valid A', 'Body A', 'manual', uidA);
+      const list = getVersions(noteId, uidA);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].title, 'Valid A');
+    });
+
+    test('J. valid A/A/A/A save succeeds', () => {
+      const uidA = 'userA';
+      const noteId = 'test-note-3a6-j';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const v: NoteVersion = {
+        id: 'ver-3a6-j',
+        noteId,
+        uid: uidA,
+        title: 'Direct Save A',
+        content: 'Content',
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.equal(saveVersion(v, uidA), true);
+      const list = getVersions(noteId, uidA);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].id, 'ver-3a6-j');
+    });
+
+    test('K. valid A/A/A/A Restore succeeds', () => {
+      const uidA = 'userA';
+      const noteId = 'test-note-3a6-k';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const v: NoteVersion = {
+        id: 'ver-3a6-k',
+        noteId,
+        uid: uidA,
+        title: 'Restore Target',
+        content: 'Restored Content',
+        timestamp: new Date().toISOString(),
+      };
+
+      let restored = false;
+      const res = executeVersionRestore({
+        noteId,
+        version: v,
+        expectedSessionUid: uidA,
+        onRestore: () => { restored = true; },
+      });
+      assert.equal(res.success, true);
+      assert.equal(restored, true);
+    });
+
+    test('L. mixed stored-owner filtering remains correct', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-l';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const key = getVersionHistoryStorageKey(uidA, noteId);
+      const items: NoteVersion[] = [
+        { id: 'vA', noteId, uid: uidA, title: 'A Valid', content: 'A', timestamp: new Date().toISOString() },
+        { id: 'vB', noteId, uid: uidB, title: 'B Leaked', content: 'B', timestamp: new Date().toISOString() },
+      ];
+      localStorage.setItem(key, JSON.stringify(items));
+
+      const list = getVersions(noteId, uidA);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].id, 'vA');
+    });
+
+    test('M. ownerless/placeholder records remain filtered', () => {
+      const uidA = 'userA';
+      const noteId = 'test-note-3a6-m';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const key = getVersionHistoryStorageKey(uidA, noteId);
+      const placeholders = ['guest', 'unknown', 'default', 'anonymous', '', '   '];
+      const items: any[] = [
+        { id: 'vValid', noteId, uid: uidA, title: 'Valid', content: 'C', timestamp: new Date().toISOString() },
+        { id: 'vNone', noteId, title: 'Ownerless', content: 'C', timestamp: new Date().toISOString() },
+        { id: 'vNull', noteId, uid: null, title: 'Null', content: 'C', timestamp: new Date().toISOString() },
+        ...placeholders.map((ph, idx) => ({
+          id: `vPh-${idx}`,
+          noteId,
+          uid: ph,
+          title: `Ph ${ph}`,
+          content: 'C',
+          timestamp: new Date().toISOString(),
+        })),
+      ];
+      localStorage.setItem(key, JSON.stringify(items));
+
+      const list = getVersions(noteId, uidA);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].id, 'vValid');
+    });
+
+    test('N. anonymous UID isolation remains correct', () => {
+      const anon1 = 'anon-firebase-111';
+      const anon2 = 'anon-firebase-222';
+      const noteId = 'test-note-3a6-n';
+
+      setTestAuthUser(anon1);
+      useStore.setState({ uid: anon1 });
+
+      const key = getVersionHistoryStorageKey(anon1, noteId);
+      const items: NoteVersion[] = [
+        { id: 'vAnon1', noteId, uid: anon1, title: 'Anon 1', content: 'C', timestamp: new Date().toISOString() },
+        { id: 'vAnon2', noteId, uid: anon2, title: 'Anon 2', content: 'C', timestamp: new Date().toISOString() },
+      ];
+      localStorage.setItem(key, JSON.stringify(items));
+
+      const list = getVersions(noteId, anon1);
+      assert.equal(list.length, 1);
+      assert.equal(list[0].id, 'vAnon1');
+
+      // anon2 session cannot read anon1 history
+      setTestAuthUser(anon2);
+      useStore.setState({ uid: anon2 });
+      assert.deepEqual(getVersions(noteId, anon1), []);
+    });
+
+    test('O. omitted saveVersion remains rejected', () => {
+      const uidA = 'userA';
+      const noteId = 'test-note-3a6-o';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const v: NoteVersion = {
+        id: 'ver-omitted',
+        noteId,
+        uid: uidA,
+        title: 'Title',
+        content: 'Content',
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.equal((saveVersion as any)(v), false);
+    });
+
+    test('P. mismatched-owner save remains rejected', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-p';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      const v: NoteVersion = {
+        id: 'ver-mismatch',
+        noteId,
+        uid: uidB,
+        title: 'Title',
+        content: 'Content',
+        timestamp: new Date().toISOString(),
+      };
+
+      assert.equal(saveVersion(v, uidA), false);
+    });
+
+    test('Q. clear/delete previous regressions remain green', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-q';
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      saveLocalNoteSnapshot(noteId, 'To Delete', 'Content', 'manual', uidA);
+      const vId = getVersions(noteId, uidA)[0].id;
+
+      // Auth null fails
+      setTestAuthUser(null);
+      assert.equal(deleteVersion(noteId, vId, uidA), false);
+      assert.equal(clearVersions(noteId, uidA), false);
+
+      // Auth B fails
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+      assert.equal(deleteVersion(noteId, vId, uidA), false);
+      assert.equal(clearVersions(noteId, uidA), false);
+
+      // Auth A succeeds
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      assert.equal(deleteVersion(noteId, vId, uidA), true);
+      assert.equal(clearVersions(noteId, uidA), true);
+    });
+
+    test('R. Restore previous regressions remain green', () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const noteId = 'test-note-3a6-r';
+
+      const validA: NoteVersion = { id: 'vA', noteId, uid: uidA, title: 'T', content: 'C', timestamp: new Date().toISOString() };
+      const ownerless: NoteVersion = { id: 'vO', noteId, title: 'T', content: 'C', timestamp: new Date().toISOString() } as any;
+      const guestV: NoteVersion = { id: 'vG', noteId, uid: 'guest', title: 'T', content: 'C', timestamp: new Date().toISOString() };
+
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+
+      // Ownerless fails
+      assert.equal(executeVersionRestore({ noteId, version: ownerless, expectedSessionUid: uidA, onRestore: () => {} }).success, false);
+
+      // Guest fails
+      assert.equal(executeVersionRestore({ noteId, version: guestV, expectedSessionUid: uidA, onRestore: () => {} }).success, false);
+
+      // Mismatched expected session fails
+      assert.equal(executeVersionRestore({ noteId, version: validA, expectedSessionUid: uidB, onRestore: () => {} }).success, false);
+
+      // Mismatched active session fails
+      setTestAuthUser(uidB);
+      useStore.setState({ uid: uidB });
+      assert.equal(executeVersionRestore({ noteId, version: validA, expectedSessionUid: uidA, onRestore: () => {} }).success, false);
+
+      // Valid succeeds
+      setTestAuthUser(uidA);
+      useStore.setState({ uid: uidA });
+      let called = false;
+      assert.equal(executeVersionRestore({ noteId, version: validA, expectedSessionUid: uidA, onRestore: () => { called = true; } }).success, true);
+      assert.equal(called, true);
+    });
+
+    test('S. S3-001 stale Send remains green', async () => {
+      const uidA = 'userA';
+      const uidB = 'userB';
+      const chatId = getDeterministicChatId(uidA, uidB);
+
+      // captured A Send then Auth B / Store A -> reject before Firestore writes
+      const res = await executeSendMessage({
+        chatId,
+        text: 'Stale draft',
+        expectedSenderUid: uidA,
+        currentAuthUid: uidB,
+        currentStoreUid: uidA,
+      });
+
+      assert.equal(res.success, false);
+      assert.ok(res.error?.includes('AUTH_TRANSITION_ABORT'));
     });
   });
 

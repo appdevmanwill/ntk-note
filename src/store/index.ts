@@ -38,7 +38,6 @@ import { setCurrentSpeechUser } from '@/utils/ntkAi';
 import { getTabCoordinator } from '@/utils/tabCoordinator';
 import { recordManualSyncMetrics, setActiveListenersCount } from '@/utils/performanceMetrics';
 import { commitQueuedNoteSafely } from '@/utils/noteSyncTransaction';
-import { setStoreUidGetter } from '@/utils/sessionAuthority';
 import { getOfflineMediaSyncService, summarizePendingMedia } from '@/utils/offlineMediaSyncService';
 import { reconcileRemoteNotesSnapshot, hasMeaningfulNoteDifference, getConflictIdentity } from '@/utils/noteReconciliation';
 import { getPendingMediaForUser } from '@/utils/offlineMediaQueue';
@@ -4465,5 +4464,3 @@ export const useStore = create<AppState>((set, get) => {
     },
   };
 });
-
-setStoreUidGetter(() => useStore.getState().uid);

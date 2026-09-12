@@ -30,11 +30,11 @@ export const getDeterministicChatId = (uidA: string, uidB: string): string => {
   return [uidA.trim(), uidB.trim()].sort().join('_');
 };
 
+import { useStore } from '@/store';
 import {
   getConfirmedUid,
   resolveConfirmedUid,
   isConfirmedSession,
-  getStoreUid,
 } from '@/utils/sessionAuthority';
 
 export { getConfirmedUid, resolveConfirmedUid, isConfirmedSession };
@@ -397,7 +397,7 @@ export const sendMessage = async (
     : auth.currentUser?.uid;
   const storeUid = overrides?.currentStoreUid !== undefined
     ? overrides.currentStoreUid
-    : getStoreUid();
+    : useStore.getState().uid;
 
   const confirmedUid = resolveConfirmedUid(authUid, storeUid);
   if (!confirmedUid) {

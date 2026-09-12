@@ -9,9 +9,12 @@
  * 4. (If applicable) The action's captured/expected session UID === that confirmed UID.
  *
  * If ANY identity differs or is missing/transitioning, operations must FAIL CLOSED.
+ *
+ * ROOT SECURITY PRINCIPLE (Stage 3A.6):
+ * This module exports PURE identity comparison helpers.
+ * It contains NO mutable authority getters, setters, or provider registrations.
+ * Sensitive callers obtain actual current runtime identities directly at the execution boundary.
  */
-
-import { auth } from '@/utils/firebase';
 
 export const INVALID_UID_KEYWORDS = new Set([
   'guest',
@@ -72,9 +75,8 @@ export const isConfirmedSession = (
 };
 
 /**
- * Strict Confirmed Session Authority (Section 17).
- * Unlike generic session checks, expectedSessionUid is MANDATORY and must be a valid,
- * confirmed UID.
+ * Strict Confirmed Session Authority.
+ * expectedSessionUid is MANDATORY and must be a valid, confirmed UID.
  * Returns true if and only if:
  * 1. currentAuthUid is valid.
  * 2. currentStoreUid is valid.
@@ -93,75 +95,3 @@ export const isStrictConfirmedSession = (
   if (!confirmed) return false;
   return confirmed === expected;
 };
-
-/**
- * Decoupled auth UID getter registry to allow ambient auth lookups without
- * directly mutating Firebase Auth internal state during testing or transitions.
- */
-type AuthUidGetter = () => string | null;
-let activeAuthUidGetter: AuthUidGetter = () => {
-  try {
-    return auth?.currentUser?.uid ?? null;
-  } catch {
-    return null;
-  }
-};
-
-export const setAuthUidGetter = (getter: AuthUidGetter): void => {
-  activeAuthUidGetter = getter;
-};
-
-export const getAuthUid = (): string | null => {
-  try {
-    return activeAuthUidGetter();
-  } catch {
-    return null;
-  }
-};
-
-/**
- * Decoupled store UID getter registry to prevent circular dependencies
- * between store/index.ts and service modules.
- */
-type StoreUidGetter = () => string | null;
-let activeStoreUidGetter: StoreUidGetter = () => null;
-
-export const setStoreUidGetter = (getter: StoreUidGetter): void => {
-  activeStoreUidGetter = getter;
-};
-
-export const getStoreUid = (): string | null => {
-  try {
-    return activeStoreUidGetter();
-  } catch {
-    return null;
-  }
-};
-
-/**
- * Verifies that an operation requested for `requestedUid` is authorized by the current
- * confirmed session.
- *
- * SECURITY INVARIANT (Section 4 & 5):
- * Callers can never supply or override current Auth UID or Store UID.
- * Authority derives strictly from the actual current runtime identity sources:
- * getAuthUid() and getStoreUid().
- *
- * Returns true only when:
- * 1. requestedUid is a valid confirmed UID.
- * 2. Active auth UID exists and matches active store UID.
- * 3. That confirmed session UID === requestedUid.
- * Otherwise returns false (FAIL CLOSED).
- */
-export const isAuthorizedSession = (
-  requestedUid: string | null | undefined
-): boolean => {
-  const target = getConfirmedUid(requestedUid);
-  if (!target) return false;
-
-  const authUid = getAuthUid();
-  const storeUid = getStoreUid();
-
-  return isStrictConfirmedSession(authUid, storeUid, target);
-};
-
