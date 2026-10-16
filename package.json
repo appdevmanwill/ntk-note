@@ -12,6 +12,8 @@
     "preview": "npm run build && wrangler dev",
     "test": "tsx --test tests/logic.test.ts",
     "test:rules": "node scripts/test_rules_runner.mjs",
+    "test:browser": "playwright test",
+    "test:browser:emulators": "firebase emulators:exec --config firebase.browser.json --project demo-ntk-note --only auth,firestore \"npm run test:browser\"",
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
@@ -36,6 +38,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.5",
     "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "4.1.17",
     "@types/node": "22.19.17",
     "@types/react": "19.2.7",

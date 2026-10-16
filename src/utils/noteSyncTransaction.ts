@@ -20,6 +20,7 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import type { Note, SyncQueueItem } from '@/types';
+import { hasMeaningfulNoteDifference } from './noteReconciliation';
 
 export interface NoteCommitSuccess {
   status: 'committed';
@@ -99,34 +100,23 @@ export async function commitQueuedNoteSafely(
         sharedSnap = await transaction.get(sharedMirrorRef);
       }
 
-      if (remoteSnap.exists()) {
-        const remoteNote = remoteSnap.data() as Note;
+      // The shared document is authoritative for owner-shared notes. The private
+      // mirror can legitimately lag behind a collaborator's acknowledged edit.
+      const canonicalSnap = isOwnerShared && sharedSnap?.exists() ? sharedSnap : remoteSnap;
+      if (canonicalSnap.exists()) {
+        const remoteNote = canonicalSnap.data() as Note;
 
         // Compare canonical remote updatedAt to queued baseUpdatedAt
-        if (queueItem.baseUpdatedAt) {
+        if (hasMeaningfulNoteDifference(note, remoteNote)) {
           if (
-            remoteNote.updatedAt &&
-            remoteNote.updatedAt !== queueItem.baseUpdatedAt &&
-            remoteNote.updatedAt !== note.updatedAt
+            !queueItem.baseUpdatedAt ||
+            remoteNote.updatedAt !== queueItem.baseUpdatedAt
           ) {
             // Server has newer concurrent edits: abort write inside transaction
             return { conflict: true, remoteDeleted: false, remoteNote };
           }
         }
 
-        // For owner-shared notes, also check the shared authority for collaborator edits
-        if (isOwnerShared && sharedSnap && sharedSnap.exists()) {
-          const sharedNote = sharedSnap.data() as Note;
-          if (
-            queueItem.baseUpdatedAt &&
-            sharedNote.updatedAt &&
-            sharedNote.updatedAt !== queueItem.baseUpdatedAt &&
-            sharedNote.updatedAt !== note.updatedAt
-          ) {
-            // Collaborator edited the shared authority: conflict
-            return { conflict: true, remoteDeleted: false, remoteNote: sharedNote };
-          }
-        }
       } else {
         // Remote document does NOT exist.
         // Distinguish: genuine new create vs. remotely deleted existing note.

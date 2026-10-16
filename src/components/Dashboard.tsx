@@ -338,7 +338,7 @@ export default function Dashboard() {
               type="button"
               onClick={() => {
                 selectNotebook(nb.id);
-                setCurrentView('all-notes');
+                setCurrentView('notebooks');
               }}
               className="group flex flex-col justify-between rounded-xl border theme-border theme-card p-3 text-left transition-all hover:shadow-md hover:scale-[1.01] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               style={{ backgroundColor: 'var(--card-bg)' }}

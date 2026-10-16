@@ -11,7 +11,7 @@
  * - Migration tracking: markDurableMigrationComplete() / isDurableMigrationComplete().
  */
 
-import type { Note, SyncQueueItem } from '@/types';
+import type { Note, Notebook, SyncConflict, SyncQueueItem } from '@/types';
 
 const DB_NAME = 'ntk_durable_outbox_db';
 const DB_VERSION = 2;
@@ -20,6 +20,83 @@ const STORE_QUEUE = 'durable_queue';
 const STORE_META = 'durable_meta';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+let fallbackTabId: string | null = null;
+
+/** sessionStorage survives reload, while each independently opened tab gets its own draft key. */
+export function getDraftTabId(): string {
+  try {
+    const key = 'ntk:pending-draft-tab';
+    const existing = sessionStorage.getItem(key);
+    if (existing) return existing;
+    const id = globalThis.crypto?.randomUUID?.() || `tab_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem(key, id);
+    return id;
+  } catch {
+    fallbackTabId ||= `tab_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    return fallbackTabId;
+  }
+}
+
+export interface TabPendingDrafts {
+  ownerUid: string;
+  tabId: string;
+  notes: Note[];
+  notebooks: Notebook[];
+  queue: SyncQueueItem[];
+  conflicts: SyncConflict[];
+}
+
+/**
+ * A tab's unsynced work must not share a last-writer-wins cache key with other
+ * tabs. Keep only pending entities here; the existing user cache stays intact.
+ * STORE_META already supports arbitrary string keys, so no schema migration or
+ * destructive replacement of existing IndexedDB stores is needed.
+ */
+export async function persistTabPendingDrafts(uid: string, tabId: string, state: {
+  notes: Note[]; notebooks: Notebook[]; syncQueue: SyncQueueItem[]; syncConflicts: SyncConflict[];
+}): Promise<boolean> {
+  if (!uid || !tabId) return false;
+  try {
+    const db = await openDurableDB();
+    const noteIds = new Set(state.syncQueue.filter(q => (q.entityType || 'note') === 'note').map(q => q.noteId));
+    state.syncConflicts.forEach(c => noteIds.add(c.noteId));
+    const notebookIds = new Set(state.syncQueue.filter(q => q.entityType === 'notebook').map(q => q.noteId));
+    const record: TabPendingDrafts & { uid: string; updatedAt: string } = {
+      uid: `pending:${uid}:${tabId}`, ownerUid: uid, tabId,
+      notes: state.notes.filter(n => noteIds.has(n.id)),
+      notebooks: state.notebooks.filter(n => notebookIds.has(n.id)),
+      queue: state.syncQueue, conflicts: state.syncConflicts, updatedAt: new Date().toISOString(),
+    };
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readwrite');
+      tx.objectStore(STORE_META).put(record);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Pending draft transaction aborted.'));
+    });
+  } catch (error) {
+    console.warn('[DurableOutbox] Could not preserve this tab pending drafts:', error);
+    return false;
+  }
+}
+
+export async function loadTabPendingDrafts(uid: string, tabId: string): Promise<TabPendingDrafts | null> {
+  if (!uid || !tabId) return null;
+  try {
+    const db = await openDurableDB();
+    return await new Promise<TabPendingDrafts | null>((resolve, reject) => {
+      const tx = db.transaction(STORE_META, 'readonly');
+      const request = tx.objectStore(STORE_META).get(`pending:${uid}:${tabId}`);
+      request.onsuccess = () => {
+        const record = request.result as TabPendingDrafts | undefined;
+        resolve(record?.ownerUid === uid && record.tabId === tabId ? record : null);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    return null;
+  }
+}
 
 function getIndexedDB(): IDBFactory | undefined {
   if (typeof window !== 'undefined' && window.indexedDB) return window.indexedDB;

@@ -238,17 +238,18 @@ export function reconcileRemoteNotesSnapshot(
   remoteNotes: Note[],
   syncQueue: SyncQueueItem[],
   currentUid: string,
-  existingConflicts: SyncConflict[] = []
+  existingConflicts: SyncConflict[] = [],
+  sharedAuthority = false,
 ): ReconcileNotesResult {
   const pendingIds = new Set(
     syncQueue
       .filter(item => (item.entityType || 'note') === 'note')
-      .map(item => item.noteId)
+      .map(item => item.noteId).concat(existingConflicts.map(c => c.noteId))
   );
   const remoteIds = new Set(remoteNotes.map(n => n.id));
-  const conflicts = [...existingConflicts];
-  const externallyShared = localNotes.filter(n => n.isShared && n.ownerId !== currentUid);
-  const localPrivate = localNotes.filter(n => !(n.isShared && n.ownerId !== currentUid));
+  let conflicts = [...new Map(existingConflicts.map(c => [c.noteId, c])).values()];
+  const externallyShared = sharedAuthority ? [] : localNotes.filter(n => n.isShared && n.ownerId !== currentUid);
+  const localPrivate = sharedAuthority ? localNotes : localNotes.filter(n => !(n.isShared && n.ownerId !== currentUid));
 
   const mergedPrivate: Note[] = [...localPrivate];
 
@@ -256,29 +257,30 @@ export function reconcileRemoteNotesSnapshot(
     const idx = mergedPrivate.findIndex(n => n.id === remote.id);
     if (idx >= 0) {
       const local = mergedPrivate[idx];
+      // Acknowledged identical content needs no user choice. In particular,
+      // discard a stale conflict raised by a pre-commit listener snapshot.
+      if (!hasMeaningfulNoteDifference(local, remote)) {
+        mergedPrivate[idx] = remote;
+        conflicts = conflicts.filter(conflict => conflict.noteId !== remote.id);
+        return;
+      }
       const queuedItem = syncQueue.find(
         item => item.noteId === remote.id && (item.entityType || 'note') === 'note'
       );
       if (queuedItem) {
         const baseUpdatedAt = queuedItem.baseUpdatedAt;
+        // A missing legacy baseline must fail closed when content differs.
+        // New notes normally have no remote document to compare against.
         const remoteChangedFromBase = baseUpdatedAt
           ? remote.updatedAt !== baseUpdatedAt
-          : remote.updatedAt !== local.updatedAt;
+          : hasMeaningfulNoteDifference(local, remote);
 
-        if (remoteChangedFromBase && remote.updatedAt !== local.updatedAt) {
-          // Section 10: If local and remote user-visible content are identical, resolve silently
-          if (!hasMeaningfulNoteDifference(local, remote)) {
-            mergedPrivate[idx] = remote;
-            return;
-          }
-
-          const exists = conflicts.some(
-            c =>
-              c.noteId === remote.id &&
-              c.local.updatedAt === local.updatedAt &&
-              c.remote?.updatedAt === remote.updatedAt
-          );
-          if (!exists) {
+        if (remoteChangedFromBase && hasMeaningfulNoteDifference(local, remote)) {
+          const existingIndex = conflicts.findIndex(c => c.noteId === remote.id);
+          if (existingIndex >= 0) {
+            // Keep the same pending decision even if the user continues editing.
+            conflicts[existingIndex] = { ...conflicts[existingIndex], local, remote, deletedRemotely: false };
+          } else {
             conflicts.push({
               id: `conflict_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               noteId: remote.id,
@@ -298,6 +300,21 @@ export function reconcileRemoteNotesSnapshot(
     } else {
       mergedPrivate.push(remote);
     }
+  });
+
+  // Remote absence plus a recorded baseline requires an explicit deletion decision.
+  localPrivate.forEach(local => {
+    if (remoteIds.has(local.id)) return;
+    const queued = syncQueue.find(q => q.noteId === local.id && (q.entityType || 'note') === 'note');
+    if (queued?.operation !== 'upsert' || !queued.baseUpdatedAt) return;
+    const index = conflicts.findIndex(c => c.noteId === local.id);
+    const conflict: SyncConflict = {
+      id: index >= 0 ? conflicts[index].id : `deleted_${local.id}`,
+      noteId: local.id, local, deletedRemotely: true,
+      detectedAt: index >= 0 ? conflicts[index].detectedAt : new Date().toISOString(),
+    };
+    if (index >= 0) conflicts[index] = conflict;
+    else conflicts.push(conflict);
   });
 
   // Authoritative remote absence: Prune any local private note not present remotely

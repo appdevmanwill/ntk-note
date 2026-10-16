@@ -44,7 +44,7 @@ export default function SettingsView() {
   const {
     profile, setProfile, settings, updateSettings, setTheme, setAccent,
     exportAllNotes, importNotes, resetApp, getStats,
-    syncConflicts, resolveSyncConflict, online,
+    syncConflicts, online,
     notes, notebooks, updateNote, cleanupTrashOlderThan, selectNote,
     uid, createCloudBackup, settingsSection, setSyncCenterOpen,
   } = useStore();
@@ -1388,17 +1388,20 @@ export default function SettingsView() {
                           <p className="truncate text-sm font-semibold text-theme-primary">{conflict.local.title || conflict.remote?.title || 'Untitled note'}</p>
                           <p className="mt-1 text-xs text-theme-tertiary">
                             {conflict.deletedRemotely
-                              ? 'This note was deleted on another device. Your unsynced edits are preserved as a new note.'
-                              : 'This note also changed on another device. NTK Note safely preserves both versions.'}
+                              ? 'This note was deleted on another device. Your local draft is waiting for your decision.'
+                              : 'This note also changed on another device. Compare versions before choosing.'}
                           </p>
                         </div>
                       </div>
                       <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() => void resolveSyncConflict(conflict.id, 'auto_safe')}
+                          onClick={() => {
+                            useStore.setState(s => ({ syncConflicts: [conflict, ...s.syncConflicts.filter(c => c.id !== conflict.id)] }));
+                            requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('ntk:review-note-conflict', { detail: { conflictId: conflict.id } })));
+                          }}
                           className="rounded-lg accent-button px-4 py-2 text-xs sm:text-sm font-semibold cursor-pointer min-h-[44px]"
                         >
-                          Safely preserve edits
+                          Compare versions
                         </button>
                       </div>
                     </div>

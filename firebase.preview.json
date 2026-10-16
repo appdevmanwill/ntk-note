@@ -1,0 +1,9 @@
+{
+  "hosting": {
+    "site": "ntk-note",
+    "public": "dist",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**", "wrangler.json"],
+    "headers": [{ "source": "**", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }],
+    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+  }
+}

@@ -50,6 +50,11 @@ backups/
 # Generated release artifacts
 RELEASE_MANIFEST.json
 
+# Browser diagnostics contain disposable emulator sessions and are not source.
+test-evidence/fix-v290/browser-artifacts/
+test-results/
+playwright-report/
+
 
 .dev.vars*
 !.dev.vars.example

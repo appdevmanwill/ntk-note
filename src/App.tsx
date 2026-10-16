@@ -102,12 +102,7 @@ export default function App() {
     recordStartupComplete();
   }, []);
 
-  // Section 4 & 5: Ensure any incoming conflict is automatically and safely resolved
-  useEffect(() => {
-    if (syncConflicts.length > 0) {
-      void resolveSyncConflict(syncConflicts[0].id, 'auto_safe');
-    }
-  }, [syncConflicts, resolveSyncConflict]);
+  // Conflicts require an explicit user decision. Never silently fork notes.
 
   const toggleNoteListCollapse = () => {
     const state = useStore.getState();
@@ -332,6 +327,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     if (!('serviceWorker' in navigator)) return;
 
     const handleRegistration = (registration: ServiceWorkerRegistration) => {

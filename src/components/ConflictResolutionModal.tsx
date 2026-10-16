@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ShieldCheck, CheckCircle2, Eye, FileText, X, ChevronRight, ChevronDown, Check } from 'lucide-react';
 import type { SyncConflict, SyncConflictStrategy, ConflictRecoveryNotice } from '@/types';
+import PendingNoteConflict from './PendingNoteConflict';
 
 export interface ConflictResolutionModalProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ export default function ConflictResolutionModal({
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   if (!isOpen || (!notice && !conflict)) return null;
+  if (conflict && onResolve) return <PendingNoteConflict key={conflict.id} conflict={conflict} onResolve={onResolve} />;
 
   const isDeletedRemotely = notice?.type === 'remote_deletion' || Boolean(conflict?.deletedRemotely);
   const title = notice?.title || 'Your edits are safe';

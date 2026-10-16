@@ -2,10 +2,13 @@ import { useState, useRef, useEffect } from 'react';
 import { X, Book, Sparkles } from 'lucide-react';
 import { useStore } from '@/store';
 import type { NoteColor } from '@/types';
+import NotebookIconPicker from './NotebookIconPicker';
 
 interface NewNotebookModalProps {
   isOpen: boolean;
   onClose: () => void;
+  parentId?: string | null;
+  editingNotebookId?: string | null;
 }
 
 const colorOptions: Array<{ id: NoteColor; bg: string; label: string }> = [
@@ -19,8 +22,10 @@ const colorOptions: Array<{ id: NoteColor; bg: string; label: string }> = [
   { id: 'purple', bg: 'bg-purple-500', label: 'Purple' },
 ];
 
-export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalProps) {
-  const { createNotebook, updateNotebook, selectNotebook, setCurrentView } = useStore();
+export default function NewNotebookModal({ isOpen, onClose, parentId = null, editingNotebookId = null }: NewNotebookModalProps) {
+  const { notebooks, createNotebook, updateNotebook, selectNotebook, setCurrentView } = useStore();
+  const editingNotebook = notebooks.find(nb => nb.id === editingNotebookId);
+  const [icon, setIcon] = useState('📓');
   const [name, setName] = useState('');
   const [color, setColor] = useState<NoteColor>('indigo');
   const [error, setError] = useState('');
@@ -28,12 +33,13 @@ export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalPr
 
   useEffect(() => {
     if (isOpen) {
-      setName('');
-      setColor('indigo');
+      setName(editingNotebook?.name || '');
+      setColor(editingNotebook?.color || 'indigo');
+      setIcon(editingNotebook?.icon || (parentId ? '📁' : '📓'));
       setError('');
       setTimeout(() => inputRef.current?.focus(), 50);
     }
-  }, [isOpen]);
+  }, [isOpen, editingNotebookId, parentId]);
 
   if (!isOpen) return null;
 
@@ -45,12 +51,15 @@ export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalPr
       return;
     }
 
-    const nb = createNotebook(trimmed, null, '📓');
-    if (color && color !== 'default') {
+    if (editingNotebookId) {
+      updateNotebook(editingNotebookId, { name: trimmed, color, icon });
+      selectNotebook(editingNotebookId);
+    } else {
+      const nb = createNotebook(trimmed, parentId, icon);
       updateNotebook(nb.id, { color });
+      selectNotebook(nb.id);
     }
-    selectNotebook(nb.id);
-    setCurrentView('all-notes');
+    setCurrentView('notebooks');
     onClose();
   };
 
@@ -61,15 +70,15 @@ export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalPr
       aria-modal="true"
       aria-labelledby="new-notebook-title"
     >
-      <div className="w-full max-w-md rounded-t-3xl border theme-border theme-card p-6 shadow-2xl sm:rounded-3xl">
+      <div className="w-full max-w-md max-h-[92dvh] overflow-y-auto rounded-t-3xl border theme-border theme-card p-6 shadow-2xl sm:rounded-3xl">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
               <Book className="h-5 w-5 no-transition" />
             </span>
             <div>
-              <h2 id="new-notebook-title" className="text-base font-bold text-theme-primary">New Notebook</h2>
-              <p className="text-xs text-theme-tertiary">Group your notes into a dedicated notebook</p>
+              <h2 id="new-notebook-title" className="text-base font-bold text-theme-primary">{editingNotebookId ? 'Edit Notebook' : parentId ? 'New Sub-notebook' : 'New Notebook'}</h2>
+              <p className="text-xs text-theme-tertiary">{editingNotebookId ? 'Rename or change the icon and color' : 'Group your notes into a dedicated notebook'}</p>
             </div>
           </div>
           <button
@@ -99,6 +108,8 @@ export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalPr
             />
             {error && <p className="mt-1.5 text-xs text-rose-500 font-medium">{error}</p>}
           </div>
+
+          <NotebookIconPicker value={icon} onChange={setIcon} />
 
           <div>
             <label className="block text-xs font-semibold text-theme-secondary mb-1.5">
@@ -133,7 +144,7 @@ export default function NewNotebookModal({ isOpen, onClose }: NewNotebookModalPr
               className="inline-flex items-center gap-1.5 rounded-xl accent-button px-4 py-2 text-xs font-semibold text-white shadow-sm"
             >
               <Sparkles className="h-3.5 w-3.5 no-transition" />
-              Create Notebook
+              {editingNotebookId ? 'Save Changes' : 'Create Notebook'}
             </button>
           </div>
         </form>

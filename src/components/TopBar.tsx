@@ -177,14 +177,15 @@ export default function TopBar() {
               type="button"
               onClick={() => setShowAccountMenu(!showAccountMenu)}
               aria-label="Account and profile menu"
+              aria-haspopup="menu"
+              aria-expanded={showAccountMenu}
+              aria-controls="account-menu"
               title="Account Menu"
               className="flex h-10 w-10 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400/70 rounded-full"
             >
               <UserAvatar profile={profile} size="sm" />
             </button>
-            <div className="absolute right-0 top-12 z-50">
-              <AccountMenu isOpen={showAccountMenu} onClose={() => setShowAccountMenu(false)} />
-            </div>
+            <AccountMenu isOpen={showAccountMenu} placement="top" onClose={() => setShowAccountMenu(false)} />
           </div>
         </div>
       </div>

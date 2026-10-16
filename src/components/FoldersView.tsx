@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '@/store';
-import { ChevronDown, ChevronRight, FileText, Plus, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Plus, Search, Pencil } from 'lucide-react';
+import NewNotebookModal from './NewNotebookModal';
 import type { Notebook } from '@/types';
 
 /**
@@ -13,6 +14,16 @@ export default function FoldersView() {
     selectedNotebookId, currentView,
   } = useStore();
   const [query, setQuery] = useState('');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalParentId, setModalParentId] = useState<string | null>(null);
+  const [modalEditId, setModalEditId] = useState<string | null>(null);
+
+  const openNotebookModal = (parentId: string | null = null, editId: string | null = null) => {
+    setModalParentId(parentId);
+    setModalEditId(editId);
+    setModalOpen(true);
+    if (parentId) setExpandedIds(prev => new Set([...prev, parentId]));
+  };
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const visible = useMemo(() => notebooks.filter(nb => !nb.trashed), [notebooks]);
@@ -87,6 +98,16 @@ export default function FoldersView() {
             </span>
             <ChevronRight className="h-4 w-4 shrink-0 text-theme-muted" aria-hidden="true" />
           </button>
+          {nb.id !== 'default' && (
+            <button type="button" className="p-2 rounded-lg theme-hover text-theme-secondary" onClick={() => openNotebookModal(null, nb.id)}
+              aria-label={`Edit ${nb.name} icon and name`} title="Edit notebook">
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
+          <button type="button" className="p-2 rounded-lg theme-hover text-theme-secondary" onClick={() => openNotebookModal(nb.id)}
+            aria-label={`Add sub-notebook under ${nb.name}`} title="Add sub-notebook">
+            <Plus className="h-4 w-4" />
+          </button>
         </div>
         {hasChildren && isExpanded && children.map(child => renderRow(child, depth + 1))}
       </div>
@@ -100,6 +121,8 @@ export default function FoldersView() {
       <div className="mx-auto max-w-2xl p-4 pb-28 lg:pb-8">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold text-theme-primary">Folders</h1>
+          <button type="button" onClick={() => openNotebookModal()} className="flex h-10 items-center gap-1 rounded-xl px-3 accent-button text-sm font-semibold"
+            aria-label="Create notebook"><Plus className="h-4 w-4" /> New</button>
           <button
             type="button"
             onClick={() => setCurrentView('all-notes')}
@@ -143,6 +166,7 @@ export default function FoldersView() {
           Browse all notes
         </button>
       </div>
+      <NewNotebookModal isOpen={modalOpen} parentId={modalParentId} editingNotebookId={modalEditId} onClose={() => setModalOpen(false)} />
     </div>
   );
 }

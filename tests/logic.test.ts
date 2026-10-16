@@ -7886,6 +7886,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       syncConflicts: [conflict1],
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict1.id, 'keep_deleted');
 
     const stateAfterKeepDeleted = useStore.getState();
@@ -7917,6 +7918,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       syncConflicts: [conflict2],
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict2.id, 'recover_version');
 
     const stateAfterRecover = useStore.getState();
@@ -7942,7 +7944,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     assert.equal(stateAfterRecover.syncConflicts.length, 0);
   });
 
-  test('Required Standard-Conflict Test (Section 18): Canonical R2 remains unchanged, local edits L safely recovered as new private note', async () => {
+  test('Required Standard-Conflict Test (Section 18): Concurrent versions remain pending; Keep Current retains the ID and latest draft', async () => {
     const testUid = 'user_std_conflict_test';
     const originalNoteId = 'std_conflict_orig_id';
 
@@ -7996,44 +7998,25 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
-    // Execute automatic safe conflict resolution
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
-
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().notes[0].content, conflict.local.content);
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    assert.equal(useStore.getState().syncQueue.length, 1);
+    await useStore.getState().updateNote(originalNoteId, { content: 'Latest edits during review' });
+    setTestAuthUser(useStore.getState().uid);    await useStore.getState().resolveSyncConflict(conflict.id, 'keep_local');
     const state = useStore.getState();
-    // 1. Canonical original R2 remains unchanged in notes with original ID
-    const canonicalInStore = state.notes.find(n => n.id === originalNoteId);
-    assert.ok(canonicalInStore, 'Canonical remote note R2 must remain in store');
-    assert.equal(canonicalInStore.title, 'Canonical Remote Note R2');
-    assert.equal(canonicalInStore.content, 'Server authoritative version edited on Device B');
+    assert.equal(state.notes.length, 1);
+    assert.equal(state.notes[0].id, originalNoteId);
+    assert.equal(state.notes[0].content, 'Latest edits during review');
+    assert.equal(state.syncConflicts.length, 0);
+    assert.equal(state.syncQueue[0].baseUpdatedAt, conflict.remote!.updatedAt);
+    assert.equal(state.conflictRecoveryNotice, null);
 
-    // 2. User's local unsynced edits L preserved as exactly ONE new private recovered note
-    const recoveredNote = state.notes.find(n => n.id !== originalNoteId);
-    assert.ok(recoveredNote, 'Recovered note must exist in store');
-    assert.notEqual(recoveredNote.id, originalNoteId, 'Recovered note must receive a new UUID');
-    assert.equal(recoveredNote.title, 'Local Unsynced Note L (Recovered Copy)');
-    assert.equal(recoveredNote.content, 'User edits made while offline on Device A');
-    assert.equal(recoveredNote.ownerId, testUid);
-    assert.equal(recoveredNote.isShared, false);
-    assert.equal(recoveredNote.isPublished, false);
-
-    // 3. Stale original pending update removed from queue
-    assert.equal(state.syncQueue.some(q => q.noteId === originalNoteId), false, 'Stale original update must be removed from syncQueue');
-
-    // 4. Recovered note queued as new create
-    assert.equal(state.syncQueue.some(q => q.noteId === recoveredNote.id), true, 'Recovered note must be queued for creation');
-
-    // 5. Conflict cleared
-    assert.equal(state.syncConflicts.length, 0, 'Conflict must be cleared');
-
-    // 6. Active editor switched to recovered copy
-    assert.equal(state.selectedNoteId, recoveredNote.id, 'Editor must switch to recovered copy');
-
-    // 7. Polished novice notification posted
-    assert.ok(state.conflictRecoveryNotice, 'Recovery notice must be posted');
-    assert.equal(state.conflictRecoveryNotice.title, 'Your edits are safe');
-    assert.ok(state.conflictRecoveryNotice.message.includes('saved your edits as a separate copy. Nothing was lost.'));
   });
 
   test('Required Shared-Note Test (Section 19): Canonical shared authority unchanged, local collaborator draft safely recovered as private user note', async () => {
@@ -8091,9 +8074,14 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    setTestAuthUser(useStore.getState().uid);    await useStore.getState().resolveSyncConflict(conflict.id, 'keep_both');
 
     const state = useStore.getState();
     // 1. Canonical shared note remains unchanged
@@ -8120,7 +8108,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     assert.equal(recovered.content, 'Collaborator unsynced edits on shared document');
   });
 
-  test('Required Remote-Deletion Test (Section 20): Deleted original stays deleted, local draft recovered as new private note without decision prompts', async () => {
+  test('Required Remote-Deletion Test (Section 20): Remote deletion remains pending; only explicit choice restores the original ID', async () => {
     const testUid = 'user_remote_del_novice';
     const deletedNoteId = 'remotely_deleted_doc_99';
 
@@ -8155,35 +8143,27 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
-    // Novice resolution does not require any choice
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
-
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().notes[0].id, deletedNoteId);
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    setTestAuthUser(useStore.getState().uid);    await useStore.getState().resolveSyncConflict(conflict.id, 'keep_local');
     const state = useStore.getState();
-    // 1. Deleted original stays deleted (never recreated under original ID)
-    assert.equal(state.notes.some(n => n.id === deletedNoteId), false, 'Original ID must remain deleted');
-
-    // 2. Exactly one recovered private note created
     assert.equal(state.notes.length, 1);
-    const recovered = state.notes[0];
-    assert.notEqual(recovered.id, deletedNoteId);
-    assert.equal(recovered.title, 'My Project Plan (Recovered Copy)');
-    assert.equal(recovered.content, 'Critical unsynced notes created offline');
-    assert.equal(recovered.ownerId, testUid);
-    assert.equal(recovered.isShared, false);
+    assert.equal(state.notes[0].id, deletedNoteId);
+    assert.equal(state.notes[0].content, 'Critical unsynced notes created offline');
+    assert.equal(state.syncConflicts.length, 0);
+    assert.equal(state.syncQueue.length, 1);
+    assert.equal(state.syncQueue[0].baseUpdatedAt, undefined);
+    assert.equal(state.conflictRecoveryNotice, null);
 
-    // 3. Stale original queue item removed, new note queued
-    assert.equal(state.syncQueue.some(q => q.noteId === deletedNoteId), false);
-    assert.equal(state.syncQueue.some(q => q.noteId === recovered.id), true);
-
-    // 4. Recovery notice explains remote deletion safely
-    assert.ok(state.conflictRecoveryNotice);
-    assert.equal(state.conflictRecoveryNotice.title, 'Your edits are safe');
-    assert.ok(state.conflictRecoveryNotice.message.includes('deleted on another device'));
   });
 
-  test('Required Idempotency Test (Section 21): Same conflict triggered repeatedly produces exactly ONE recovered note without duplicate copies', async () => {
+  test('Required Idempotency Test (Section 21): Retries and repeated decisions never fork the note', async () => {
     const testUid = 'user_idempotency_test';
     const noteId = 'idempotency_note_1';
 
@@ -8227,18 +8207,21 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
-    // Trigger conflict resolution three times in a row
-    await useStore.getState().resolveSyncConflict(conflict.id);
-    await useStore.getState().resolveSyncConflict(conflict.id);
-    await useStore.getState().resolveSyncConflict(conflict.id);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      setTestAuthUser(useStore.getState().uid);      await useStore.getState().resolveSyncConflict(conflict.id);
+    }
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    assert.equal(useStore.getState().notes.length, 1);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      setTestAuthUser(useStore.getState().uid);      await useStore.getState().resolveSyncConflict(conflict.id, 'keep_local');
+    }
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().syncConflicts.length, 0);
+    assert.equal(useStore.getState().notes.some(n => n.title.includes('(Recovered Copy)')), false);
 
-    const state = useStore.getState();
-    // Exactly 2 notes in store: canonical remote note + ONE recovered note
-    assert.equal(state.notes.length, 2, 'Must contain exactly 2 notes (canonical + 1 recovered copy)');
-    const recoveredCopies = state.notes.filter(n => n.title.includes('(Recovered Copy)'));
-    assert.equal(recoveredCopies.length, 1, 'Must NOT create duplicate copies like (Recovered Copy) (2)');
   });
 
   test('Required Identical-Content Test (Section 22): Identical user content with differing timestamps resolves silently with zero duplicate copies', async () => {
@@ -8297,8 +8280,10 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
 
     const state = useStore.getState();
@@ -8314,7 +8299,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     assert.equal(state.syncQueue.some(q => q.noteId === noteId), false);
   });
 
-  test('Required Attachment Regression (Section 12): Local note with added attachment creates recovered copy with attachment preserved', async () => {
+  test('Required Attachment Regression (Section 12): Added attachment survives review and Keep Current at the same ID', async () => {
     const testUid = 'user_att_regression_test';
     const noteId = 'note_att_reg_1';
 
@@ -8376,24 +8361,23 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
-
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    setTestAuthUser(useStore.getState().uid);    await useStore.getState().resolveSyncConflict(conflict.id, 'keep_local');
     const state = useStore.getState();
-    assert.equal(state.notes.length, 2, 'Conflict with added attachment must create exactly one recovered copy');
-    const canonicalRemote = state.notes.find(n => n.id === noteId);
-    const recovered = state.notes.find(n => n.id !== noteId);
-    assert.ok(canonicalRemote, 'Canonical remote note must be preserved');
-    assert.ok(recovered, 'Recovered copy must be created');
-    assert.equal(canonicalRemote.attachments?.length || 0, 0, 'Canonical remote has no attachments');
-    assert.equal(recovered.attachments?.length, 1, 'Recovered copy must retain the added attachment');
-    assert.equal(recovered.attachments![0].name, 'proposal_architecture.pdf');
-    assert.equal(recovered.attachments![0].objectId, 'obj_att_reg_1');
-    assert.ok(recovered.title.includes('Recovered Copy'));
+    assert.equal(state.notes.length, 1);
+    assert.equal(state.notes[0].id, noteId);
+    assert.equal(state.notes[0].attachments?.[0].name, 'proposal_architecture.pdf');
+    assert.equal(state.notes[0].attachments?.[0].objectId, 'obj_att_reg_1');
+
   });
 
-  test('Required Voice Note Regression (Section 13): Local note with voice note creates recovered copy preserving voice metadata', async () => {
+  test('Required Voice Note Regression (Section 13): Voice metadata survives review and Keep Current at the same ID', async () => {
     const testUid = 'user_vn_regression_test';
     const noteId = 'note_vn_reg_1';
 
@@ -8458,19 +8442,22 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
-
+    assert.equal(useStore.getState().notes.length, 1);
+    assert.equal(useStore.getState().syncConflicts.length, 1);
+    setTestAuthUser(useStore.getState().uid);    await useStore.getState().resolveSyncConflict(conflict.id, 'keep_local');
     const state = useStore.getState();
-    assert.equal(state.notes.length, 2, 'Conflict with added voice note must create exactly one recovered copy');
-    const recovered = state.notes.find(n => n.id !== noteId);
-    assert.ok(recovered, 'Recovered copy must be created');
-    assert.equal(recovered.voiceNotes?.length, 1, 'Recovered copy must preserve voice note');
-    assert.equal(recovered.voiceNotes![0].objectId, 'obj_voice_reg_1');
-    assert.equal(recovered.voiceNotes![0].title, 'Customer Interview 1');
-    assert.equal(recovered.voiceNotes![0].transcript, 'Customer wants instant synchronization across devices.');
-    assert.equal(recovered.voiceNotes![0].durationSeconds, 142);
+    assert.equal(state.notes.length, 1);
+    assert.equal(state.notes[0].id, noteId);
+    assert.equal(state.notes[0].voiceNotes?.[0].objectId, 'obj_voice_reg_1');
+    assert.equal(state.notes[0].voiceNotes?.[0].title, 'Customer Interview 1');
+    assert.equal(state.notes[0].voiceNotes?.[0].transcript, 'Customer wants instant synchronization across devices.');
+    assert.equal(state.notes[0].voiceNotes?.[0].durationSeconds, 142);
+
   });
 
   test('Required Image-ID Regression (Section 14): Different image objectId detected as meaningful difference, eliminating [object Object] bug', () => {
@@ -8769,8 +8756,10 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
         },
       ],
       syncConflicts: [conflict],
+      conflictRecoveryNotice: null,
     });
 
+    setTestAuthUser(useStore.getState().uid);
     await useStore.getState().resolveSyncConflict(conflict.id);
 
     const state = useStore.getState();
@@ -9173,7 +9162,7 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
       const accountMenuSource = fs.readFileSync(path.resolve('src/components/AccountMenu.tsx'), 'utf8');
       assert.equal(accountMenuSource.includes('cycleTheme'), false, 'AccountMenu must not have duplicate cycleTheme');
       assert.equal(accountMenuSource.includes("setCurrentView('listening')"), false);
-      assert.equal(accountMenuSource.includes('Help & Shortcuts'), false);
+      assert.equal(accountMenuSource.includes('Help & Shortcuts'), true);
       assert.ok(accountMenuSource.includes('View Profile'));
       assert.ok(accountMenuSource.includes('Sign out') || accountMenuSource.includes('signOut'));
     });
@@ -9181,10 +9170,11 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     test('Mobile navigation drawer retains full workspace and account destinations without horizontal scrolling', () => {
       const sidebarSource = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf8');
       assert.ok(sidebarSource.includes('aria-label="Navigation menu"'));
-      assert.ok(sidebarSource.includes('aria-label="Account and Application Settings"'));
-      assert.ok(sidebarSource.includes('aria-label="Profile"'));
-      assert.ok(sidebarSource.includes('aria-label="Settings"'));
-      assert.ok(sidebarSource.includes('aria-label="Help & Shortcuts"'));
+      const menu = fs.readFileSync(path.resolve('src/components/AccountMenu.tsx'), 'utf8');
+      const top = fs.readFileSync(path.resolve('src/components/TopBar.tsx'), 'utf8');
+      assert.ok(top.includes('Account and profile menu'));
+      for (const label of ['View Profile', 'Settings', 'Help & Shortcuts', 'Sync & Offline Status']) assert.ok(menu.includes(label));
+      assert.equal(sidebarSource.includes('<AccountMenu'), false);
     });
   });
 
@@ -12080,8 +12070,184 @@ describe('NTK Note v2.8 — World-Class Reliability, Sync, Offline, Multi-Tab & 
     });
   });
 
-  after(() => {
-    setTimeout(() => process.exit(0), 100);
+  describe('v2.9.0 correction regressions', () => {
+    const makeNote = (content: string, updatedAt = '2026-10-16T10:00:00.000Z'): Note => ({
+      id: 'stable-note', title: 'Same note', content, notebookId: 'default', ownerId: 'correction-user',
+      tags: [], color: 'default', pinned: false, archived: false, trashed: false,
+      createdAt: '2026-10-16T09:00:00.000Z', updatedAt,
+    });
+    beforeEach(() => {
+      useStore.getState().clearAuth();
+      setTestAuthUser('correction-user');
+      useStore.setState({ uid: 'correction-user', online: false, notes: [makeNote('Base')],
+        syncQueue: [], syncConflicts: [], conflictRecoveryNotice: null });
+    });
+    test('drafts queue immediately and preserve the first remote baseline across repeated edits', async () => {
+      await useStore.getState().updateNote('stable-note', { content: 'First edit' });
+      assert.equal(useStore.getState().syncQueue.length, 1);
+      await useStore.getState().updateNote('stable-note', { content: 'Second edit' });
+      const state = useStore.getState();
+      assert.equal(state.syncQueue.length, 1);
+      assert.equal(state.syncQueue[0].baseUpdatedAt, '2026-10-16T10:00:00.000Z');
+      assert.equal(state.notes.length, 1);
+      assert.equal(state.notes[0].id, 'stable-note');
+    });
+    test('fresh offline create never acquires a false deletion baseline on subsequent edits', async () => {
+      const created = await useStore.getState().createNote({ title: 'New offline note' });
+      await useStore.getState().updateNote(created.id, { content: 'First' });
+      await useStore.getState().updateNote(created.id, { content: 'Second' });
+      assert.equal(useStore.getState().syncQueue.find(q => q.noteId === created.id)?.baseUpdatedAt, undefined);
+    });
+    test('editing cannot change a note ID or delete an existing recovered note', async () => {
+      const recovered = { ...makeNote('Existing unique recovery'), id: 'legacy-recovery', title: 'Legacy (Recovered Copy)' };
+      useStore.setState(s => ({ notes: [...s.notes, recovered] }));
+      await useStore.getState().updateNote('stable-note', { id: 'unrequested-new-id', content: 'Edited safely' });
+      const notes = useStore.getState().notes;
+      assert.equal(notes.length, 2);
+      assert.equal(notes.find(n => n.id === 'stable-note')?.content, 'Edited safely');
+      assert.deepEqual(notes.find(n => n.id === recovered.id), recovered);
+      assert.equal(notes.some(n => n.id === 'unrequested-new-id'), false);
+    });
+    test('snapshot deduplication preserves the latest draft and updates a deletion decision if cloud returns', () => {
+      const local = makeNote('Local', '2026-10-16T10:02:00.000Z');
+      const remote = makeNote('Cloud', '2026-10-16T10:03:00.000Z');
+      const conflict: SyncConflict = { id: 'pending', noteId: local.id, local, deletedRemotely: true, detectedAt: local.updatedAt };
+      const queue: SyncQueueItem[] = [{ id: 'q', noteId: local.id, operation: 'upsert', attempts: 0, createdAt: local.updatedAt, baseUpdatedAt: 'old' }];
+      const result = reconcileRemoteNotesSnapshot([local], [remote], queue, 'correction-user', [conflict, { ...conflict, id: 'duplicate' }]);
+      assert.equal(result.notes.length, 1);
+      assert.equal(result.notes[0].content, 'Local');
+      assert.equal(result.syncConflicts.length, 1);
+      assert.equal(result.syncConflicts[0].deletedRemotely, false);
+      assert.equal(result.syncConflicts[0].remote?.content, 'Cloud');
+    });
+    test('an acknowledged identical cloud version clears a stale conflict after reconnect/reload', () => {
+      const local = makeNote('Acknowledged offline edit', '2026-10-16T11:00:00.000Z');
+      const conflict: SyncConflict = { id: 'stale', noteId: local.id, local,
+        remote: makeNote('Previous cloud edit'), detectedAt: local.updatedAt };
+      const result = reconcileRemoteNotesSnapshot([local], [{ ...local }], [], 'correction-user', [conflict]);
+      assert.equal(result.syncConflicts.length, 0);
+      assert.equal(result.notes.length, 1);
+      assert.equal(result.notes[0].id, local.id);
+      assert.equal(result.notes[0].content, local.content);
+    });
+    test('tab-scoped pending checkpoints survive another tab overwriting the shared cache', async () => {
+      const original = (globalThis as any).indexedDB;
+      const { indexedDB } = await import('fake-indexeddb');
+      (globalThis as any).indexedDB = indexedDB;
+      try {
+        const { persistTabPendingDrafts, loadTabPendingDrafts } = await import('../src/utils/durableOutbox.ts');
+        const local = makeNote('Tab A unsynced');
+        const queue: SyncQueueItem[] = [{ id: 'qa', noteId: local.id, operation: 'upsert', attempts: 0, createdAt: local.updatedAt, baseUpdatedAt: 'base' }];
+        const conflict: SyncConflict = { id: 'ca', noteId: local.id, local, remote: makeNote('Cloud'), detectedAt: local.updatedAt };
+        const pending = { notes: [local], notebooks: [], syncQueue: queue, syncConflicts: [conflict] };
+        assert.equal(await persistTabPendingDrafts('checkpoint-user', 'tab-a', pending), true);
+        await persistDurableNotes('checkpoint-user', [makeNote('Other tab cloud cache')]);
+        await persistDurableSyncQueue('checkpoint-user', []);
+        await persistTabPendingDrafts('checkpoint-user', 'tab-b', { notes: [], notebooks: [], syncQueue: [], syncConflicts: [] });
+        const restored = await loadTabPendingDrafts('checkpoint-user', 'tab-a');
+        assert.equal(restored?.notes[0].content, 'Tab A unsynced');
+        assert.equal(restored?.queue[0].id, 'qa');
+        assert.equal(restored?.conflicts[0].id, 'ca');
+        assert.equal(await loadTabPendingDrafts('other-user', 'tab-a'), null);
+        await persistTabPendingDrafts('checkpoint-user', 'tab-a', { notes: [], notebooks: [], syncQueue: [], syncConflicts: [] });
+        assert.equal((await loadTabPendingDrafts('checkpoint-user', 'tab-a'))?.queue.length, 0);
+      } finally { (globalThis as any).indexedDB = original; }
+    });
+    test('actual workspace hydration restores this tab draft, queue, and decision together', async () => {
+      const original = (globalThis as any).indexedDB;
+      const { indexedDB } = await import('fake-indexeddb');
+      (globalThis as any).indexedDB = indexedDB;
+      try {
+        const { persistTabPendingDrafts, getDraftTabId } = await import('../src/utils/durableOutbox.ts');
+        const uid = 'tab-reload-user';
+        const local = { ...makeNote('My unsynced tab draft'), ownerId: uid };
+        const remote = { ...local, content: 'Other tab cache', updatedAt: '2026-10-16T11:00:00.000Z' };
+        const queue: SyncQueueItem[] = [{ id: 'reload-q', noteId: local.id, operation: 'upsert', attempts: 0, createdAt: local.updatedAt, baseUpdatedAt: 'base' }];
+        const conflict: SyncConflict = { id: 'reload-c', noteId: local.id, local, remote, detectedAt: local.updatedAt };
+        await persistDurableNotes(uid, [remote]);
+        await persistDurableSyncQueue(uid, []);
+        await markDurableMigrationComplete(uid);
+        await persistTabPendingDrafts(uid, getDraftTabId(), { notes: [local], notebooks: [], syncQueue: queue, syncConflicts: [conflict] });
+        setTestAuthUser(uid);
+        await useStore.getState().hydrateAuthenticatedWorkspace(uid);
+        const state = useStore.getState();
+        assert.equal(state.notes.find(n => n.id === local.id)?.content, local.content);
+        assert.equal(state.syncQueue.find(q => q.noteId === local.id)?.id, 'reload-q');
+        assert.equal(state.syncConflicts.find(c => c.noteId === local.id)?.id, 'reload-c');
+      } finally { (globalThis as any).indexedDB = original; }
+    });
+    test('missing baseline and timestamp collisions both fail closed for differing content', async () => {
+      const local = makeNote('Local');
+      const remote = makeNote('Concurrent cloud at same timestamp');
+      let writes = 0;
+      const db = { mockDoc: (...parts: string[]) => parts.join('/') } as any;
+      const runner: TransactionRunner = async (_db, operation) => operation({
+        get: async () => ({ exists: () => true, data: () => remote }), set: () => { writes++; },
+      });
+      const queue: SyncQueueItem = { id: 'q', noteId: local.id, operation: 'upsert', attempts: 0, createdAt: local.updatedAt };
+      assert.equal((await commitQueuedNoteSafely(db, 'correction-user', local, queue, runner)).status, 'conflict');
+      assert.equal((await commitQueuedNoteSafely(db, 'correction-user', local, { ...queue, baseUpdatedAt: 'old' }, runner)).status, 'conflict');
+      assert.equal(writes, 0);
+    });
+    test('signed-out and mismatched sessions cannot apply a pending decision', async () => {
+      const local = makeNote('Local');
+      const conflict: SyncConflict = { id: 'pending', noteId: local.id, local, remote: makeNote('Cloud'), detectedAt: local.updatedAt };
+      useStore.setState({ syncConflicts: [conflict] });
+      for (const uid of [null, 'other-account']) {
+        setTestAuthUser(uid);
+        await useStore.getState().resolveSyncConflict(conflict.id, 'use_remote');
+        assert.equal(useStore.getState().notes[0].content, 'Base');
+        assert.equal(useStore.getState().syncConflicts.length, 1);
+      }
+    });
+    test('legacy automatic callers preserve a pending conflict without creating copies', async () => {
+      const local = makeNote('Local');
+      const conflict: SyncConflict = { id: 'pending', noteId: local.id, local, remote: makeNote('Cloud'), detectedAt: local.updatedAt };
+      await useStore.getState().resolveSyncConflict(conflict.id, 'auto_safe', conflict);
+      await useStore.getState().resolveSyncConflict(conflict.id, 'auto_safe', conflict);
+      assert.equal(useStore.getState().notes.length, 1);
+      assert.equal(useStore.getState().syncConflicts.length, 1);
+      assert.equal(useStore.getState().conflictRecoveryNotice, null);
+    });
+    test('Keep Cloud cancels encryption already in progress and clears the old unlocked draft', async () => {
+      await useStore.getState().lockNote('stable-note', 'Emulator-only-password');
+      await useStore.getState().unlockNote('stable-note', 'Emulator-only-password');
+      const local = useStore.getState().notes[0];
+      const remote = { ...local, encryptedPayload: 'chosen-cloud-ciphertext', updatedAt: '2026-10-16T11:00:00.000Z' };
+      useStore.setState({ syncConflicts: [{ id: 'encrypted-choice', noteId: local.id, local, remote, detectedAt: local.updatedAt }] });
+      const delayed = useStore.getState().updateUnlockedNote(local.id, { content: 'Discarded local encryption' });
+      await useStore.getState().resolveSyncConflict('encrypted-choice', 'use_remote');
+      await delayed;
+      assert.equal(useStore.getState().notes[0].encryptedPayload, remote.encryptedPayload);
+      assert.equal(useStore.getState().unlockedNotes[local.id], undefined);
+      assert.equal(useStore.getState().syncQueue.length, 0);
+    });
+    test('Keep Current waits for the latest encrypted draft and keeps the original ID', async () => {
+      await useStore.getState().lockNote('stable-note', 'Emulator-only-password');
+      await useStore.getState().unlockNote('stable-note', 'Emulator-only-password');
+      const local = useStore.getState().notes[0];
+      const remote = { ...local, encryptedPayload: 'other-cloud-ciphertext', updatedAt: '2026-10-16T11:00:00.000Z' };
+      useStore.setState({ syncConflicts: [{ id: 'encrypted-choice', noteId: local.id, local, remote, detectedAt: local.updatedAt }] });
+      const delayed = useStore.getState().updateUnlockedNote(local.id, { content: 'Latest encrypted draft' });
+      await useStore.getState().resolveSyncConflict('encrypted-choice', 'keep_local');
+      await delayed;
+      const { decryptNoteData } = await import('../src/utils/crypto.ts');
+      const state = useStore.getState();
+      const decoded = await decryptNoteData(state.notes[0].encryptedPayload!, 'Emulator-only-password');
+      assert.equal(decoded.content, 'Latest encrypted draft');
+      assert.equal(state.notes.length, 1);
+      assert.equal(state.notes[0].id, 'stable-note');
+      assert.equal(state.syncQueue[0].baseUpdatedAt, remote.updatedAt);
+    });
+  });
+
+  after(async () => {
+    useStore.getState().clearAuth();
+    const { getTabCoordinator } = await import('../src/utils/tabCoordinator.ts');
+    getTabCoordinator().stop();
+    const { app } = await import('../src/utils/firebase.ts');
+    const { deleteApp } = await import('firebase/app');
+    await deleteApp(app);
   });
 });
 

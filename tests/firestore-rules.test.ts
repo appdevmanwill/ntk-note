@@ -1356,5 +1356,20 @@ describe('Firestore Security Rules Unit Tests', () => {
     if (sharedConflictRes.status === 'conflict') {
       assert.equal(sharedConflictRes.remoteNote.title, 'Bob Collaborative Edit');
     }
+
+    // After explicitly choosing the current draft against Bob's version, the
+    // stale private mirror must not trap Alice in an endless conflict loop.
+    const chosenRes = await commitQueuedNoteSafely(aliceDb as any, 'alice_uid', aliceLocalEdit, {
+      ...aliceSharedQueueItem, baseUpdatedAt: '2026-09-08T10:20:00.000Z',
+    });
+    assert.equal(chosenRes.status, 'committed');
+    assert.equal((await getDoc(doc(aliceDb, `shared_notes/${sharedNoteId}`))).data()?.title, 'Alice Local Edit');
+    assert.equal((await getDoc(doc(aliceDb, `users/alice_uid/notes/${sharedNoteId}`))).data()?.title, 'Alice Local Edit');
+
+    // Unknown legacy baselines cannot overwrite a differing existing document.
+    const unknownBase = await commitQueuedNoteSafely(aliceDb as any, 'alice_uid', {
+      ...aliceLocalEdit, content: 'Unknown-baseline draft',
+    }, { ...aliceSharedQueueItem, baseUpdatedAt: undefined });
+    assert.equal(unknownBase.status, 'conflict');
   });
 });

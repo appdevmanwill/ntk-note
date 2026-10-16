@@ -39,14 +39,16 @@ import { getTabCoordinator } from '@/utils/tabCoordinator';
 import { recordManualSyncMetrics, setActiveListenersCount } from '@/utils/performanceMetrics';
 import { commitQueuedNoteSafely } from '@/utils/noteSyncTransaction';
 import { getOfflineMediaSyncService, summarizePendingMedia } from '@/utils/offlineMediaSyncService';
-import { reconcileRemoteNotesSnapshot, hasMeaningfulNoteDifference, getConflictIdentity } from '@/utils/noteReconciliation';
+import { reconcileRemoteNotesSnapshot, hasMeaningfulNoteDifference } from '@/utils/noteReconciliation';
 import { getPendingMediaForUser } from '@/utils/offlineMediaQueue';
 
-const resolvedConflictIdentities = new Set<string>();
 import {
   saveJSONSafe,
   persistDurableNotes,
   persistDurableSyncQueue,
+  getDraftTabId,
+  persistTabPendingDrafts,
+  loadTabPendingDrafts,
   loadDurableRecord,
   peekCrashJournal,
   acknowledgeCrashJournal,
@@ -999,6 +1001,10 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set, get) => {
+  const committingNotes = new Map<string, string>();
+  const remoteBaselines = new Map<string, string>();
+  const encryptedSaveGenerations = new Map<string, number>();
+  const pendingEncryptedSaves = new Map<string, Promise<void>>();
   // ── Load workspace data helper (used at init and on workspace switch) ──
   const loadWorkspaceData = () => {
     const notes = loadWS<Note[]>('notes', []);
@@ -1090,6 +1096,7 @@ export const useStore = create<AppState>((set, get) => {
 
     // Durable heavy state authority in IndexedDB
     if (uid) {
+      void persistTabPendingDrafts(uid, getDraftTabId(), state);
       void persistDurableNotes(uid, state.notes);
       void persistDurableSyncQueue(uid, state.syncQueue);
     }
@@ -1116,7 +1123,24 @@ export const useStore = create<AppState>((set, get) => {
     persist();
   };
 
+  const recordPendingConflict = (incoming: SyncConflict) => {
+    // One unresolved conflict per original note ID, regardless of sync retries.
+    // Newer edits made in the editor must remain the user's authoritative draft.
+    set(s => {
+      const currentDraft = s.notes.find(n => n.id === incoming.noteId) || incoming.local;
+      const existing = s.syncConflicts.find(c => c.noteId === incoming.noteId);
+      const conflict = { ...incoming, id: existing?.id || incoming.id, local: currentDraft };
+      return {
+        syncConflicts: existing
+          ? s.syncConflicts.map(c => c.noteId === incoming.noteId ? conflict : c)
+          : [...s.syncConflicts, conflict],
+      };
+    });
+    persist();
+  };
+
   const flushQueuedSync = (): Promise<void> => {
+    if (syncFlushPromise) return syncFlushPromise;
     const currentGen = authSessionGeneration;
     const targetUid = get().uid;
     if (!targetUid) return Promise.resolve();
@@ -1190,7 +1214,9 @@ export const useStore = create<AppState>((set, get) => {
               }
             } else if (note) {
               // Atomic compare-and-write via Firestore transaction
+              committingNotes.set(note.id, note.updatedAt);
               const commitResult = await commitQueuedNoteSafely(db, state.uid, note, item);
+              committingNotes.delete(note.id);
               if (commitResult.status === 'conflict') {
                 if (currentGen === authSessionGeneration && get().uid === targetUid) {
                   const conflictId = uuid();
@@ -1201,11 +1227,11 @@ export const useStore = create<AppState>((set, get) => {
                     remote: commitResult.remoteNote,
                     detectedAt: now(),
                   };
-                  await get().resolveSyncConflict(conflictId, 'auto_safe', conflict);
+                  recordPendingConflict(conflict);
                 }
                 continue;
               } else if (commitResult.status === 'remote_deleted') {
-                // Note was deleted on another device. Safely recover user edits into new private note.
+                // Preserve the draft and require a decision before restoring a deleted note.
                 if (currentGen === authSessionGeneration && get().uid === targetUid) {
                   const conflictId = uuid();
                   const conflict: SyncConflict = {
@@ -1215,7 +1241,7 @@ export const useStore = create<AppState>((set, get) => {
                     detectedAt: now(),
                     deletedRemotely: true,
                   };
-                  await get().resolveSyncConflict(conflictId, 'auto_safe', conflict);
+                  recordPendingConflict(conflict);
                 }
                 continue;
               } else if (commitResult.status === 'failed') {
@@ -1231,6 +1257,18 @@ export const useStore = create<AppState>((set, get) => {
                   persist();
                 }
                 return; // EXIT flush — do NOT continue to retry in tight loop
+              }
+              if (currentGen === authSessionGeneration && get().uid === targetUid) {
+                remoteBaselines.set(note.id, commitResult.updatedAt);
+                // Edits made while this transaction ran start from our acknowledged write.
+                set(s => ({
+                  syncConflicts: s.syncConflicts.filter(conflict => conflict.noteId !== note.id ||
+                    conflict.deletedRemotely || !conflict.remote || conflict.remote.updatedAt !== item.baseUpdatedAt),
+                  syncQueue: s.syncQueue.map(queued =>
+                  queued.id !== item.id && queued.noteId === item.noteId &&
+                  (queued.entityType || 'note') === 'note' && queued.baseUpdatedAt === item.baseUpdatedAt
+                    ? { ...queued, baseUpdatedAt: commitResult.updatedAt } : queued
+                ) }));
               }
             }
           }
@@ -1287,31 +1325,31 @@ export const useStore = create<AppState>((set, get) => {
   };
 
   const syncNoteToFirestore = (noteId: string, debounceMs = 0, baseUpdatedAt?: string) => {
+    const queued = get().syncQueue.find(item => item.noteId === noteId && (item.entityType || 'note') === 'note');
+    const preservedBase = queued ? queued.baseUpdatedAt :
+      (syncTimers[noteId]?.baseUpdatedAt ?? baseUpdatedAt ?? remoteBaselines.get(noteId));
+    // Queue immediately, before any remote snapshot can replace an unsaved draft.
+    // Only the network flush is delayed; undefined remains meaningful for a new note.
+    enqueueSync(noteId, 'upsert', 'note', preservedBase ? { baseUpdatedAt: preservedBase } : undefined);
     if (debounceMs > 0) {
       // Preserve the FIRST remote baseline for this editing session.
       // If a timer already exists, keep its original baseUpdatedAt — do NOT overwrite with a later local timestamp.
       const existingMeta = syncTimers[noteId];
-      const preservedBase = existingMeta?.baseUpdatedAt || baseUpdatedAt;
       if (existingMeta) {
         clearTimeout(existingMeta.timer);
       }
       const timer = setTimeout(() => {
-        const meta = syncTimers[noteId];
-        const finalBase = meta?.baseUpdatedAt;
         delete syncTimers[noteId];
-        enqueueSync(noteId, 'upsert', 'note', finalBase ? { baseUpdatedAt: finalBase } : undefined);
         void flushQueuedSync();
       }, debounceMs);
       syncTimers[noteId] = { timer, baseUpdatedAt: preservedBase };
     } else {
       // Immediate sync — clear any pending debounce and preserve its baseline
       const existingMeta = syncTimers[noteId];
-      const preservedBase = existingMeta?.baseUpdatedAt || baseUpdatedAt;
       if (existingMeta) {
         clearTimeout(existingMeta.timer);
         delete syncTimers[noteId];
       }
-      enqueueSync(noteId, 'upsert', 'note', preservedBase ? { baseUpdatedAt: preservedBase } : undefined);
       void flushQueuedSync();
     }
   };
@@ -1480,6 +1518,24 @@ export const useStore = create<AppState>((set, get) => {
           userData.syncQueue = [...merged.values()];
         }
 
+        // Restore this tab's pending work before attaching listeners. Another
+        // tab may have refreshed the shared cache with a different cloud copy.
+        const pending = await loadTabPendingDrafts(uid, getDraftTabId());
+        if (pending) {
+          const notes = new Map(userData.notes.map(note => [note.id, note]));
+          pending.notes.forEach(note => notes.set(note.id, note));
+          userData.notes = [...notes.values()];
+          const notebooks = new Map(userData.notebooks.map(notebook => [notebook.id, notebook]));
+          pending.notebooks.forEach(notebook => notebooks.set(notebook.id, notebook));
+          userData.notebooks = [...notebooks.values()];
+          const queue = new Map(userData.syncQueue.map(item => [`${item.entityType || 'note'}:${item.noteId}`, item]));
+          pending.queue.forEach(item => queue.set(`${item.entityType || 'note'}:${item.noteId}`, item));
+          userData.syncQueue = [...queue.values()];
+          const conflicts = new Map(userData.syncConflicts.map(conflict => [conflict.noteId, conflict]));
+          pending.conflicts.forEach(conflict => conflicts.set(conflict.noteId, conflict));
+          userData.syncConflicts = [...conflicts.values()];
+        }
+
         // Legacy Migration Safety (§7): Write localStorage data to IndexedDB AND verify read-back
         if (!migrationDone && userData.notes.length > 0) {
           const writeOk = await persistDurableNotes(uid, userData.notes);
@@ -1550,6 +1606,12 @@ export const useStore = create<AppState>((set, get) => {
       }
 
       // Apply final hydrated state to Zustand store
+      remoteBaselines.clear();
+      userData.notes.forEach(note => {
+        if (!userData.syncQueue.some(q => q.noteId === note.id && (q.entityType || 'note') === 'note')) {
+          remoteBaselines.set(note.id, note.updatedAt);
+        }
+      });
       set({
         uid,
         notes: userData.notes,
@@ -1620,15 +1682,23 @@ export const useStore = create<AppState>((set, get) => {
       }
 
       const notesRef = collection(db, `users/${uid}/notes`);
-      const unsubscribe = onSnapshot(notesRef, (snapshot) => {
+      const unsubscribe = onSnapshot(notesRef, { includeMetadataChanges: true }, (snapshot) => {
         if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+        if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
         const notes = snapshot.docs.map(doc => doc.data() as Note);
+        notes.forEach(note => {
+          if (!get().syncQueue.some(q => q.noteId === note.id && (q.entityType || 'note') === 'note')) {
+            remoteBaselines.set(note.id, note.updatedAt);
+          }
+        });
         set(s => {
           if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
           const result = reconcileRemoteNotesSnapshot(
             s.notes,
             notes,
-            s.syncQueue,
+            s.syncQueue.map(item => notes.some(note => note.id === item.noteId &&
+              committingNotes.get(note.id) === note.updatedAt)
+              ? { ...item, baseUpdatedAt: committingNotes.get(item.noteId) } : item),
             uid,
             s.syncConflicts
           );
@@ -1640,12 +1710,6 @@ export const useStore = create<AppState>((set, get) => {
         });
         if (sessionGen === authSessionGeneration && get().uid === uid) {
           persist();
-          const pendingConflicts = get().syncConflicts;
-          if (pendingConflicts.length > 0) {
-            for (const c of pendingConflicts) {
-              void get().resolveSyncConflict(c.id, 'auto_safe');
-            }
-          }
           void flushQueuedSync();
         }
       }, (error) => {
@@ -1856,8 +1920,9 @@ export const useStore = create<AppState>((set, get) => {
         const normalizedEmail = normalizeEmail(email);
         // ── Subscriber-side: notes shared WITH this user ──
         const sharedNotesQuery = query(collection(db, 'shared_notes'), where('sharedWith', 'array-contains', normalizedEmail));
-        const unsubSharedReceived = onSnapshot(sharedNotesQuery, (snapshot) => {
+        const unsubSharedReceived = onSnapshot(sharedNotesQuery, { includeMetadataChanges: true }, (snapshot) => {
           if (sessionGen !== authSessionGeneration || get().uid !== uid) return;
+          if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) return;
           const sharedNotes = snapshot.docs.map(doc => ({
             ...doc.data(),
             isShared: true
@@ -1866,18 +1931,14 @@ export const useStore = create<AppState>((set, get) => {
           set(s => {
             if (sessionGen !== authSessionGeneration || s.uid !== uid) return {};
             const privateNotes = s.notes.filter(n => !(n.isShared && n.ownerId !== uid));
-            const merged = [...privateNotes];
-            
-            sharedNotes.forEach(shared => {
-              const idx = merged.findIndex(n => n.id === shared.id);
-              if (idx >= 0) {
-                merged[idx] = shared;
-              } else {
-                merged.push(shared);
-              }
-            });
-            return { notes: merged, tags: rebuildTags(merged) };
+            const result = reconcileRemoteNotesSnapshot(
+              s.notes.filter(n => n.isShared && n.ownerId !== uid), sharedNotes,
+              s.syncQueue, uid, s.syncConflicts, true,
+            );
+            const merged = [...privateNotes, ...result.notes];
+            return { notes: merged, tags: rebuildTags(merged), syncConflicts: result.syncConflicts };
           });
+          persist();
         }, (error) => {
           console.error("Firestore shared notes sync error:", error);
         });
@@ -1895,6 +1956,8 @@ export const useStore = create<AppState>((set, get) => {
             ownedSharedNotes.forEach(shared => {
               const idx = updated.findIndex(n => n.id === shared.id);
               if (idx >= 0) {
+                if (s.syncQueue.some(q => q.noteId === shared.id && (q.entityType || 'note') === 'note') ||
+                  s.syncConflicts.some(c => c.noteId === shared.id)) return;
                 // Update the private copy with the shared authority's content
                 updated[idx] = {
                   ...updated[idx],
@@ -2049,6 +2112,7 @@ export const useStore = create<AppState>((set, get) => {
       } catch {}
 
       // Switch to guest workspace namespace
+      remoteBaselines.clear();
       setWorkspacePrefix(null);
       // Load clean guest workspace (typically empty)
       const guestData = loadWorkspaceData();
@@ -2088,7 +2152,6 @@ export const useStore = create<AppState>((set, get) => {
         syncMessage: '',
         lastManualSyncAt: null,
       });
-      resolvedConflictIdentities.clear();
     },
 
     scratchPad: initialData.scratchPad,
@@ -2336,10 +2399,59 @@ export const useStore = create<AppState>((set, get) => {
       return trackedOperation;
     },
     resolveSyncConflict: async (conflictId, strategy, conflictOverride) => {
-      const conflict = conflictOverride || get().syncConflicts.find(item => item.id === conflictId);
+      const pending = get().syncConflicts.find(item => item.id === conflictId);
+      if (strategy && strategy !== 'auto_safe' && !pending) return;
+      const conflict = pending || conflictOverride;
       if (!conflict) return;
 
       const currentUid = get().uid;
+      if (!currentUid || auth.currentUser?.uid !== currentUid) return;
+      const latestDraft = get().notes.find(n => n.id === conflict.noteId) || conflict.local;
+      // A stale dialog from another account must never mutate this workspace.
+      if (conflict.local.ownerId && conflict.local.ownerId !== currentUid && !conflict.local.isShared) return;
+      if (!strategy || strategy === 'auto_safe') {
+        if (conflict.remote && !hasMeaningfulNoteDifference(latestDraft, conflict.remote)) {
+          strategy = 'use_remote';
+        } else {
+          recordPendingConflict(conflict);
+          return;
+        }
+      }
+      if (strategy === 'keep_deleted' && !conflict.deletedRemotely) return;
+      if ((strategy === 'use_remote' || strategy === 'remote') && !conflict.remote) return;
+      const keepDraft = strategy === 'keep_local' || strategy === 'local' || strategy === 'keep_both' || strategy === 'recover_version';
+      if (!keepDraft) {
+        // Cancel encryption already in progress before accepting cloud/deletion.
+        encryptedSaveGenerations.set(conflict.noteId, (encryptedSaveGenerations.get(conflict.noteId) || 0) + 1);
+        set(s => ({ unlockedNotes: Object.fromEntries(Object.entries(s.unlockedNotes).filter(([id]) => id !== conflict.noteId)) }));
+      }
+      // Flush the editor's React-local draft before reading or discarding it.
+      if (typeof window !== 'undefined' && typeof CustomEvent !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ntk:resolve-note-conflict', {
+          detail: { noteId: conflict.noteId, keepLocal: keepDraft },
+        }));
+      }
+      if (keepDraft) {
+        const pendingSave = pendingEncryptedSaves.get(conflict.noteId);
+        if (pendingSave) {
+          try { await pendingSave; }
+          catch {
+            setSyncFeedback('error', 'Your encrypted draft could not be saved. The conflict is still waiting for review.');
+            return;
+          }
+        }
+        if (get().uid !== currentUid || auth.currentUser?.uid !== currentUid ||
+          !get().syncConflicts.some(item => item.id === conflictId)) return;
+      }
+      // Cancel deferred edits before applying an explicit conflict decision.
+      // Otherwise a stale timer can requeue the discarded version after resolution.
+      if (strategy) {
+        const pendingTimer = syncTimers[conflict.noteId];
+        if (pendingTimer) {
+          clearTimeout(pendingTimer.timer);
+          delete syncTimers[conflict.noteId];
+        }
+      }
       const cleanTitle = (conflict.local.title || 'Untitled').replace(/\s*\(Recovered Copy\)$/, '');
 
       // Explicit legacy strategies for backward compatibility
@@ -2347,6 +2459,8 @@ export const useStore = create<AppState>((set, get) => {
         set(s => ({
           notes: s.notes.filter(n => n.id !== conflict.noteId),
           tags: rebuildTags(s.notes.filter(n => n.id !== conflict.noteId)),
+          selectedNoteId: s.selectedNoteId === conflict.noteId ? null : s.selectedNoteId,
+          editingNote: s.selectedNoteId === conflict.noteId ? false : s.editingNote,
           syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
           syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
         }));
@@ -2357,7 +2471,7 @@ export const useStore = create<AppState>((set, get) => {
       if (strategy === 'recover_version') {
         const newId = uuid();
         const recoveredCopy: Note = {
-          ...conflict.local,
+          ...(get().notes.find(n => n.id === conflict.noteId) || conflict.local),
           id: newId,
           ownerId: currentUid || conflict.local.ownerId,
           isShared: false,
@@ -2403,21 +2517,30 @@ export const useStore = create<AppState>((set, get) => {
       }
 
       if (strategy === 'keep_local' || strategy === 'local') {
+        // Explicit user choice: keep the freshest local editor draft at its original ID.
+        // Discard the conflicting queued baseline before writing intentionally.
         set(s => {
-          const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.local : n);
+          const latestDraft = s.notes.find(n => n.id === conflict.noteId) || conflict.local;
+          const updatedNotes = s.notes.some(n => n.id === conflict.noteId)
+            ? s.notes.map(n => n.id === conflict.noteId ? latestDraft : n)
+            : [...s.notes, latestDraft];
           return {
             notes: updatedNotes,
             tags: rebuildTags(updatedNotes),
-            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
+            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId || (item.entityType || 'note') !== 'note'),
+            syncConflicts: s.syncConflicts.filter(item => item.noteId !== conflict.noteId),
           };
         });
         persist();
-        syncNoteToFirestore(conflict.noteId);
+        remoteBaselines.delete(conflict.noteId);
+        // Compare again inside the transaction: a newer cloud edit requires a new review.
+        syncNoteToFirestore(conflict.noteId, 0, conflict.remote?.updatedAt);
         return;
       }
 
       if (strategy === 'use_remote' || strategy === 'remote') {
         if (conflict.remote) {
+          remoteBaselines.set(conflict.noteId, conflict.remote.updatedAt);
           set(s => {
             const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
             return {
@@ -2434,7 +2557,7 @@ export const useStore = create<AppState>((set, get) => {
 
       if (strategy === 'keep_both' && conflict.remote) {
         const localCopy: Note = {
-          ...conflict.local,
+          ...(get().notes.find(n => n.id === conflict.noteId) || conflict.local),
           id: uuid(),
           ownerId: currentUid || conflict.local.ownerId,
           isShared: false,
@@ -2464,146 +2587,10 @@ export const useStore = create<AppState>((set, get) => {
         return;
       }
 
-      // NOVICE-FIRST AUTOMATIC SAFE RECOVERY (Default / 'auto_safe')
-      // Rule 1: Remote Deletion Conflict
-      if (conflict.deletedRemotely) {
-        const identityKey = getConflictIdentity(conflict);
-        if (resolvedConflictIdentities.has(identityKey)) {
-          set(s => ({
-            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
-          }));
-          persist();
-          return;
-        }
-        resolvedConflictIdentities.add(identityKey);
+      // Automatic conflict resolution is disabled: the user must choose.
+      // Legacy auto_safe callers remain fail-closed; no note copies are created.
+      return;
 
-        const newId = uuid();
-        const recoveredCopy: Note = {
-          ...conflict.local,
-          id: newId,
-          ownerId: currentUid || conflict.local.ownerId,
-          isShared: false,
-          isPublished: false,
-          shareAccess: undefined,
-          sharedWith: undefined,
-          editors: undefined,
-          commenters: undefined,
-          viewers: undefined,
-          sharedBy: undefined,
-          title: `${cleanTitle} (Recovered Copy)`,
-          createdAt: now(),
-          updatedAt: now(),
-        };
-
-        set(s => {
-          const notesWithoutOriginal = s.notes.filter(n => n.id !== conflict.noteId);
-          const updatedNotes = [...notesWithoutOriginal, recoveredCopy];
-          return {
-            notes: updatedNotes,
-            tags: rebuildTags(updatedNotes),
-            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
-            conflictRecoveryNotice: {
-              id: uuid(),
-              conflictId: conflict.id,
-              type: 'remote_deletion',
-              title: 'Your edits are safe',
-              message: 'This note was deleted on another device, so we saved your unsynced edits as a new note.',
-              recoveredNoteId: recoveredCopy.id,
-              canonicalNoteId: null,
-              recoveredNote: recoveredCopy,
-              localTitle: conflict.local.title,
-              localContent: conflict.local.content,
-              detectedAt: now(),
-            },
-          };
-        });
-        persist();
-        syncNoteToFirestore(recoveredCopy.id);
-        get().selectNote(recoveredCopy.id);
-        return;
-      }
-
-      // Rule 2: Standard Concurrent Edit Conflict
-      if (conflict.remote) {
-        // Section 10: If local and remote user-visible content are identical, resolve silently
-        if (!hasMeaningfulNoteDifference(conflict.local, conflict.remote)) {
-          set(s => {
-            const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
-            return {
-              notes: updatedNotes,
-              tags: rebuildTags(updatedNotes),
-              syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-              syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
-            };
-          });
-          persist();
-          return;
-        }
-
-        // Section 9: Idempotency guard - prevent duplicate recovered copies
-        const identityKey = getConflictIdentity(conflict);
-        if (resolvedConflictIdentities.has(identityKey)) {
-          set(s => ({
-            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
-          }));
-          persist();
-          return;
-        }
-        resolvedConflictIdentities.add(identityKey);
-
-        // Section 5 & 6: Preserve remote as existing canonical note; fork local edits to new private note
-        const newId = uuid();
-        const recoveredCopy: Note = {
-          ...conflict.local,
-          id: newId,
-          ownerId: currentUid || conflict.local.ownerId,
-          isShared: false,
-          isPublished: false,
-          shareAccess: undefined,
-          sharedWith: undefined,
-          editors: undefined,
-          commenters: undefined,
-          viewers: undefined,
-          sharedBy: undefined,
-          title: `${cleanTitle} (Recovered Copy)`,
-          createdAt: now(),
-          updatedAt: now(),
-        };
-
-        set(s => {
-          const updatedNotes = s.notes.map(n => n.id === conflict.noteId ? conflict.remote! : n);
-          const combinedNotes = [...updatedNotes, recoveredCopy];
-          return {
-            notes: combinedNotes,
-            tags: rebuildTags(combinedNotes),
-            syncConflicts: s.syncConflicts.filter(item => item.id !== conflictId),
-            syncQueue: s.syncQueue.filter(item => item.noteId !== conflict.noteId),
-            conflictRecoveryNotice: {
-              id: uuid(),
-              conflictId: conflict.id,
-              type: 'concurrent_edit',
-              title: 'Your edits are safe',
-              message: 'This note also changed on another device, so NTK Note saved your edits as a separate copy. Nothing was lost.',
-              recoveredNoteId: recoveredCopy.id,
-              canonicalNoteId: conflict.remote!.id,
-              recoveredNote: recoveredCopy,
-              canonicalNote: conflict.remote,
-              localTitle: conflict.local.title,
-              remoteTitle: conflict.remote!.title,
-              localContent: conflict.local.content,
-              remoteContent: conflict.remote!.content,
-              detectedAt: now(),
-            },
-          };
-        });
-        persist();
-        syncNoteToFirestore(recoveredCopy.id);
-        get().selectNote(recoveredCopy.id);
-        return;
-      }
     },
     setOnlineStatus: (online) => {
       set({ online });
@@ -2934,7 +2921,7 @@ export const useStore = create<AppState>((set, get) => {
         }
         const notes = s.notes.map(n => {
           if (n.id !== id) return n;
-          const updated = { ...n, ...updates, updatedAt: now() };
+          const updated = { ...n, ...updates, id: n.id, updatedAt: now() };
           if (updates.content !== undefined || updates.title !== undefined) {
             const fullText = (updates.title ?? n.title) + ' ' + (updates.content ?? n.content);
             updated.wordCount = countWords(fullText);
@@ -3509,6 +3496,7 @@ export const useStore = create<AppState>((set, get) => {
       }
     },
     relockNote: (noteId) => {
+      encryptedSaveGenerations.set(noteId, (encryptedSaveGenerations.get(noteId) || 0) + 1);
       set(s => ({
         unlockedNotes: Object.fromEntries(Object.entries(s.unlockedNotes).filter(([id]) => id !== noteId)),
       }));
@@ -3516,25 +3504,38 @@ export const useStore = create<AppState>((set, get) => {
     updateUnlockedNote: async (noteId, updates, immediateSync = false) => {
       const unlocked = get().unlockedNotes[noteId];
       if (!unlocked) return;
+      const saveUid = get().uid;
+      const saveSession = authSessionGeneration;
+      const generation = (encryptedSaveGenerations.get(noteId) || 0) + 1;
+      encryptedSaveGenerations.set(noteId, generation);
+      const note = get().notes.find(n => n.id === noteId);
+      const baseUpdatedAt = get().syncQueue.find(q => q.noteId === noteId && (q.entityType || 'note') === 'note')?.baseUpdatedAt ?? note?.updatedAt;
       const next = { ...unlocked, ...updates };
-      const payload = await encryptNoteData({
+      const operation = encryptNoteData({
         title: next.title,
         content: next.content,
         checklist: next.checklist,
-      }, next.password);
-      set(s => ({
-        unlockedNotes: { ...s.unlockedNotes, [noteId]: next },
-        notes: s.notes.map(n => n.id === noteId ? {
-          ...n,
-          encryptedPayload: payload,
-          updatedAt: now(),
-          wordCount: countWords(`${next.title} ${next.content}`),
-          charCount: countChars(next.content),
-        } : n),
-      }));
-      persist();
-      const isTextEdit = updates.title !== undefined || updates.content !== undefined;
-      syncNoteToFirestore(noteId, (isTextEdit && !immediateSync) ? 5000 : 0);
+      }, next.password).then(payload => {
+        if (encryptedSaveGenerations.get(noteId) !== generation || get().uid !== saveUid ||
+          authSessionGeneration !== saveSession || !get().unlockedNotes[noteId] ||
+          !get().notes.some(n => n.id === noteId && n.encrypted)) return;
+        set(s => ({
+          unlockedNotes: { ...s.unlockedNotes, [noteId]: next },
+          notes: s.notes.map(n => n.id === noteId ? {
+            ...n,
+            encryptedPayload: payload,
+            updatedAt: now(),
+            wordCount: countWords(`${next.title} ${next.content}`),
+            charCount: countChars(next.content),
+          } : n),
+        }));
+        persist();
+        const isTextEdit = updates.title !== undefined || updates.content !== undefined;
+        syncNoteToFirestore(noteId, (isTextEdit && !immediateSync) ? 5000 : 0, baseUpdatedAt);
+      });
+      pendingEncryptedSaves.set(noteId, operation);
+      try { await operation; }
+      finally { if (pendingEncryptedSaves.get(noteId) === operation) pendingEncryptedSaves.delete(noteId); }
     },
 
     addChecklistItem: async (noteId, text) => {

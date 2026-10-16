@@ -1,0 +1,645 @@
+{
+  "config": {
+    "argv": [
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\node_modules\\@playwright\\test\\cli.js",
+      "test"
+    ],
+    "configFile": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\playwright.config.ts",
+    "rootDir": "C:/Users/NTK/Projects/NTK Projects/NTK-note/tests/browser",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\emulator-preflight.ts",
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "C:/Users/NTK/Projects/NTK Projects/NTK-note/test-evidence/fix-v290/browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "desktop",
+        "name": "desktop",
+        "testDir": "C:/Users/NTK/Projects/NTK Projects/NTK-note/tests/browser",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.spec.ts"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "C:/Users/NTK/Projects/NTK Projects/NTK-note/test-evidence/fix-v290/browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "mobile",
+        "name": "mobile",
+        "testDir": "C:/Users/NTK/Projects/NTK Projects/NTK-note/tests/browser",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.spec.ts"
+        ],
+        "timeout": 120000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "desktop",
+        "testDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser",
+        "snapshotDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser",
+        "testIgnore": [],
+        "testMatch": "**/*.spec.ts",
+        "timeout": 120000,
+        "use": {
+          "baseURL": "http://127.0.0.1:4173",
+          "serviceWorkers": "block",
+          "trace": "retain-on-failure",
+          "screenshot": "only-on-failure",
+          "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.4 Safari/537.36",
+          "viewport": {
+            "width": 1440,
+            "height": 900
+          },
+          "screen": {
+            "width": 1920,
+            "height": 1080
+          },
+          "deviceScaleFactor": 1,
+          "isMobile": false,
+          "hasTouch": false,
+          "defaultBrowserType": "chromium"
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "desktop"
+      },
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "mobile",
+        "testDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser",
+        "snapshotDir": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser",
+        "testIgnore": [],
+        "testMatch": "**/*.spec.ts",
+        "timeout": 120000,
+        "use": {
+          "baseURL": "http://127.0.0.1:4173",
+          "serviceWorkers": "block",
+          "trace": "retain-on-failure",
+          "screenshot": "only-on-failure",
+          "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.4 Mobile Safari/537.36",
+          "viewport": {
+            "width": 412,
+            "height": 839
+          },
+          "screen": {
+            "width": 412,
+            "height": 915
+          },
+          "deviceScaleFactor": 2.625,
+          "isMobile": true,
+          "hasTouch": true,
+          "defaultBrowserType": "chromium"
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "mobile"
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "test-evidence/fix-v290/browser-results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.64.1",
+    "workers": 1,
+    "webServer": {
+      "command": "node node_modules/vite/bin/vite.js --config vite.browser.config.ts --host 127.0.0.1 --port 4173 --strictPort",
+      "url": "http://127.0.0.1:4173",
+      "reuseExistingServer": false,
+      "env": {
+        "VITE_USE_FIREBASE_EMULATORS": "true",
+        "VITE_FIREBASE_PROJECT_ID": "demo-ntk-note",
+        "VITE_FIREBASE_API_KEY": "demo-emulator-key",
+        "VITE_FIREBASE_AUTH_DOMAIN": "localhost",
+        "VITE_FIREBASE_STORAGE_BUCKET": "demo-ntk-note.appspot.com",
+        "VITE_FIREBASE_MESSAGING_SENDER_ID": "123456789",
+        "VITE_FIREBASE_APP_ID": "demo-emulator-app"
+      }
+    }
+  },
+  "suites": [
+    {
+      "title": "corrections.spec.ts",
+      "file": "corrections.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "top-right profile menu stays within desktop/mobile viewport and works by keyboard",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 21996,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:37:50.946Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-2b56cc5d5a61f1793160",
+          "file": "corrections.spec.ts",
+          "line": 27,
+          "column": 1
+        },
+        {
+          "title": "recent notebook navigation filters notes; create/edit nested icons survive reload and cloud sync",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 26986,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:38:13.531Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-7c0692624509fa511dcc",
+          "file": "corrections.spec.ts",
+          "line": 43,
+          "column": 1
+        },
+        {
+          "title": "normal editing, offline/reconnect and reload keep the same note ID without copies",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 22573,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:38:40.556Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-48885d1b550c0f391d58",
+          "file": "corrections.spec.ts",
+          "line": 75,
+          "column": 1
+        },
+        {
+          "title": "two isolated device sessions compare conflicts, preserve later edits, and keep one ID",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 19073,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:39:03.166Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-c186f77c3a40ed27ab52",
+          "file": "corrections.spec.ts",
+          "line": 96,
+          "column": 1
+        },
+        {
+          "title": "same-context tabs preserve pending conflicts across reload; Keep Cloud cancels editor drafts",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 26532,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:39:22.267Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-d3f35efb3212f2c537bc",
+          "file": "corrections.spec.ts",
+          "line": 124,
+          "column": 1
+        },
+        {
+          "title": "remote deletion waits for review and explicit restore reuses the original ID",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "desktop",
+              "projectName": "desktop",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 19959,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:39:48.829Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-2fbc3d10054ff03ad14a",
+          "file": "corrections.spec.ts",
+          "line": 149,
+          "column": 1
+        },
+        {
+          "title": "top-right profile menu stays within desktop/mobile viewport and works by keyboard",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 8199,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:40:12.252Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-085293e9a570c752aba5",
+          "file": "corrections.spec.ts",
+          "line": 27,
+          "column": 1
+        },
+        {
+          "title": "recent notebook navigation filters notes; create/edit nested icons survive reload and cloud sync",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 27767,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:40:20.852Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-d8a46e6d3ba6ab1e04f2",
+          "file": "corrections.spec.ts",
+          "line": 43,
+          "column": 1
+        },
+        {
+          "title": "normal editing, offline/reconnect and reload keep the same note ID without copies",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 24079,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:40:48.649Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-e0293b7ef8c14ba83b98",
+          "file": "corrections.spec.ts",
+          "line": 75,
+          "column": 1
+        },
+        {
+          "title": "two isolated device sessions compare conflicts, preserve later edits, and keep one ID",
+          "ok": false,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 9049,
+                  "error": {
+                    "message": "Error: page.goto: net::ERR_NO_BUFFER_SPACE at http://127.0.0.1:4173/\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:4173/\", waiting until \"domcontentloaded\"\u001b[22m\n",
+                    "stack": "Error: page.goto: net::ERR_NO_BUFFER_SPACE at http://127.0.0.1:4173/\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:4173/\", waiting until \"domcontentloaded\"\u001b[22m\n\n    at open (C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts:15:14)\n    at C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts:103:5",
+                    "location": {
+                      "file": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts",
+                      "column": 14,
+                      "line": 15
+                    },
+                    "snippet": "  13 |   // All external production APIs use HTTPS and are blocked here.\n  14 |   await page.context().route('https://**/*', route => route.abort());\n> 15 |   await page.goto('/', { waitUntil: 'domcontentloaded' });\n     |              ^\n  16 |   await fixture(page, 'signIn', [email]);\n  17 |   await expect.poll(() => fixture(page, 'ready')).toBe(true);\n  18 |   const guide = page.getByRole('button', { name: 'Close welcome guide' });"
+                  },
+                  "errors": [
+                    {
+                      "location": {
+                        "file": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts",
+                        "column": 14,
+                        "line": 15
+                      },
+                      "message": "Error: page.goto: net::ERR_NO_BUFFER_SPACE at http://127.0.0.1:4173/\nCall log:\n\u001b[2m  - navigating to \"http://127.0.0.1:4173/\", waiting until \"domcontentloaded\"\u001b[22m\n\n\n  13 |   // All external production APIs use HTTPS and are blocked here.\n  14 |   await page.context().route('https://**/*', route => route.abort());\n> 15 |   await page.goto('/', { waitUntil: 'domcontentloaded' });\n     |              ^\n  16 |   await fixture(page, 'signIn', [email]);\n  17 |   await expect.poll(() => fixture(page, 'ready')).toBe(true);\n  18 |   const guide = page.getByRole('button', { name: 'Close welcome guide' });\n    at open (C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts:15:14)\n    at C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts:103:5"
+                    }
+                  ],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:41:12.756Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts\\corrections-two-isolated-d-584ce-later-edits-and-keep-one-ID-mobile\\test-failed-1.png"
+                    },
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts\\corrections-two-isolated-d-584ce-later-edits-and-keep-one-ID-mobile\\test-failed-2.png"
+                    },
+                    {
+                      "name": "error-context",
+                      "contentType": "text/markdown",
+                      "path": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts\\corrections-two-isolated-d-584ce-later-edits-and-keep-one-ID-mobile\\error-context.md"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\test-evidence\\fix-v290\\browser-artifacts\\corrections-two-isolated-d-584ce-later-edits-and-keep-one-ID-mobile\\trace.zip"
+                    }
+                  ],
+                  "errorLocation": {
+                    "file": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note\\tests\\browser\\corrections.spec.ts",
+                    "column": 14,
+                    "line": 15
+                  }
+                }
+              ],
+              "status": "unexpected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-1460385b3c8dd152b907",
+          "file": "corrections.spec.ts",
+          "line": 96,
+          "column": 1
+        },
+        {
+          "title": "same-context tabs preserve pending conflicts across reload; Keep Cloud cancels editor drafts",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 20393,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:41:24.937Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-9a1a505c1df3da5e80c6",
+          "file": "corrections.spec.ts",
+          "line": 124,
+          "column": 1
+        },
+        {
+          "title": "remote deletion waits for review and explicit restore reuses the original ID",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 120000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "mobile",
+              "projectName": "mobile",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 16716,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-16T13:41:45.961Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "a479613f48eeef676b25-703041c5cae7341f5451",
+          "file": "corrections.spec.ts",
+          "line": 149,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-16T13:37:36.111Z",
+    "duration": 267954.948,
+    "expected": 11,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

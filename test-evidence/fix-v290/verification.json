@@ -1,0 +1,254 @@
+{
+  "status": "VERIFIED functional correction; preview publication pending",
+  "checkedAt": "2026-10-16T13:45:06.481Z",
+  "version": "2.9.0",
+  "baseline": "d83dc0659f55315b9981cf58618b078b1a89de06",
+  "developmentBranch": "codex/v2.9.0-safe-sync-20261016-131848",
+  "localBackup": "C:\\Users\\NTK\\Projects\\NTK Projects\\NTK-note-preservation-20261016-131848",
+  "packageSha256": "64aa7ed477b077055ca5ffa16d8a13fb081c93e6a726501843cac512c849f372",
+  "checks": {
+    "types": "PASS",
+    "logic": {
+      "passed": 393,
+      "failed": 0
+    },
+    "firestoreRules": {
+      "passed": 24,
+      "failed": 0
+    },
+    "browser": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "viewports": [
+        "desktop 1440x900",
+        "Pixel 7 mobile emulation"
+      ]
+    },
+    "build": {
+      "status": "PASS",
+      "indexSha256": "01625e274a006548ce56c5a28ffd437ec94ca3a2940860368a97a6975a1dd5b9",
+      "bytes": 2781374,
+      "emulatorCodeExcluded": true
+    }
+  },
+  "inheritedDependencyAdvisories": {
+    "low": 2,
+    "moderate": 3,
+    "high": 9,
+    "critical": 1,
+    "total": 15,
+    "sameAsBaseline": true
+  },
+  "productionBefore": {
+    "release": "projects/ntk-note/sites/ntk-note/channels/live/releases/1791322182458000",
+    "version": "projects/ntk-note/sites/ntk-note/versions/5cf3b6959416c071"
+  },
+  "sourceHashes": {
+    "firebase.browser.json": "38cf10f978c56424088572ddfe30f33e28e250b590550f884491734589f98010",
+    "firebase.json": "fb13c9c34c5811d0f28dcec82355a55442f5e3b2f8a0cc86692888a5019f5679",
+    "firebase.preview.json": "9a75d621e8951f107be5a706e6c8e0d4a44167b558475ac01c9abc310eea20a2",
+    "firestore.indexes.json": "32a56761f7be432d08aae0d37af2dc10a27608315e5a0e84294bae351e8c34d8",
+    "firestore.rules": "bedae3eaf88a8b33c7ef1f9dd9e0ec9ec14e393fe96d460373b2eb2c8ca4d364",
+    "index.html": "7e995ed30363ebe1a048468e307523c525dbe772f6f47bf2407a176b6257c170",
+    "package-lock.json": "c13fd1c9aa2bd1d15a6d5ac8d772ddbab388c48c54c5341479fc43d03438a92e",
+    "package.json": "e80125ec0474f9a06f9312fa7b76183b6cc05ae2a429366493e77ee9383fb918",
+    "playwright.config.ts": "c5034ea5148d8a44c05422041ed08e416585295895263f96b77b9289cadf3f1d",
+    "public/apple-touch-icon.png": "acaeaa07831591fdcf6f49bb62f05a05cfeb84dac14678d61ce703f1d1969add",
+    "public/images/hero-bg.jpg": "f6b94f45e6a849df1ba708b3da96d694545839219a7252a965c47f0cc2349b26",
+    "public/manifest.webmanifest": "283fd9d28d41237537d4c90c2415bc30257d6e8b06fd4eb134d7a0e6f53cbe10",
+    "public/ntk-icon-192.png": "8422e8fcee9521cd214d8f1aa11e87a76cf6b87789937cb10260fb97c43b6d39",
+    "public/ntk-icon-512.png": "b5554ebf76cdf46d60089aa116dc2caba6b144f1c5791ee7ab48395988d0df09",
+    "public/ntk-icon.svg": "3fccd6c6bf4e53de0d5d91a02352ba6d6fdabf0a15837df13b647924c836a8c0",
+    "public/sw.js": "39817a77007510a8238b373e31f2a372d7d5f35bd404ae35aed9c0b3024730b6",
+    "src/App.tsx": "bee20e70600d0f380af74c2e5a56718683d1ef2d3cfb3a0005384bf7b59eedea",
+    "src/components/AccountMenu.tsx": "03d9b792913ce9d9007d4ad4fdc613e9dfdb494f7d93d29229d45007b70f1273",
+    "src/components/AiAssistantView.tsx": "88f5f4932ba8db09ed73cafc532fbf4e77397ceca02490d3227deb439af9ae7d",
+    "src/components/AiSettingsPanel.tsx": "6973864bcd8c3aa8e1dab3306253728c2dc31bcd70cf76bcdcf30b27b585a727",
+    "src/components/BackupCenterModal.tsx": "dea09732b92ecf3b2200c31599857006c18df94e1f8793387f38d979580c63e9",
+    "src/components/BrandMark.tsx": "70a8a70a53dd3f897511ad000306970c541c1d306c2256858e0afbbc6d91fece",
+    "src/components/CalendarWidget.tsx": "b8518d47908fbad65d8bbac86cc1e4ad49767b3e4579a7d279527667241692c2",
+    "src/components/CommandPalette.tsx": "f1ca8590dbdc96b842d73471fce0ebb9fbdfb6114a51d4c3687ae0ad4815345b",
+    "src/components/ConflictResolutionModal.tsx": "fb4f5c1863d59de8d74fedf615ec88f4d693ff77081bcd42cf071dd5b0da2f14",
+    "src/components/CreateReminderModal.tsx": "582d0f5e83e2916f6a3f4304336a62cf129dbf8b58c2ce2bfa137f996460ff77",
+    "src/components/CreateSheet.tsx": "3640388ba719e18e3cfeaef9d7d3237add1f5a9d46ceedf9a59648d7a861bb64",
+    "src/components/Dashboard.tsx": "08c6dae0474e8a48b04eb0bdaff0bd2d97e89d593566cc9f2226aecf90a218ba",
+    "src/components/FoldersView.tsx": "d12b31027288b3694784e99f3769cb9c7ce23050c7d020c9e95fe6ea520630c8",
+    "src/components/FriendlyAiOutput.tsx": "8b58893b1b3e0f1214f95c5ce8519a90080188605c599bd4dccc1ecc75a20024",
+    "src/components/GraphView.tsx": "47621c0f702be68892003805f44ac64a24b39e91a53fbfbdc11b9b19c47c6336",
+    "src/components/ImportManager.tsx": "029436f269019325dc69e49da238ff6ba76e356fdf87df1d5b619af2de40c9f7",
+    "src/components/ListenPlayer.tsx": "0d625cc5869ff72a839aba9c40d5fa80b866c1d9071612e27dc4ee9e98d60347",
+    "src/components/LoginScreen.tsx": "3f13941f830a5d365217786dd66b1f7f0628c61d24b521bf0a088a85de00796b",
+    "src/components/ManageNotebooksModal.tsx": "2de2a58e48f4ee70156d63b77eb12bc889d029d5733e1878c0e15728713682f7",
+    "src/components/ManualSyncButton.tsx": "eab87334298fb5f1141d33760fc6b2fe713fbc32eea27666c393fc57ef5cf3a1",
+    "src/components/MessagesView.tsx": "e82f9e26c570053b9284aac4450f74e3423e36e4c845c04849b49c4b5efafa2a",
+    "src/components/MobileNav.tsx": "e0ed59a15bef74e374e36c9cbb9a790e3d094700f2a5ae15a3dde7851d01e435",
+    "src/components/MoreView.tsx": "b18398aa7946b6a6d0e3f5e828a9a3dfdb20e849904bd3beab50aeaeadd1d2e0",
+    "src/components/MyProfileView.tsx": "eccf6bef7849a3ef60c8e38f0419db6a5589168521b5dd34ca127433e7010c29",
+    "src/components/NewMessageModal.tsx": "39c6f3ac9562d55bbd29b10594dde00d0eea2d42674d05797b3fd91449cb7cd8",
+    "src/components/NewNotebookModal.tsx": "87741f9dc19c721c58ce61a61ec7026165c53e4dae1ccb9887a3fe6bc93e530f",
+    "src/components/NoteCard.tsx": "c6802e1c30b564d19d156023bf461c36e4ecb82f0626955ddabf388bbbf741ec",
+    "src/components/NoteCollaborationPanel.tsx": "7768354559da4eb94172a26eac45d125d3e04e197c51e898f334dd5ac1fce85a",
+    "src/components/NoteEditor.tsx": "704b8d9c6d81f46cb5518149ea62675839561817cff6ca34f74b028a64c75fbe",
+    "src/components/NoteLinkPicker.tsx": "0a8ff5de7e3584dd74e5d46825b3c17fe241cb8e2b1713ba363224c168bab34d",
+    "src/components/NoteList.tsx": "d97c5664f49445b04b3fa03644709d01d4221b0b882951b031d21d63b8c07e1b",
+    "src/components/NotebookIconPicker.tsx": "1cd1e9883eae3f6cdb51e7164e6d9c69bfa9af6a2c348cf42db392766ee08e82",
+    "src/components/NotificationsView.tsx": "81723aaa1d05db6690c3ac76c110b3a3a90cacf2aa435719ca999186d7359490",
+    "src/components/NtkAiPanel.tsx": "429f9dc9e7659799567177ca71ee274fe10db732060b76a86518070f43aef198",
+    "src/components/Onboarding.tsx": "146c124ada04314ebdf4a901875925ba8656eb181a2753228875564c06f9d6dc",
+    "src/components/OnboardingGuide.tsx": "ad7fc7e28ebfd422b8c512b1e12b9c2a6d08bc86c3e42ce9960abbc2f5fe092a",
+    "src/components/PendingNoteConflict.tsx": "b36e5ccb8127a848c3603730318a67a3ef4aa23711289409816609ae2f169655",
+    "src/components/PublicNoteReader.tsx": "b6c677eccad4be8014b23e9d702673c4cc0359ebe6f2a6a4c8dd56094711bc37",
+    "src/components/PwaUpdatePrompt.tsx": "d0a7b5721049e18c3635d765c0ecddfa103dc1450b43e660e532a8cb33428435",
+    "src/components/QuotaDashboard.tsx": "b8c5ce57e264ee646f17f7f5afef6dd4b03ce24928efb064ceddf7544752b57f",
+    "src/components/RecycleBinConfirmModal.tsx": "5277c344ffbae3d49a2378bd499fcae7dbf075b61ccdb392227d1f5c73cdcc55",
+    "src/components/RemindersCenterView.tsx": "dbdad6aeef3b26a344f3beaf1eca6d040897fad434a5135ce36f5c220ee97228",
+    "src/components/ScratchPad.tsx": "7bd545b71abe7cbc83877dea1dc78c5863d0f3c802d53e785005dfa6010eecf1",
+    "src/components/SettingsView.tsx": "0fd7379b64f9895441f8568b566a621b063383287563e0f07701d441593ce569",
+    "src/components/ShareCenterView.tsx": "34823ac23e1032f52844706214246d490a395f781f36ff3bec0fbdcacdc7fa90",
+    "src/components/ShareModal.tsx": "c605648da97910dc759ba7b5c63217e708b0da68b42aa66ea751b00ac04c2aa4",
+    "src/components/Sidebar.tsx": "1611b78f992e4eb0aee626c33b406524dddf28fd729f03c36c20c4dd3f2b0e0f",
+    "src/components/SketchModal.tsx": "42ce980200792f75522cf6f18604b00fde2a419c6ef5178367d0e79dacd908fe",
+    "src/components/SmartFoldersView.tsx": "5fe3a7052c755b61806fcb9b091dd09c20a9f70277fc78d2b9ee79bdb5d77673",
+    "src/components/SyncOfflineCenterModal.tsx": "0c4708c52d8b83db8f146194345d973aed20e481d1267f3656cda259536cc03a",
+    "src/components/TableEditor.tsx": "dd8f5876dd353bac701273df62e9aa189fbfb419c9e28cf2e9414196c1f72547",
+    "src/components/TemplatesView.tsx": "702a4a9bcfc8652f710dd6df5bc276de32b31c5dec16484091dbe228fd333ecf",
+    "src/components/TopBar.tsx": "f569b925f53847333345e0c14772d76641e7a90f119904aed485f164efb0b7b6",
+    "src/components/TranscriptReviewModal.tsx": "b96ded742f25512491db5cadcab8f4f712d77cc718c20a9c6b8e0821013d4fd2",
+    "src/components/UserAvatar.tsx": "1a9e91b5c3a1aa26c4a6afa1df1a4c43eafbecb61adb48626f137b3109121ea1",
+    "src/components/VersionHistory.tsx": "5d6cb2503683a0d7b7358997ac146cfbb1a4c84c052341b3e8d4bd9296bd600c",
+    "src/index.css": "0ea0e95e4784050e5719508c04fe1688de8162ee79fba8b2379c21f6f16e53c2",
+    "src/main.tsx": "f268dc44f71240012de0cfb1569d8ac906265cccd45eb3a99059c1a663d2f830",
+    "src/store/index.ts": "0eaf4bf7d832a86d8480b48969b8418e91c3c8100c3263187a169cc5e2aa2dfd",
+    "src/types/index.ts": "ee739c29e246191839c8eb1861f3605df3843bff4b25df7fa81c2fc17ecc3ca1",
+    "src/utils/aiChatService.ts": "cb24356ded453b48c2bfc8e3790937b33ace5a2f46675e8fbd88b5a15162a4bd",
+    "src/utils/chatService.ts": "eb9fc5f33906e603a36ddd49c3907b0c55117bf7aede9b8bb5609102fb560cc7",
+    "src/utils/cloudBackup.ts": "f38f1c22649d48edbebe4b63fb66027bf42cf49858597412525c91cf574c641c",
+    "src/utils/cloudExport.ts": "9093f01f30428aa7fd6d26983ab06e43757994f06fc598d62595f914a627fa8d",
+    "src/utils/cloudStorage.ts": "f038ba843aa5ae62bcba24f7eb17563cdc4c02c7dc251ad56f87ec9884e0ff8a",
+    "src/utils/cn.ts": "d1f1e0d62cb8d8d1e04c26e14de842d8a151f75812d81b046c65b5d1fe8e4b27",
+    "src/utils/collaboration.ts": "357cddf0beed8c437ceeb2816cc6846a0caa1f8867e915874afd5db950a23dac",
+    "src/utils/colors.ts": "2513f08f528c259ac281893a5e1d129d01fd16a8df6a764cc1a45cefc48ca439",
+    "src/utils/crypto.ts": "870096c4b3dffad86f9cff24616b815681cb13108b42785046a8f92f34e451c8",
+    "src/utils/date.ts": "fd7ce0ff11a958b14ca5afeea83670fc5ddd37df253cafdf9dfdc3a19f5574fc",
+    "src/utils/durableOutbox.ts": "93def791211adf167aa08473942b9242682073b44c294f06cae99a35c3aaf312",
+    "src/utils/export.ts": "2f1851980351ab8d26176ee11957ed7631160f281e3fd01093a21f01a67a3343",
+    "src/utils/firebase.ts": "11c0a9dec326ce6d05efecfe6b13e10e4cb4e13e2c99e728c4143b1d43c378c5",
+    "src/utils/fonts.ts": "557eb9278f597ebebdb46222149e61f55b3c8061509c693ad9775e0a7e2bcaab",
+    "src/utils/freeZoneConstants.ts": "fb5bbbce6113443a0020e53f05e52106b39df1efebdab5ac8fd6007ca81fe260",
+    "src/utils/holidays.ts": "64f0efbbefd72c8275da08974a48f604e3432104070cca3a58082c69471fe38d",
+    "src/utils/imageCompression.ts": "3b363e2dddb86dda0523c36841019e9bbc3ec6303a6172c2248aadc16db82f05",
+    "src/utils/links.ts": "ec3c4e2c60a676ad84fbff996ef3c35491c22372fa041ebaa5061c5ab8b92fde",
+    "src/utils/listenOrchestrator.ts": "8e84291bcfc907c61ab52b62701d98c63dd33df1bc197b06d1e3fd6e0f1de808",
+    "src/utils/noteLinks.ts": "f76e74f3ba8e4a76e7c4965d2e0943d70bdf5c8193cb7a80352dc5fd6f376bd5",
+    "src/utils/noteReconciliation.ts": "c7ff26da20fa003bf8b3eef1b99ba49a0e6be4103b652d84ecae1c36cb50c354",
+    "src/utils/noteSyncTransaction.ts": "af8fd56fcc2247bc5578b0319aa59666516cf19bb12b0b438e545edcff65f53b",
+    "src/utils/noteThemes.ts": "a75f4eb0e7d14f763001070ca7a0a553e21e68a074328ee15d74af91501c7c7a",
+    "src/utils/ntkAi.ts": "838274af0cebf33430e2141138e1849ab4a6d7243d614a4ab8cbeb2d2a0cc22c",
+    "src/utils/offlineMediaQueue.ts": "e777c68e289d141494d02a9ab047228d86c270cb01e6fe450f5f49e5d52b6e5c",
+    "src/utils/offlineMediaSyncService.ts": "63f050697b0619b6943cdd891e6442e0e5d045754b701b3f324f2d6bb08ac4b3",
+    "src/utils/pendingMediaCleanupQueue.ts": "63983d8cfe6e7034623a7f224d47412e7d928d23076236c1c9a6d11ccbadd223",
+    "src/utils/performanceMetrics.ts": "eb17124fcb7a1275132512886158b4699708e02ad53c9b248cc8ef3df14b0487",
+    "src/utils/recentNotebooks.ts": "a133d78a3fed2d32866499a1985359f1a7865964d0eb5f71eeeb923d4aabafd6",
+    "src/utils/recycleBinService.ts": "1a03a34368ba1ed669e460f9e39ab0a0ab8a06e357b5860fa8c13be38465b75e",
+    "src/utils/reminders.ts": "4ac4df1fba3cd72b5439022586f154dd50eb8d4d3dd41edca202d4a896900e69",
+    "src/utils/sessionAuthority.ts": "ed13aabc46fa9f5f1ca24d3e482d412e544e5903f052b2a1dc2c21d63150604c",
+    "src/utils/storageHealth.ts": "de4e738159bf1e55bc7ab64b5ca881885b15f0ba6e659de071cb87920c5f3249",
+    "src/utils/tabCoordinator.ts": "97bf2b6893c4a919cf03e57ccfd5860bb2aee6a2d80a27ddf851f4038c03972a",
+    "src/utils/templateExperience.ts": "44e9d65a669e565d2b166dcf022c5cafa19740a565f7d3fe402a92e55dce9f3c",
+    "src/utils/theme.ts": "04ed12ab014a7f5fee421ec3b7b7353e9662e2c044d2f9d9fdb89d63e9b4ebef",
+    "src/vite-env.d.ts": "927ab50d6dd8a2b8ae77605e900fbb67a75d1e7bed7bf6a40dc7f3d733f58c72",
+    "tests/browser/corrections.spec.ts": "87f8a21132dc76591683386eaba64ef5fa0f01171e9e7acf15f266d1f7f4d94d",
+    "tests/browser/emulator-preflight.ts": "771a0c090c109469ff53c670fb1aa016d7df98c55614047bbf03f9cc682f6d26",
+    "tests/browser/fixture.ts": "13ca0c38ca7ec937988be7e8c196e9c06a8ba6d48703f72d36ec4103b174ce51",
+    "tests/firestore-rules.test.ts": "2e0a4ac7b950c1416624795e860675a912d9078a5a9fb88bc1e126accd7bd403",
+    "tests/logic.test.ts": "4d5da7c289bb4a6660b4d140c8bf69695de91635eea3888341840dc4b1cbfcc6",
+    "vite.browser.config.ts": "23681f715cdc577b789b3b953f52f9e2054342e16ad844e9464b5642ffa1e718",
+    "vite.config.ts": "3cc6e88d1574cf8ac8bf0ea6869f4866a202b3c214427377c6384ab547d40182"
+  },
+  "browserRunHistory": {
+    "fullRun": {
+      "passed": 11,
+      "failed": 1,
+      "failure": "Local Chromium ERR_NO_BUFFER_SPACE while navigating localhost"
+    },
+    "targetedFreshBrowserRetry": {
+      "passed": 1,
+      "failed": 0
+    },
+    "cases": [
+      {
+        "project": "desktop",
+        "journey": "top-right profile menu stays within desktop/mobile viewport and works by keyboard",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "desktop",
+        "journey": "recent notebook navigation filters notes; create/edit nested icons survive reload and cloud sync",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "desktop",
+        "journey": "normal editing, offline/reconnect and reload keep the same note ID without copies",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "desktop",
+        "journey": "two isolated device sessions compare conflicts, preserve later edits, and keep one ID",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "desktop",
+        "journey": "same-context tabs preserve pending conflicts across reload; Keep Cloud cancels editor drafts",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "desktop",
+        "journey": "remote deletion waits for review and explicit restore reuses the original ID",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "top-right profile menu stays within desktop/mobile viewport and works by keyboard",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "recent notebook navigation filters notes; create/edit nested icons survive reload and cloud sync",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "normal editing, offline/reconnect and reload keep the same note ID without copies",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "two isolated device sessions compare conflicts, preserve later edits, and keep one ID",
+        "status": "passed",
+        "report": "browser-retry-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "same-context tabs preserve pending conflicts across reload; Keep Cloud cancels editor drafts",
+        "status": "passed",
+        "report": "browser-results.json"
+      },
+      {
+        "project": "mobile",
+        "journey": "remote deletion waits for review and explicit restore reuses the original ID",
+        "status": "passed",
+        "report": "browser-results.json"
+      }
+    ]
+  }
+}

@@ -5,7 +5,7 @@ import {
   RefreshCw,
   Shield,
   ShieldCheck,
-  User,
+  User, Settings, Moon, Sun, CircleHelp,
 } from 'lucide-react';
 import { useStore } from '@/store';
 import { getAiGatewayStatus, type AiGatewayStatus } from '@/utils/ntkAi';
@@ -13,14 +13,15 @@ import { signOut, signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '@/utils/firebase';
 import { getTabCoordinator } from '@/utils/tabCoordinator';
 import UserAvatar from './UserAvatar';
+import { resolveThemeMode } from '@/utils/theme';
 
 export interface AccountMenuProps {
   isOpen: boolean;
   onClose: () => void;
-  anchorEl?: HTMLElement | null;
+  placement?: 'top' | 'bottom';
 }
 
-export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
+export default function AccountMenu({ isOpen, onClose, placement = 'top' }: AccountMenuProps) {
   const {
     profile,
     setCurrentView,
@@ -30,12 +31,15 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
     online,
     clearAuth,
     setSyncCenterOpen,
+    settings, setTheme, setCommandPaletteOpen,
   } = useStore();
 
   const syncing = syncStatus === 'syncing';
 
   const [aiStatus, setAiStatus] = useState<AiGatewayStatus | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (isOpen) {
@@ -45,15 +49,23 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
 
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
+      if (menuRef.current && !menuRef.current.parentElement?.contains(e.target as Node)) {
+        closeRef.current();
       }
     };
     if (isOpen) {
+      const handleEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') closeRef.current(); };
+      const trigger = menuRef.current?.parentElement?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]');
+      menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
       document.addEventListener('mousedown', handleOutsideClick);
-      return () => document.removeEventListener('mousedown', handleOutsideClick);
+      document.addEventListener('keydown', handleEscape);
+      return () => {
+        document.removeEventListener('mousedown', handleOutsideClick);
+        document.removeEventListener('keydown', handleEscape);
+        trigger?.focus();
+      };
     }
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -62,10 +74,20 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
   return (
     <div
       ref={menuRef}
+      id="account-menu"
       role="menu"
       aria-label="Account menu"
-      className="absolute bottom-16 left-3 z-50 w-72 rounded-2xl border theme-border theme-card p-2 shadow-2xl animate-in fade-in zoom-in-95 duration-150"
+      className={`absolute z-[60] w-72 max-w-[calc(100vw-1rem)] max-h-[min(75dvh,650px)] overflow-y-auto rounded-2xl border theme-border theme-card p-2 shadow-2xl animate-in fade-in zoom-in-95 duration-150 ${placement === 'top' ? 'right-0 top-full mt-1' : 'bottom-full left-0 mb-2'}`}
       style={{ backgroundColor: 'var(--card-bg)' }}
+      onKeyDown={event => {
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [])];
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 :
+          (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        event.preventDefault();
+        buttons[next]?.focus();
+      }}
     >
       {/* Header: User identity */}
       <button
@@ -74,7 +96,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
           setCurrentView('profile');
           onClose();
         }}
-        className="flex w-full items-center gap-3 p-2 rounded-xl text-left theme-hover transition-colors"
+        className="flex min-h-11 w-full items-center gap-3 p-2 rounded-xl text-left theme-hover transition-colors"
       >
         <UserAvatar profile={profile} size="md" />
         <div className="min-w-0 flex-1">
@@ -112,10 +134,25 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
             setCurrentView('profile');
             onClose();
           }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
         >
           <User className="w-4 h-4 text-theme-tertiary" />
           <span className="flex-1 text-left">View Profile</span>
+        </button>
+
+        <button type="button" onClick={() => { setCurrentView('settings'); onClose(); }}
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover">
+          <Settings className="w-4 h-4 text-theme-tertiary" />Settings
+        </button>
+        <button type="button" onClick={() => { setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light'); }}
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover"
+          aria-label={resolveThemeMode(settings.theme) === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}>
+          {resolveThemeMode(settings.theme) === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+          {resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
+        </button>
+        <button type="button" onClick={() => { setCommandPaletteOpen(true); onClose(); }}
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover">
+          <CircleHelp className="w-4 h-4 text-theme-tertiary" />Help & Shortcuts
         </button>
 
         <button
@@ -124,7 +161,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
             setSyncCenterOpen(true);
             onClose();
           }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-theme-secondary theme-hover transition-colors"
         >
           <ShieldCheck className="w-4 h-4 accent-text" />
           <span className="flex-1 text-left">Sync & Offline Status</span>
@@ -146,7 +183,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
                 openSettings('owner');
                 onClose();
               }}
-              className="flex w-full items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs font-medium hover:bg-amber-500/20 transition-colors"
+              className="flex min-h-11 w-full items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs font-medium hover:bg-amber-500/20 transition-colors"
             >
               <span>Manage AI & Storage</span>
               <ChevronRight className="w-3.5 h-3.5" />
@@ -174,7 +211,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
               clearAuth();
             }).catch(console.error);
           }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-red-500 hover:bg-red-500/10 transition-colors"
         >
           <LogOut className="w-4 h-4" />
           <span>Sign out</span>
@@ -190,7 +227,7 @@ export default function AccountMenu({ isOpen, onClose }: AccountMenuProps) {
               console.error('Sign in with Google failed:', err);
             }
           }}
-          className="flex w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-semibold text-theme-primary bg-amber-500/10 hover:bg-amber-500/20 transition-colors"
+          className="flex min-h-11 w-full items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-semibold text-theme-primary bg-amber-500/10 hover:bg-amber-500/20 transition-colors"
         >
           <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />

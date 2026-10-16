@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Cloud, Database, Eye, Wifi, WifiOff } from
 import ManualSyncButton from './ManualSyncButton';
 
 export default function QuotaDashboard() {
-  const { syncQueue, syncConflicts, syncMessage, online, uid, resolveSyncConflict, selectNote, setCurrentView } = useStore();
+  const { syncQueue, syncConflicts, syncMessage, online, uid, selectNote, setCurrentView } = useStore();
 
   return (
     <div className="space-y-4">
@@ -90,10 +90,13 @@ export default function QuotaDashboard() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void resolveSyncConflict(conflict.id, 'auto_safe')}
+                      onClick={() => {
+                        useStore.setState(s => ({ syncConflicts: [conflict, ...s.syncConflicts.filter(c => c.id !== conflict.id)] }));
+                        requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('ntk:review-note-conflict', { detail: { conflictId: conflict.id } })));
+                      }}
                       className="rounded-lg bg-emerald-500/10 px-3 py-1.5 font-semibold text-emerald-500 hover:bg-emerald-500/20 cursor-pointer min-h-[36px]"
                     >
-                      Safely preserve both
+                      Compare versions
                     </button>
                   </div>
                 </div>

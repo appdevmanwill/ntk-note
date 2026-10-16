@@ -189,8 +189,10 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
   } = useStore();
 
   const note = notes.find(n => n.id === selectedNoteId);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
+  // Mount cleanup may run before passive state-loading effects (StrictMode,
+  // rapid navigation). Start from the selected note so it cannot save blanks.
+  const [title, setTitle] = useState(() => unlockedNotes[note?.id || '']?.title ?? note?.title ?? '');
+  const [content, setContent] = useState(() => unlockedNotes[note?.id || '']?.content ?? note?.content ?? '');
   const [showToolbar] = useState(true);
   const [showMenu, setShowMenu] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
@@ -406,13 +408,16 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
       }
       return;
     }
-    saveTimerRef.current = setTimeout(() => {
-      if (note.encrypted && unlockedNote) {
-        updateUnlockedNote(note.id, { title: t, content: c });
-      } else {
-        updateNote(note.id, { title: t, content: c });
-      }
-    }, 300);
+    // Ordinary drafts enter the outbox now. Encryption retains a short local
+    // debounce to avoid deriving a password key on every keystroke; explicit
+    // conflict decisions and navigation flush that React-local draft first.
+    if (note.encrypted && unlockedNote) {
+      saveTimerRef.current = setTimeout(() => {
+        void updateUnlockedNote(note.id, { title: t, content: c });
+      }, 300);
+    } else {
+      void updateNote(note.id, { title: t, content: c });
+    }
   }, [canEditNote, note?.id, note?.encrypted, unlockedNote, updateNote, updateUnlockedNote, settings.autoSave]);
 
   const undoNoteChange = useCallback(() => {
@@ -448,11 +453,53 @@ export default function NoteEditor({ onCollapsePanel }: { onCollapsePanel?: () =
 
   const noteIdRef = useRef<string | null>(null);
   const stateRef = useRef({ title, content, notes, unlockedNotes });
+  const storedSnapshotRef = useRef({ id: note?.id, title: note?.title, content: note?.content });
 
   // Update ref with latest values to keep useEffect clean
   useEffect(() => {
     stateRef.current = { title, content, notes, unlockedNotes };
   }, [title, content, notes, unlockedNotes]);
+
+  useEffect(() => {
+    const resolveDraft = (event: Event) => {
+      const { noteId, keepLocal } = (event as CustomEvent<{ noteId: string; keepLocal: boolean }>).detail;
+      if (noteIdRef.current !== noteId) return;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      const state = useStore.getState();
+      if (keepLocal) {
+        const draft = stateRef.current;
+        if (state.notes.find(n => n.id === noteId)?.encrypted) {
+          void state.updateUnlockedNote(noteId, { title: draft.title, content: draft.content }, true);
+        } else {
+          void state.updateNote(noteId, { title: draft.title, content: draft.content });
+        }
+      } else {
+        const remote = state.syncConflicts.find(c => c.noteId === noteId)?.remote;
+        if (!remote) noteIdRef.current = null;
+        const next = { title: remote?.title || '', content: remote?.content || '' };
+        stateRef.current = { ...stateRef.current, ...next };
+        setTitle(next.title);
+        setContent(next.content);
+        undoStackRef.current = [];
+        redoStackRef.current = [];
+        refreshHistoryStatus();
+      }
+    };
+    window.addEventListener('ntk:resolve-note-conflict', resolveDraft);
+    return () => window.removeEventListener('ntk:resolve-note-conflict', resolveDraft);
+  }, [refreshHistoryStatus]);
+
+  // Adopt remote changes to the selected note once there is no outstanding draft.
+  useEffect(() => {
+    const previous = storedSnapshotRef.current;
+    storedSnapshotRef.current = { id: note?.id, title: note?.title, content: note?.content };
+    if (!note || useStore.getState().syncQueue.some(q => q.noteId === note.id) ||
+      useStore.getState().syncConflicts.some(c => c.noteId === note.id)) return;
+    if (previous.id === note.id && (stateRef.current.title !== previous.title ||
+      stateRef.current.content !== previous.content)) return;
+    setTitle(unlockedNote?.title ?? note.title);
+    setContent(unlockedNote?.content ?? note.content);
+  }, [note?.title, note?.content, unlockedNote?.title, unlockedNote?.content]);
 
   // Load note data and flush previous note changes
   useEffect(() => {

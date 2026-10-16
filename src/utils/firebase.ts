@@ -3,9 +3,10 @@ import {
   getFirestore,
   initializeFirestore,
   persistentLocalCache,
-  persistentMultipleTabManager
+  persistentMultipleTabManager,
+  connectFirestoreEmulator
 } from "firebase/firestore";
-import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, connectAuthEmulator } from "firebase/auth";
 
 const requiredEnv = (key: keyof ImportMetaEnv) => {
   const envObj = (typeof import.meta !== 'undefined' && import.meta.env)
@@ -39,6 +40,8 @@ let db: ReturnType<typeof getFirestore>;
 try {
   if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined') {
     db = initializeFirestore(app, {
+      ...(import.meta.env?.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+        ? { experimentalForceLongPolling: true } : {}),
       localCache: persistentLocalCache({
         tabManager: persistentMultipleTabManager()
       })
@@ -53,6 +56,14 @@ try {
 // Initialize Auth
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+
+// The browser suite uses only local emulators and a demo project. Production
+// builds cannot enable this branch, even when a test variable is left set.
+if (import.meta.env?.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true') {
+  if (!firebaseConfig.projectId.startsWith('demo-')) throw new Error('Emulator tests require a demo Firebase project.');
+  connectFirestoreEmulator(db, '127.0.0.1', 8089);
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+}
 
 export { app, db, auth, googleProvider };
 

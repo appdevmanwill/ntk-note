@@ -4,17 +4,15 @@ import { useStore } from '@/store';
 import {
   Home, FileText, Tag, Star, Archive, Trash2,
   Bell, BellRing, Search, Settings, Plus, ChevronDown, ChevronRight,
-  Moon, Sun, LayoutTemplate, X, Share2,
+  LayoutTemplate, X, Share2,
   PanelLeftClose, PanelLeftOpen, GitBranch, FolderSearch,
   Edit3, GripVertical, ArrowUpDown, Bot, MessageSquare,
-  FolderOpen, HelpCircle, User
+  FolderOpen
 } from 'lucide-react';
 import type { Notebook, NotebookSortBy, SidebarView, SortDirection } from '@/types';
 import ManageNotebooksModal from './ManageNotebooksModal';
 import BrandMark from './BrandMark';
-import UserAvatar from './UserAvatar';
-import AccountMenu from './AccountMenu';
-import { resolveThemeMode } from '@/utils/theme';
+import NewNotebookModal from './NewNotebookModal';
 import { auth } from '@/utils/firebase';
 import { subscribeToDirectChats, isChatUnread } from '@/utils/chatService';
 
@@ -49,19 +47,19 @@ const NOTEBOOK_EXPANSION_STORAGE_KEY = 'ntk-expanded-notebooks';
 
 export default function Sidebar() {
   const {
-    currentView, setCurrentView, profile, settings, setTheme, setCommandPaletteOpen,
+    currentView, setCurrentView, profile, settings,
     notebooks, tags, sidebarOpen, setSidebarOpen,
-    createNotebook, selectNotebook, selectTag,
+    selectNotebook, selectTag,
     notes, notifications, reminders, getStats, updateSettings, reorderNotebook, moveNote,
     selectedNotebookId, selectedTagId,
   } = useStore();
 
   const [notebooksExpanded, setNotebooksExpanded] = useState(true);
   const [tagsExpanded, setTagsExpanded] = useState(true);
-  const [newNotebookName, setNewNotebookName] = useState('');
-  const [showNewNotebook, setShowNewNotebook] = useState(false);
+  const [notebookModalOpen, setNotebookModalOpen] = useState(false);
+  const [notebookModalParentId, setNotebookModalParentId] = useState<string | null>(null);
+  const [notebookModalEditId, setNotebookModalEditId] = useState<string | null>(null);
   const [showManageNotebooks, setShowManageNotebooks] = useState(false);
-  const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [moreToolsExpanded, setMoreToolsExpanded] = useState(false);
   const [editingNotebookId, setEditingNotebookId] = useState<string | null>(null);
   const [editNotebookName, setEditNotebookName] = useState('');
@@ -179,12 +177,12 @@ export default function Sidebar() {
     { view: 'graph', icon: GitBranch, label: 'Graph' },
   ];
 
-  const handleCreateNotebook = () => {
-    if (newNotebookName.trim()) {
-      createNotebook(newNotebookName.trim());
-      setNewNotebookName('');
-      setShowNewNotebook(false);
-    }
+  const openNotebookModal = (parentId: string | null = null, editingId: string | null = null) => {
+    setNotebookModalParentId(parentId);
+    setNotebookModalEditId(editingId);
+    setNotebookModalOpen(true);
+    if (parentId) expandNotebook(parentId);
+    setNotebooksExpanded(true);
   };
 
   const handleSaveRenameNotebook = (id: string) => {
@@ -461,7 +459,7 @@ export default function Sidebar() {
         aria-modal={sidebarOpen || undefined}
         aria-label="Navigation menu"
         className={`
-          fixed lg:relative z-50 h-full flex min-h-0 flex-col w-72 outline-none
+          fixed lg:relative z-50 h-dvh lg:h-full flex min-h-0 flex-col w-72 outline-none
           ${collapsed ? 'lg:w-24' : 'lg:w-72'}
           theme-sidebar
           border-r transition-[width,transform,visibility] duration-300 ease-in-out
@@ -619,7 +617,7 @@ export default function Sidebar() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowNewNotebook(!showNewNotebook)}
+                  onClick={() => openNotebookModal()}
                   className="p-0.5 rounded theme-hover"
                   title="New notebook"
                   aria-label="New notebook"
@@ -654,21 +652,6 @@ export default function Sidebar() {
                     ))}
                   </select>
                 </label>
-              </div>
-            )}
-
-            {showNewNotebook && (
-              <div className="px-3 pb-2">
-                <input
-                  type="text"
-                  value={newNotebookName}
-                  onChange={e => setNewNotebookName(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleCreateNotebook()}
-                  onBlur={() => { if (!newNotebookName.trim()) setShowNewNotebook(false); }}
-                  placeholder="New notebook name..."
-                  className="w-full px-3 py-1.5 text-sm rounded-lg theme-input accent-focus focus:outline-none"
-                  autoFocus
-                />
               </div>
             )}
 
@@ -769,11 +752,10 @@ export default function Sidebar() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setEditingNotebookId(nb.id);
-                                  setEditNotebookName(nb.name);
+                                  openNotebookModal(null, nb.id);
                                 }}
                                 className="opacity-0 group-hover:opacity-100 p-1 rounded theme-hover text-theme-tertiary transition-all"
-                                title="Rename notebook"
+                                title="Edit notebook name, icon and color"
                               >
                                 <Edit3 className="w-3 h-3 no-transition" />
                               </button>
@@ -782,12 +764,7 @@ export default function Sidebar() {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                const name = prompt('Sub-notebook name:');
-                                if (name?.trim()) {
-                                  createNotebook(name.trim(), nb.id, '\uD83D\uDCC1');
-                                  expandNotebook(nb.id);
-                                  setNotebooksExpanded(true);
-                                }
+                                openNotebookModal(nb.id);
                               }}
                               className="opacity-0 group-hover:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
                               title="Add sub-notebook"
@@ -866,11 +843,10 @@ export default function Sidebar() {
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setEditingNotebookId(sub.id);
-                                    setEditNotebookName(sub.name);
+                                    openNotebookModal(null, sub.id);
                                   }}
                                   className="opacity-0 group-hover/sub:opacity-100 p-1 mr-1 rounded theme-hover text-theme-tertiary transition-all"
-                                  title="Rename notebook"
+                                  title="Edit notebook name, icon and color"
                                 >
                                   <Edit3 className="w-3 h-3 no-transition" />
                                 </button>
@@ -923,123 +899,10 @@ export default function Sidebar() {
           </div>
         </nav>
 
-        {/* Account & App Group (visually separated) */}
-        <div
-          className={`p-2 border-t theme-divider space-y-1 ${collapsed ? 'lg:px-1' : ''}`}
-          role="navigation"
-          aria-label="Account and Application Settings"
-        >
-          {/* Profile */}
-          <button
-            type="button"
-            onClick={() => handleNavClick('profile')}
-            title={collapsed ? 'Profile' : undefined}
-            aria-label="Profile"
-            aria-current={currentView === 'profile' ? 'page' : undefined}
-            className={`
-              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all
-              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
-              ${currentView === 'profile'
-                ? 'theme-active'
-                : 'text-theme-secondary theme-hover'
-              }
-            `}
-            style={currentView === 'profile' ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
-          >
-            <User className="w-[18px] h-[18px] shrink-0 no-transition" />
-            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Profile</span>
-          </button>
-
-          {/* Settings */}
-          <button
-            type="button"
-            onClick={() => handleNavClick('settings')}
-            title={collapsed ? 'Settings' : undefined}
-            aria-label="Settings"
-            aria-current={currentView === 'settings' ? 'page' : undefined}
-            className={`
-              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all
-              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
-              ${currentView === 'settings'
-                ? 'theme-active'
-                : 'text-theme-secondary theme-hover'
-              }
-            `}
-            style={currentView === 'settings' ? { backgroundColor: 'var(--active-bg)', color: 'var(--badge-text)' } : {}}
-          >
-            <Settings className="w-[18px] h-[18px] shrink-0 no-transition" />
-            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Settings</span>
-          </button>
-
-          {/* Appearance / Theme Toggle */}
-          <button
-            type="button"
-            onClick={() => setTheme(resolveThemeMode(settings.theme) === 'light' ? 'dark' : 'light')}
-            title={collapsed ? (resolveThemeMode(settings.theme) === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode') : undefined}
-            aria-label={resolveThemeMode(settings.theme) === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
-            className={`
-              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-theme-secondary theme-hover transition-all
-              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
-            `}
-          >
-            {resolveThemeMode(settings.theme) === 'light' ? (
-              <Moon className="w-[18px] h-[18px] shrink-0 no-transition" />
-            ) : (
-              <Sun className="w-[18px] h-[18px] shrink-0 no-transition text-amber-500" />
-            )}
-            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>
-              {resolveThemeMode(settings.theme) === 'light' ? 'Dark Mode' : 'Light Mode'}
-            </span>
-            <span
-              className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${collapsed ? 'lg:hidden' : ''}`}
-              style={{ backgroundColor: 'var(--input-bg)', color: 'var(--text-tertiary)' }}
-            >
-              {resolveThemeMode(settings.theme)}
-            </span>
-          </button>
-
-          {/* Help & Shortcuts */}
-          <button
-            type="button"
-            onClick={() => {
-              setCommandPaletteOpen(true);
-              if (window.innerWidth < 1024) setSidebarOpen(false);
-            }}
-            title={collapsed ? 'Help & Shortcuts' : undefined}
-            aria-label="Help & Shortcuts"
-            className={`
-              w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-theme-secondary theme-hover transition-all
-              ${collapsed ? 'lg:flex-col lg:gap-1 lg:px-1 lg:py-2' : ''}
-            `}
-          >
-            <HelpCircle className="w-[18px] h-[18px] shrink-0 no-transition" />
-            <span className={`flex-1 text-left ${collapsed ? 'lg:flex-none lg:text-center lg:text-[10px]' : ''}`}>Help</span>
-          </button>
-        </div>
-
-        {/* User Profile Card with Simplified AccountMenu */}
-        <div className={`p-2 border-t theme-divider ${collapsed ? 'lg:px-1' : ''}`}>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowAccountMenu(!showAccountMenu)}
-              className={`w-full flex items-center gap-3 p-2 rounded-xl text-left theme-hover transition-colors ${collapsed ? 'lg:justify-center lg:p-1.5' : ''}`}
-              title="Account & Sign out"
-              aria-label="Account & Sign out"
-              aria-haspopup="menu"
-              aria-expanded={showAccountMenu}
-            >
-              <UserAvatar profile={profile} size="sm" />
-              <div className={`flex-1 min-w-0 ${collapsed ? 'lg:hidden' : ''}`}>
-                <p className="text-sm font-medium text-theme-primary truncate">{profile.name}</p>
-                <p className="text-xs text-theme-tertiary truncate">{profile.email || 'Free Plan'}</p>
-              </div>
-            </button>
-            <AccountMenu isOpen={showAccountMenu} onClose={() => setShowAccountMenu(false)} />
-          </div>
-        </div>
       </aside>
       <ManageNotebooksModal isOpen={showManageNotebooks} onClose={() => setShowManageNotebooks(false)} />
+      <NewNotebookModal isOpen={notebookModalOpen} parentId={notebookModalParentId} editingNotebookId={notebookModalEditId}
+        onClose={() => setNotebookModalOpen(false)} />
     </>
   );
 }
