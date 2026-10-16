@@ -1,6 +1,6 @@
 {
-  "status": "VERIFIED functional correction; preview publication pending",
-  "checkedAt": "2026-10-16T13:45:06.481Z",
+  "status": "VERIFIED functional corrections, GitHub backup, and Hosting preview; no production release",
+  "checkedAt": "2026-10-16T13:51:06.050Z",
   "version": "2.9.0",
   "baseline": "d83dc0659f55315b9981cf58618b078b1a89de06",
   "developmentBranch": "codex/v2.9.0-safe-sync-20261016-131848",
@@ -250,5 +250,50 @@
         "report": "browser-results.json"
       }
     ]
+  },
+  "testedSourceCommit": "28c941088c52991b48ea41303fda410217861142",
+  "githubBackup": {
+    "branch": "codex/backup-v2.9.0-corrections-20261016",
+    "url": "https://github.com/appdevmanwill/ntk-note/tree/codex/backup-v2.9.0-corrections-20261016",
+    "mainUnchanged": "fc7327f9d5c44d41f2abd85bc422c1463cfcf21a"
+  },
+  "productionAfter": {
+    "release": "projects/ntk-note/sites/ntk-note/channels/live/releases/1791322182458000",
+    "version": "projects/ntk-note/sites/ntk-note/versions/5cf3b6959416c071"
+  },
+  "productionUnchanged": true,
+  "preview": {
+    "url": "https://ntk-note--note-fixes-v290-20261016-6mt7tqjb.web.app",
+    "status": 200,
+    "indexSha256": "01625e274a006548ce56c5a28ffd437ec94ca3a2940860368a97a6975a1dd5b9",
+    "exactBuildMatch": true,
+    "wranglerConfigExcluded": true,
+    "expires": "2026-10-23T13:46:41.464344550Z",
+    "verifiedAt": "2026-10-16T13:47:45.914Z",
+    "cacheControl": "no-cache",
+    "release": "projects/ntk-note/sites/ntk-note/channels/note-fixes-v290-20261016/releases/1792158411447000",
+    "version": "projects/ntk-note/sites/ntk-note/versions/505139c521f415b6",
+    "hostedLanding": {
+      "browser": "BrowserOS Neo",
+      "verified": true,
+      "heading": "Tame your work, organize your life",
+      "signInControlsRendered": true,
+      "productionSignInPerformed": false,
+      "productionDataWritesPerformed": false
+    },
+    "authAuthorizedDomains": {
+      "before": [
+        "ntk-note.firebaseapp.com",
+        "ntk-note.web.app"
+      ],
+      "after": [
+        "ntk-note.firebaseapp.com",
+        "ntk-note.web.app",
+        "ntk-note--note-fixes-v290-20261016-6mt7tqjb.web.app"
+      ],
+      "added": [
+        "ntk-note--note-fixes-v290-20261016-6mt7tqjb.web.app"
+      ]
+    }
   }
 }

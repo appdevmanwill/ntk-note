@@ -1,6 +1,6 @@
 # NTK Note v2.9.0 correction integration
 
-Date: 16 October 2026 (Africa/Lagos). Status: VERIFIED local functional corrections — preview publication pending.
+Date: 16 October 2026 (Africa/Lagos). Status: VERIFIED functional corrections, GitHub backup, and Firebase Hosting preview. Production was not deployed.
 
 ## Source and preservation
 
@@ -46,11 +46,17 @@ The historical Firebase web key is an intentionally public client identifier, no
 
 ## Preview and GitHub backup
 
-Local gates complete. GitHub backup and preview publication pending. No live Hosting deployment is authorized or performed.
+Preview: [Open NTK Note corrections](https://ntk-note--note-fixes-v290-20261016-6mt7tqjb.web.app). Expires **23 October 2026 at approximately 14:46 Africa/Lagos**. Only this preview channel was deployed.
+
+GitHub backup: [`codex/backup-v2.9.0-corrections-20261016`](https://github.com/appdevmanwill/ntk-note/tree/codex/backup-v2.9.0-corrections-20261016). Tested application-source commit: `28c941088c52991b48ea41303fda410217861142`; the final documentation/evidence commit follows it on the same branch. The backup branch was created without force-pushing or changing main.
+
+HTTP verification returned 200 and exactly matched the tested local build SHA-256: `01625e274a006548ce56c5a28ffd437ec94ca3a2940860368a97a6975a1dd5b9`. The generated Cloudflare configuration is excluded. BrowserOS Neo verified the hosted landing page rendered its headings and sign-in controls; no production sign-in or note writes were performed.
 
 The preview-only configuration is `firebase.preview.json`; it excludes the generated Cloudflare `wrangler.json` from Hosting. Firebase account: **feaiccws@gmail.com**, project/site: **ntk-note**. Billing API and Neo console both confirmed Spark / No-cost, with no billing account linked. The console showed Hosting storage **96.7 MB / 10 GB** and downloads **79.1 MB / 10 GB** before deployment.
 
-Production Hosting baseline: release `1791322182458000`, version `5cf3b6959416c071`, released 6 October 2026. This identifier will be checked again after preview deployment.
+Production Hosting was checked before and after preview deployment: release `1791322182458000`, version `5cf3b6959416c071`, released 6 October 2026, is **unchanged**. Firebase CLI added only the preview hostname to Authentication's authorized domains (two existing domains preserved; three total), enabling preview sign-in. No provider, billing, Firestore, or Cloudflare configuration was changed.
+
+Machine-readable acceptance evidence, raw full-run and retry browser reports, and desktop/mobile screenshots are in `test-evidence/fix-v290/`. Browser results distinguish the single local Chromium infrastructure retry from application assertions.
 
 ## Limits and next action
 
